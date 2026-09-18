@@ -3,7 +3,7 @@
 共享安装的 Deno runtime，以及不携带运行时的可执行应用包。
 
 - `dnr`：运行本地 JS/TS 或 `.dnp` 应用包；调用 GUI API 时启动桌面后端。
-- `dnc`：将准备好的目录打包成 shell 启动头 + ZIP，文件使用 Zstd level 6。
+- `dnc`：将准备好的目录打包成 `.dnp`，或结合 desktop manifest 生成薄 macOS `.app` / Arch、CachyOS `.pkg.tar.zst`；文件使用 Zstd level 6。
 - 支持目标：macOS ARM64 WebView、Linux x86_64 WebView、Linux x86_64 system-CEF。
 
 ## 构建
@@ -50,10 +50,18 @@ dnc examples/desktop --entry main.ts -o desktop.dnp
 
 桌面页面通过 `window.bindings.<name>(...)` 调用 `BrowserWindow.bind()` 注册的函数。`Deno.serve()` 本身不会创建窗口。GUI 示例使用显式 `BrowserWindow`；窗口关闭后，应用需要关闭仍运行的 HTTP 服务或其他任务。
 
-直接运行 `.dnp` 时使用 dnr 的系统身份；dnr/dnc 核心不生成 macOS `.app`、通知身份或深链安装。
-应用项目可以另行提供薄 `.app` 启动器：Songjian 已验证通过 LaunchServices 启动原生启动器，
-设置 Laufey 的应用名和图标后 `exec` 共享 dnr，保留正确的应用名称、Bundle ID 和 Dock 图标。
-其安装与签名由 Songjian 的应用脚本负责，不改变 `.dnp` 格式；验证范围见 [验证记录](VALIDATION.md)。
+直接运行 `.dnp` 时使用 dnr 的系统身份。需要独立桌面入口、名称和图标时，提供 JSON desktop manifest：
+
+```sh
+# 在 macOS ARM64 上：
+dnc prepared --desktop-manifest desktop.json --target macos -o "release/我的应用.app"
+# 在 Arch/CachyOS x86_64 上：
+dnc prepared --desktop-manifest desktop.json --target archlinux -o release/my-app.pkg.tar.zst
+```
+
+`.app` 使用原生薄启动器，自动生成 Info.plist、图标和 ad-hoc 签名；Linux 使用系统
+`makepkg` 生成可用 `pacman -U` 安装的包。两者继续共享已安装的 dnr。
+完整配置、平台要求和安装步骤见 [桌面打包](docs/DESKTOP-PACKAGING.md)。
 包格式见 [FORMAT.md](docs/FORMAT.md)，上游来源见 [THIRD_PARTY.md](THIRD_PARTY.md)。
 
 ## 文件系统语义

@@ -77,8 +77,8 @@ dnr 核心及运行时二进制未修改。
 
 此前延后的 Linux 验收已于 2026-09-18 在用户指定的本机继续执行，结果如下。复验步骤见 [LINUX.md](docs/LINUX.md)。
 
-dnr/dnc 核心不包含 npm/JSR/HTTP 模块在线安装、ZIP 原生库释放、桌面安装器、macOS bundle 生成或自动更新。
-上述 Songjian 薄应用由其应用项目单独构建和安装，不代表 dnc 已提供通用 macOS 打包功能。
+截至该次历史验证，dnr/dnc 核心不包含 npm/JSR/HTTP 模块在线安装、ZIP 原生库释放、桌面安装器、macOS bundle 生成或自动更新。
+上述历史 Songjian 薄应用由其应用项目单独构建和安装；本轮新增的通用 dnc 桌面打包能力见文末。
 
 
 ## Linux x86_64（2026-09-18）
@@ -272,3 +272,44 @@ GUI 结果来自真实 KDE Wayland 会话中的原生后端自动验证，不是
 - 已更新 `dist/dnr`、`dist/dnc` 与产物校验和。本轮未覆盖用户已安装的共享运行时。
 - 本轮没有执行 Linux WebView/system-CEF 构建或 GUI 复验，也未重跑原生标题栏关闭等
   平台专项验收；此前记录保留为历史证据。桌面生命周期代码未作修改。
+
+
+## dnc desktop manifest 打包（2026-09-18，macOS ARM64）
+
+新增 `--desktop-manifest` / `--target macos|archlinux`，保留原 `.dnp` 命令。
+实现仅修改 dnc 及文档，未修改运行时、包格式或 Songjian 源码；未安装、替换已有应用。
+macOS 原生启动器参考 Songjian 薄应用，Linux 输出由系统 makepkg 生成。
+配置与安装方式见 [DESKTOP-PACKAGING.md](docs/DESKTOP-PACKAGING.md)。
+
+### 已执行
+
+- `cargo test --workspace`：新增 3 项 dnc 单元测试与 1 项 CLI 回归、原有 14 项包测试通过。
+  原有 7 项 runtime 测试和新增 macOS 原生打包测试在普通命令中显式忽略。
+- 单元测试执行了生成的 Linux shell 启动器和 PKGBUILD 的文件复制函数，覆盖
+  WebView/system-CEF、中文/引号/反斜杠与 shell 插值字符、空参数、应用身份、
+  CEF 检查失败退出码、配置错误以及输出替换失败时旧文件保留。
+  这不是原生 Linux makepkg/pacman 验收。
+- `cargo clippy --workspace --all-targets -- -D warnings`、`cargo fmt --all -- --check`、
+  `git diff --check` 通过。sccache 保持启用，初始沙箱权限错误后提权执行 Cargo。
+- 显式运行 `macos_bundle_real_runtime`，分别使用 Songjian 的 ICNS 与 PNG 图标，
+  真实编译 ARM64 原生 launcher、转换 PNG 图标、签名并执行验证，测试全部通过。
+  覆盖中文/空格输出目录、首次打包、拒绝无 force 覆盖、force 重建不递归包含旧 `.app`，
+  以及真实 dnr 的参数、cwd、应用名和 appId。最后的权限归一化改动后重新通过 PNG 路径。
+- 使用现有 `/Users/peilin/Codebase/dnr/dist/dnr`，未重建 runtime。
+  将 `examples/desktop/smoke.ts` 打包到 `dist/validation-dnc/DNC-Smoke.app`，
+  经 macOS `open -n -W` / LaunchServices 启动真实 WebView，自动验证页面及双向绑定，
+  stdout 输出 `DNR_GUI_OK`，应用自动退出，open 返回 0。
+  构建自动完成 `codesign --verify --deep --strict`。
+- `cargo build --release -p dnc` 成功；新版工具已复制到本工作区 `dist/dnc`，`--help` 显示新选项。
+- GUI 日志保存在 `dist/validation-dnc/gui.stdout.log`、`gui.stderr.log`。
+  测试使用的 manifest 指向当前机器的现有 dnr 和图标，属于本地验证配置，不是可分发配置。
+
+### 未执行的范围
+
+- 本机没有原生 Arch/CachyOS 环境，未执行完整 makepkg、pacman 查询、安装/升级/卸载或
+  Linux 菜单启动和窗口图标验证。已提供需显式运行的 `arch_package_metadata_and_payload`
+  测试，检查真实包元数据及 `.PKGINFO`、`.BUILDINFO`、`.MTREE` 和安装路径；
+  应在原生 Arch/CachyOS 普通用户环境运行，命令见打包文档。
+- 未测试 macOS Developer ID 签名、公证、应用商店分发或最低支持系统版本；
+  当前产物只有本地 ad-hoc 签名。未替换 `/Applications` 中已安装的 Songjian 或共享运行时。
+- 没有重新执行底层 runtime 原生回归；本轮测试复用现有已构建 dnr。

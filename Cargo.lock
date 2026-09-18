@@ -144,6 +144,9 @@ dependencies = [
  "anyhow",
  "clap",
  "dnr-package",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
