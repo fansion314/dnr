@@ -1,0 +1,21 @@
+[workspace]
+members = ["crates/package", "crates/dnc", "xtask"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.6", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0"
+tempfile = "3.27.0"
+zip = { version = "8.6.0", default-features = false, features = ["zstd"] }
+dnr-package = { path = "crates/package" }
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"

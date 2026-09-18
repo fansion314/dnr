@@ -1,0 +1,137 @@
+--- a/capi/src/lib.rs
++++ b/capi/src/lib.rs
+@@ -92,7 +92,11 @@
+   ),
+ }
+ 
++static LAZY_INITIALIZER: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
++pub fn set_lazy_initializer(init: fn()) { let _ = LAZY_INITIALIZER.set(init); }
++pub fn is_initialized() -> bool { BACKEND_API.get().is_some() }
+ fn api() -> &'static LaufeyBackendApi {
++  if BACKEND_API.get().is_none() { if let Some(init) = LAZY_INITIALIZER.get() { init(); } }
+   BACKEND_API.get().expect("Backend API not initialized")
+ }
+ 
+--- a/webview/src/runtime_loader.cc
++++ b/webview/src/runtime_loader.cc
+@@ -886,7 +886,15 @@
+   return instance_;
+ }
+ 
++extern "C" int laufey_runtime_init(const laufey_backend_api_t*);
++extern "C" int laufey_runtime_start(void);
++extern "C" void laufey_runtime_shutdown(void);
+ bool RuntimeLoader::Load(const std::string& path) {
++  init_fn_ = laufey_runtime_init;
++  start_fn_ = laufey_runtime_start;
++  shutdown_fn_ = laufey_runtime_shutdown;
++  return true;
++
+ #ifndef _WIN32
+   library_handle_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+   if (!library_handle_) {
+@@ -968,7 +976,7 @@
+   }
+ 
+   running_ = true;
+-  runtime_thread_ = std::thread(&RuntimeLoader::RuntimeThread, this);
++  // dnr already owns the Rust runtime thread. Do not launch or join a second one.
+ 
+   std::cout << "Runtime started" << std::endl;
+   return true;
+--- a/cef/src/runtime_loader.cc
++++ b/cef/src/runtime_loader.cc
+@@ -1980,7 +1980,15 @@
+   return instance_;
+ }
+ 
++extern "C" int laufey_runtime_init(const laufey_backend_api_t*);
++extern "C" int laufey_runtime_start(void);
++extern "C" void laufey_runtime_shutdown(void);
+ bool RuntimeLoader::Load(const std::string& path) {
++  init_fn_ = laufey_runtime_init;
++  start_fn_ = laufey_runtime_start;
++  shutdown_fn_ = laufey_runtime_shutdown;
++  return true;
++
+ #ifndef _WIN32
+   library_handle_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+   if (!library_handle_) {
+@@ -2063,7 +2071,7 @@
+   }
+ 
+   running_ = true;
+-  runtime_thread_ = std::thread(&RuntimeLoader::RuntimeThread, this);
++  // dnr already owns the Rust runtime thread. Do not launch or join a second one.
+ 
+   std::cout << "Runtime started" << std::endl;
+   return true;
+--- a/webview/src/main_linux.cc
++++ b/webview/src/main_linux.cc
+@@ -12,7 +12,7 @@
+ #include <string>
+ 
+ int main(int argc, char* argv[]) {
+-  gtk_init(&argc, &argv);
++  if (!gtk_init_check(&argc, &argv)) { std::cerr << "dnr: no usable graphical display" << std::endl; return 1; }
+ 
+   // Application identity for the window manager. The embedder (e.g. deno
+   // desktop) passes LAUFEY_APP_ID (the reverse-DNS identifier it also uses for
+--- a/cef/src/main_linux.cc
++++ b/cef/src/main_linux.cc
+@@ -814,6 +814,8 @@
+   }
+ 
+   CefSettings settings;
++  CefString(&settings.resources_dir_path) = "/usr/lib/cef";
++  CefString(&settings.locales_dir_path) = "/usr/lib/cef/locales";
+   settings.no_sandbox = true;
+   settings.log_severity = LaufeyCefLogSeverity();
+ 
+--- a/webview/src/main_mac.mm
++++ b/webview/src/main_mac.mm
+@@ -134,7 +134,8 @@
+ }
+ 
+ - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
+-  return YES;
++  // dnr owns lifetime: background JS and tray objects may still be active.
++  return NO;
+ }
+ 
+ - (BOOL)applicationShouldHandleReopen:(NSApplication*)sender
+--- a/webview/src/webview_linux.cc
++++ b/webview/src/webview_linux.cc
+@@ -478,13 +478,7 @@
+   if (wid > 0) {
+     UnregisterWidget(widget);
+   }
+-  // If no more windows, quit
+-  {
+-    std::lock_guard<std::mutex> lock(g_widget_mutex);
+-    if (g_widget_to_laufey_id.empty()) {
+-      gtk_main_quit();
+-    }
+-  }
++  // dnr owns lifetime; closing the last window does not end background JS.
+ }
+ 
+ // "delete-event" fires when the user requests a close (e.g. clicks the
+--- a/cef/src/app.cc
++++ b/cef/src/app.cc
+@@ -212,14 +212,7 @@
+       break;
+     }
+   }
+-  if (browser_list_.empty()) {
+-#if defined(__APPLE__)
+-    // macOS runs [NSApp run] (external_message_pump); stop that instead.
+-    LaufeyQuitMainLoopMac();
+-#else
+-    CefQuitMessageLoop();
+-#endif
+-  }
++  // dnr owns lifetime; keep the native loop alive until the JS host exits.
+ }
+ 
+ void LaufeyHandler::OnTitleChange(CefRefPtr<CefBrowser> browser,

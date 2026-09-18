@@ -1,0 +1,267 @@
+//! Shared application host. The archive is external to the runtime executable.
+use crate::{
+    binary::{StandaloneData, StandaloneModules},
+    file_system::{DenoRtSys, FileBackedVfs, VfsRoot},
+};
+use deno_core::{
+    anyhow::{Context, bail},
+    error::AnyError,
+    url::Url,
+};
+use deno_lib::standalone::{
+    binary::{
+        Metadata, NodeModules, SerializedWorkspaceResolver, SerializedWorkspaceResolverImportMap,
+    },
+    virtual_fs::*,
+};
+use dnr_package::{DEFAULT_CACHE_BYTES, EntryKind, Package};
+use std::{
+    borrow::Cow,
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::{Arc, OnceLock},
+};
+
+static PACKAGE: OnceLock<Arc<Package>> = OnceLock::new();
+
+pub fn read_text(path: &Path) -> std::io::Result<String> {
+    if let Some(package) = PACKAGE.get()
+        && let Ok(relative) = path.strip_prefix(&package.root)
+        && !relative.as_os_str().is_empty()
+    {
+        if let Some(bytes) = package
+            .read(&relative.to_string_lossy())
+            .map_err(std::io::Error::other)?
+        {
+            return String::from_utf8(bytes.to_vec()).map_err(std::io::Error::other);
+        }
+    }
+    std::fs::read_to_string(path)
+}
+
+fn directory(package: &Package, prefix: &str) -> Result<VirtualDirectory, AnyError> {
+    let mut entries = Vec::new();
+    for (name, entry) in &package.entries {
+        let path = Path::new(name);
+        if path.parent().unwrap_or(Path::new("")).to_string_lossy() != prefix {
+            continue;
+        }
+        let basename = path.file_name().unwrap().to_string_lossy().into_owned();
+        entries.push(match &entry.kind {
+            EntryKind::Directory => VfsEntry::Dir(directory(package, name)?),
+            EntryKind::Symlink(target) => {
+                let target = dnr_package::resolve_link(name, target)?;
+                VfsEntry::Symlink(VirtualSymlink {
+                    name: basename,
+                    dest_parts: VirtualSymlinkParts::from_path(Path::new(&target)),
+                    dest_is_dir: package
+                        .entries
+                        .get(&target)
+                        .is_some_and(|e| e.kind == EntryKind::Directory),
+                })
+            }
+            EntryKind::File => VfsEntry::File(VirtualFile {
+                name: basename,
+                offset: OffsetWithLength {
+                    offset: entry.index as u64,
+                    len: entry.size,
+                },
+                is_valid_utf8: false,
+                transpiled_offset: None,
+                cjs_export_analysis_offset: None,
+                source_map_offset: None,
+                mtime: None,
+                executable: false,
+            }),
+        });
+    }
+    Ok(VirtualDirectory {
+        name: Path::new(prefix)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+        entries: VirtualDirectoryEntries::new(entries),
+    })
+}
+
+pub fn application(mut args: Vec<String>) -> Result<StandaloneData, AnyError> {
+    let explicit = args.first().is_some_and(|s| s == "--package");
+    if explicit {
+        args.remove(0);
+    }
+    if args.is_empty() {
+        bail!("usage: dnr <script.ts|application.dnp> [args...]");
+    }
+    let input = PathBuf::from(args.remove(0))
+        .canonicalize()
+        .context("opening application")?;
+    let mut expected_entry = None;
+    if explicit && args.first().is_some_and(|s| s == "--entry") {
+        args.remove(0);
+        if args.is_empty() {
+            bail!("--entry needs a value");
+        }
+        expected_entry = Some(args.remove(0));
+    }
+    if args.first().is_some_and(|s| s == "--") {
+        args.remove(0);
+    }
+    let is_package = explicit || {
+        use std::io::Read;
+        let mut header = [0u8; 10];
+        std::fs::File::open(&input)?.read(&mut header)? == 10 && &header == b"#!/bin/sh\n"
+    };
+    let (root, entry, app_id, mut vfs) = if is_package {
+        let package = Arc::new(Package::open(&input, DEFAULT_CACHE_BYTES)?);
+        if let Some(expected) = expected_entry {
+            if expected != package.manifest.entry {
+                bail!("header entry does not match manifest");
+            }
+        }
+        let root = package.root.clone();
+        let tree = directory(&package, "")?;
+        let entry = package.manifest.entry.clone();
+        let id = package.manifest.app_id.clone();
+        let mut vfs = FileBackedVfs::new(
+            Cow::Borrowed(&[]),
+            VfsRoot {
+                dir: tree,
+                root_path: root.clone(),
+                start_file_offset: 0,
+            },
+            FileSystemCaseSensitivity::Sensitive,
+        );
+        vfs.dnr_package = Some(package.clone());
+        let _ = PACKAGE.set(package);
+        (root, entry, id, vfs)
+    } else {
+        let root = input.parent().unwrap().to_owned();
+        let entry = input.file_name().unwrap().to_string_lossy().into_owned();
+        let id = format!("script:{}", input.display());
+        let vfs = FileBackedVfs::new(
+            Cow::Borrowed(&[]),
+            VfsRoot {
+                dir: VirtualDirectory {
+                    name: String::new(),
+                    entries: VirtualDirectoryEntries::new(vec![]),
+                },
+                root_path: root.clone(),
+                start_file_offset: 0,
+            },
+            FileSystemCaseSensitivity::Sensitive,
+        );
+        (root, entry, id, vfs)
+    };
+    vfs.dnr_overlay = true;
+    let mut import_map = None;
+    for name in ["deno.json", "deno.jsonc"] {
+        match read_text(&root.join(name)) {
+            Ok(text) => {
+                let config = jsonc_parser::parse_to_serde_value::<serde_json::Value>(
+                    &text,
+                    &Default::default(),
+                )?;
+                if let Some(map_path) = config.get("importMap").and_then(|v| v.as_str()) {
+                    let map = root.join(map_path);
+                    let json = read_text(&map).context("importMap must be a local file")?;
+                    import_map = Some(SerializedWorkspaceResolverImportMap {
+                        specifier: Url::from_file_path(map).unwrap().to_string(),
+                        json,
+                    });
+                } else if config.get("imports").is_some() || config.get("scopes").is_some() {
+                    import_map = Some(SerializedWorkspaceResolverImportMap {
+                        specifier: name.into(),
+                        json: config.to_string(),
+                    });
+                }
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let mut package_jsons = BTreeMap::new();
+    if let Ok(text) = read_text(&root.join("package.json")) {
+        package_jsons.insert("package.json".into(), serde_json::from_str(&text)?);
+    }
+    use sha2::{Digest, Sha256};
+    let storage_id = format!("dnr-{:x}", Sha256::digest(app_id.as_bytes()));
+    let metadata = Metadata {
+        argv: args,
+        seed: None,
+        code_cache_key: None,
+        permissions: deno_runtime::deno_permissions::PermissionsOptions {
+            allow_read: Some(vec![]),
+            allow_write: Some(vec![]),
+            allow_net: Some(vec![]),
+            allow_env: Some(vec![]),
+            allow_run: Some(vec![]),
+            allow_ffi: Some(vec![]),
+            allow_sys: Some(vec![]),
+            allow_import: Some(vec![]),
+            ..Default::default()
+        },
+        location: None,
+        v8_flags: vec![
+            "--stack-size=1024".into(),
+            "--inspector-live-edit".into(),
+            "--external-memory-max-reasonable-size=0".into(),
+        ],
+        log_level: None,
+        ca_stores: None,
+        ca_data: None,
+        unsafely_ignore_certificate_errors: None,
+        env_vars_from_env_file: Default::default(),
+        workspace_resolver: SerializedWorkspaceResolver {
+            import_map,
+            jsr_pkgs: vec![],
+            package_jsons,
+            pkg_json_resolution: deno_resolver::workspace::PackageJsonDepResolution::Disabled,
+            catalogs: Default::default(),
+        },
+        entrypoint_key: Url::from_file_path(root.join(&entry))
+            .map_err(|_| deno_core::anyhow::anyhow!("invalid entrypoint path"))?
+            .to_string(),
+        preload_modules: vec![],
+        require_modules: vec![],
+        node_modules: Some(NodeModules::Byonm {
+            root_node_modules_dir: Some("node_modules".into()),
+        }),
+        unstable_config: deno_lib::args::UnstableConfig {
+            detect_cjs: true,
+            raw_imports: true,
+            ..Default::default()
+        },
+        otel_config: Default::default(),
+        vfs_case_sensitivity: FileSystemCaseSensitivity::Sensitive,
+        self_extracting: None,
+        app_name: Some(storage_id),
+        app_version: None,
+        error_reporting_url: None,
+        release_base_url: None,
+    };
+    let vfs = Arc::new(vfs);
+    let modules = Arc::new(StandaloneModules::dnr(vfs.clone()));
+    Ok(StandaloneData {
+        metadata,
+        modules,
+        npm_snapshot: None,
+        root_path: root,
+        vfs,
+    })
+}
+
+pub async fn execute(data: StandaloneData) -> Result<i32, AnyError> {
+    let sys = DenoRtSys::new(data.vfs.clone());
+    deno_runtime::deno_telemetry::init(
+        &sys,
+        deno_lib::version::otel_runtime_config(),
+        data.metadata.otel_config.clone(),
+    )?;
+    let options = crate::dnr_desktop::options();
+    let pump = tokio::spawn(crate::dnr_desktop::pump_bindings());
+    let result = crate::run::run_with_options(Arc::new(sys.clone()), sys, data, options).await;
+    pump.abort();
+    result
+}

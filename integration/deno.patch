@@ -1,0 +1,439 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -390,7 +390,7 @@
+ unicode-normalization = "0.1"
+ unicode-width = "0.1.3"
+ yaml_parser = "=0.2.1"
+-zstd = "=0.13.2"
++zstd = "=0.13.3"
+ 
+ # crypto
+ aead-gcm-stream = "0.4"
+--- a/cli/rt/Cargo.toml
++++ b/cli/rt/Cargo.toml
+@@ -15,6 +15,10 @@
+ name = "denort"
+ path = "main.rs"
+ doc = false
++
++[[bin]]
++name = "dnr"
++path = "dnr_main.rs"
+ 
+ [lib]
+ path = "./lib.rs"
+@@ -35,6 +39,12 @@
+ v8.workspace = true
+ 
+ [dependencies]
++dnr-package = { path = "../../../../crates/package" }
++laufey = { path = "../../../laufey/capi" }
++sha2.workspace = true
++raw-window-handle.workspace = true
++denort_helper.workspace = true
++
+ async-trait.workspace = true
+ bincode.workspace = true
+ deno_ast = { workspace = true, features = ["cjs"] }
+--- a/cli/rt/lib.rs
++++ b/cli/rt/lib.rs
+@@ -1,5 +1,8 @@
+ // Copyright 2018-2026 the Deno authors. MIT license.
+ 
++extern crate self as denort;
++pub mod dnr;
++pub mod dnr_desktop;
+ use std::borrow::Cow;
+ use std::env;
+ use std::sync::Arc;
+--- a/cli/rt/binary.rs
++++ b/cli/rt/binary.rs
+@@ -601,6 +601,12 @@
+ }
+ 
+ impl StandaloneModules {
++  pub fn dnr(vfs: Arc<FileBackedVfs>) -> Self {
++    Self { vfs, modules: RemoteModulesStore::new(
++      SpecifierStore { data: Default::default(), reverse: Default::default() },
++      SpecifierDataStore::with_capacity(0), SpecifierDataStore::with_capacity(0)) }
++  }
++
+   pub fn resolve_specifier<'a>(
+     &'a self,
+     specifier: &'a Url,
+@@ -679,6 +685,13 @@
+         }
+         Err(err) => return Err(JsErrorBox::from_err(err)),
+       };
++      if transpiled.is_none() && self.vfs.dnr_overlay {
++        let media_type = MediaType::from_specifier(specifier);
++        if matches!(media_type, MediaType::TypeScript | MediaType::Mts | MediaType::Cts | MediaType::Tsx | MediaType::Jsx) {
++          let text = String::from_utf8_lossy(&bytes).into_owned();
++          transpiled = Some(Cow::Owned(transpile_runtime_module(specifier, media_type, text)?.into_bytes()));
++        }
++      }
+       Ok(Some(DenoCompileModuleData {
+         media_type: MediaType::from_specifier(specifier),
+         specifier,
+@@ -772,7 +785,7 @@
+     let cfg_path = 'outer: loop {
+       for name in ["deno.json", "deno.jsonc"] {
+         let candidate = dir.join(name);
+-        if candidate.exists() {
++        if crate::dnr::read_text(&candidate).is_ok() {
+           break 'outer Some(candidate);
+         }
+       }
+@@ -783,7 +796,7 @@
+     let Some(cfg_path) = cfg_path else {
+       return fallback;
+     };
+-    let Ok(text) = std::fs::read_to_string(&cfg_path) else {
++    let Ok(text) = crate::dnr::read_text(&cfg_path) else {
+       return fallback;
+     };
+     let Some(json) =
+--- a/cli/rt/file_system.rs
++++ b/cli/rt/file_system.rs
+@@ -73,7 +73,10 @@
+     }
+   }
+ 
++  pub fn is_dnr_overlay(&self) -> bool { self.vfs.dnr_overlay }
++
+   pub fn maybe_native_addon_loader(&self) -> Option<DenoRtNativeAddonLoaderRc> {
++    if self.vfs.dnr_overlay { return Some(Arc::new(DnrNativeLoader(self.vfs.clone()))); }
+     if self.self_extracting {
+       // native addons are already on disk, no need for VFS extraction
+       None
+@@ -144,6 +147,12 @@
+   }
+ 
+   fn chdir(&self, path: &CheckedPath) -> FsResult<()> {
++    if self.vfs.dnr_overlay && self.is_vfs_path(path) {
++      // There is no OS mount. A real directory may be used as cwd, but a
++      // ZIP-only directory must fail explicitly instead of pretending to chdir.
++      self.vfs.dir_entry(path)?;
++      return RealFs.chdir(path);
++    }
+     if self.is_vfs_path(path) {
+       // The process working directory can't actually be changed to a path
+       // inside the embedded virtual file system, but applications (e.g.
+@@ -174,6 +183,7 @@
+     options: OpenOptions,
+   ) -> FsResult<Rc<dyn DenoFile>> {
+     if self.is_vfs_path(path) {
++      if options.write || options.append || options.truncate || options.create || options.create_new { return Err(FsError::NotSupported); }
+       Ok(Rc::new(self.vfs.open_file(path)?))
+     } else {
+       RealFs.open_sync(path, options)
+@@ -185,6 +195,7 @@
+     options: OpenOptions,
+   ) -> FsResult<Rc<dyn DenoFile>> {
+     if self.is_vfs_path(&path) {
++      if options.write || options.append || options.truncate || options.create || options.create_new { return Err(FsError::NotSupported); }
+       Ok(Rc::new(self.vfs.open_file(&path)?))
+     } else {
+       RealFs.open_async(path, options).await
+@@ -774,10 +785,21 @@
+     Box<dyn Iterator<Item = std::io::Result<Self::ReadDirEntry>>>,
+   > {
+     if self.is_vfs_path(path) {
+-      let entries = self.vfs.read_dir_with_metadata(path)?;
+-      Ok(Box::new(
+-        entries.map(|entry| Ok(BoxedFsDirEntry::new(entry))),
+-      ))
++      let mut entries = self.vfs.read_dir_with_metadata(path)?.map(BoxedFsDirEntry::new).collect::<Vec<_>>();
++      if self.vfs.dnr_overlay {
++        let names = self.vfs.read_dir(path)?.into_iter().map(|e| e.name).collect::<std::collections::HashSet<_>>();
++        match sys_traits::impls::RealSys.fs_read_dir_boxed(path) {
++          Ok(disk) => for entry in disk {
++            let entry = entry?;
++            use sys_traits::FsDirEntry;
++            let name = entry.file_name().to_string_lossy().into_owned();
++            if names.contains(&name) && !entries.iter().any(|e| e.file_name() == entry.file_name()) { entries.push(entry); }
++          },
++          Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => {},
++          Err(e) => return Err(e),
++        }
++      }
++      Ok(Box::new(entries.into_iter().map(Ok)))
+     } else {
+       #[allow(
+         clippy::disallowed_methods,
+@@ -1318,11 +1340,40 @@
+ pub struct FileBackedVfsFile {
+   file: VirtualFile,
+   pos: RefCell<u64>,
++  dnr_bytes: RefCell<Option<Arc<[u8]>>>,
+   vfs: Arc<FileBackedVfs>,
+ }
+ 
+ impl FileBackedVfsFile {
++  fn dnr_bytes(&self) -> std::io::Result<Option<Arc<[u8]>>> {
++    let Some(package) = &self.vfs.dnr_package else { return Ok(None); };
++    if let Some(bytes) = self.dnr_bytes.borrow().as_ref() { return Ok(Some(bytes.clone())); }
++    let bytes = package.read_index(self.file.offset.offset as usize).map_err(std::io::Error::other)?;
++    *self.dnr_bytes.borrow_mut() = Some(bytes.clone());
++    Ok(Some(bytes))
++  }
++
++  fn read_position(&self, position: u64, buf: &mut [u8]) -> std::io::Result<usize> {
++    if let Some(bytes) = self.dnr_bytes()? {
++      let start = usize::try_from(position).map_err(std::io::Error::other)?.min(bytes.len());
++      let count = buf.len().min(bytes.len() - start);
++      buf[..count].copy_from_slice(&bytes[start..start + count]);
++      return Ok(count);
++    }
++    self.vfs.read_file(&self.file, position, buf)
++  }
++
+   pub fn seek(&self, pos: SeekFrom) -> std::io::Result<u64> {
++    if self.vfs.dnr_overlay {
++      let next = match pos {
++        SeekFrom::Start(n) => n as i128,
++        SeekFrom::End(n) => self.file.offset.len as i128 + n as i128,
++        SeekFrom::Current(n) => *self.pos.borrow() as i128 + n as i128,
++      };
++      let next = u64::try_from(next).map_err(|_| std::io::Error::new(ErrorKind::InvalidInput, "invalid seek offset"))?;
++      *self.pos.borrow_mut() = next;
++      return Ok(next);
++    }
+     match pos {
+       SeekFrom::Start(pos) => {
+         *self.pos.borrow_mut() = pos;
+@@ -1363,14 +1414,10 @@
+   }
+ 
+   pub fn read_to_buf(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+-    let read_pos = {
+-      let mut pos = self.pos.borrow_mut();
+-      let read_pos = *pos;
+-      // advance the position due to the read
+-      *pos = std::cmp::min(self.file.offset.len, *pos + buf.len() as u64);
+-      read_pos
+-    };
+-    self.vfs.read_file(&self.file, read_pos, buf)
++    let position = *self.pos.borrow();
++    let count = self.read_position(position, buf)?;
++    *self.pos.borrow_mut() += count as u64;
++    Ok(count)
+   }
+ 
+   fn metadata(&self) -> FileBackedVfsMetadata {
+@@ -1396,6 +1443,9 @@
+     if read_pos > self.file.offset.len {
+       return Ok(Cow::Borrowed(&[]));
+     }
++    if let Some(bytes) = self.dnr_bytes()? {
++      return Ok(Cow::Owned(bytes[(read_pos as usize).min(bytes.len())..].to_vec()));
++    }
+     if read_pos == 0 {
+       Ok(self.vfs.read_file_all(&self.file)?)
+     } else {
+@@ -1560,8 +1610,7 @@
+     position: u64,
+   ) -> FsResult<usize> {
+     self
+-      .vfs
+-      .read_file(&self.file, position, buf)
++      .read_position(position, buf)
+       .map_err(FsError::Io)
+   }
+   async fn read_at_async(
+@@ -1570,8 +1619,7 @@
+     position: u64,
+   ) -> FsResult<(usize, BufMutView)> {
+     let nread = self
+-      .vfs
+-      .read_file(&self.file, position, &mut buf)
++      .read_position(position, &mut buf)
+       .map_err(FsError::Io)?;
+     Ok((nread, buf))
+   }
+@@ -1674,6 +1722,8 @@
+ 
+ #[derive(Debug)]
+ pub struct FileBackedVfs {
++  pub dnr_package: Option<Arc<dnr_package::Package>>,
++  pub dnr_overlay: bool,
+   vfs_data: Cow<'static, [u8]>,
+   fs_root: VfsRoot,
+   case_sensitivity: FileSystemCaseSensitivity,
+@@ -1686,6 +1736,8 @@
+     case_sensitivity: FileSystemCaseSensitivity,
+   ) -> Self {
+     Self {
++      dnr_package: None,
++      dnr_overlay: false,
+       vfs_data: data,
+       fs_root,
+       case_sensitivity,
+@@ -1701,6 +1753,21 @@
+   }
+ 
+   pub fn is_path_within(&self, path: &Path) -> bool {
++    if self.dnr_overlay {
++      if path == self.root() { return self.dnr_package.is_some(); }
++      let mut current = Some(path);
++      while let Some(p) = current {
++        if !p.starts_with(self.root()) || p == self.root() { break; }
++        match self.fs_root.find_entry_no_follow(p, self.case_sensitivity) {
++          Ok((_, VfsEntryRef::Dir(_))) if p != path => {},
++          Ok(_) => return true,
++          Err(e) if e.kind() != std::io::ErrorKind::NotFound => return true,
++          _ => {},
++        }
++        current = p.parent();
++      }
++      return false;
++    }
+     path.starts_with(&self.fs_root.root_path)
+   }
+ 
+@@ -1717,11 +1784,30 @@
+       file: file.clone(),
+       vfs: self.clone(),
+       pos: Default::default(),
++      dnr_bytes: Default::default(),
+     })
+   }
+ 
+   pub fn read_dir(&self, path: &Path) -> std::io::Result<Vec<FsDirEntry>> {
+     let dir = self.dir_entry(path)?;
++    if self.dnr_overlay {
++      let mut entries: Vec<FsDirEntry> = dir.entries.iter().map(|entry| FsDirEntry {
++        name: entry.name().to_string(), is_file: matches!(entry, VfsEntry::File(_)),
++        is_directory: matches!(entry, VfsEntry::Dir(_)), is_symlink: matches!(entry, VfsEntry::Symlink(_)),
++      }).collect();
++      match std::fs::read_dir(path) {
++        Ok(disk) => for child in disk {
++          let child = child?; let name = child.file_name().to_string_lossy().into_owned();
++          if entries.iter().any(|e| e.name == name) { continue; }
++          let kind = child.file_type()?;
++          entries.push(FsDirEntry { name, is_file: kind.is_file(), is_directory: kind.is_dir(), is_symlink: kind.is_symlink() });
++        },
++        Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => {},
++        Err(e) => return Err(e),
++      }
++      entries.sort_by(|a,b| a.name.cmp(&b.name));
++      return Ok(entries);
++    }
+     Ok(
+       dir
+         .entries
+@@ -1797,6 +1883,10 @@
+     &self,
+     offset_with_len: OffsetWithLength,
+   ) -> std::io::Result<Cow<'static, [u8]>> {
++    if let Some(package) = &self.dnr_package {
++      return package.read_index(offset_with_len.offset as usize)
++        .map(|bytes| Cow::Owned(bytes.to_vec())).map_err(std::io::Error::other);
++    }
+     let read_range =
+       self.get_read_range(offset_with_len, 0, offset_with_len.len)?;
+     match &self.vfs_data {
+@@ -1811,6 +1901,14 @@
+     pos: u64,
+     buf: &mut [u8],
+   ) -> std::io::Result<usize> {
++    if let Some(package) = &self.dnr_package {
++      let bytes = package.read_index(file.offset.offset as usize).map_err(std::io::Error::other)?;
++      let start = usize::try_from(pos).map_err(std::io::Error::other)?;
++      if start >= bytes.len() { return Ok(0); }
++      let count = buf.len().min(bytes.len() - start);
++      buf[..count].copy_from_slice(&bytes[start..start + count]);
++      return Ok(count);
++    }
+     let read_range = self.get_read_range(file.offset, pos, buf.len() as u64)?;
+     let read_len = read_range.len();
+     buf[..read_len].copy_from_slice(&self.vfs_data[read_range]);
+@@ -1852,6 +1950,17 @@
+       VfsEntryRef::Symlink(_) => unreachable!(),
+       VfsEntryRef::File(file) => Ok(file),
+     }
++  }
++}
++
++struct DnrNativeLoader(Arc<FileBackedVfs>);
++impl DenoRtNativeAddonLoader for DnrNativeLoader {
++  fn load_if_in_vfs(&self, _: &Path) -> Option<Cow<'static, [u8]>> { None }
++  fn load_and_resolve_path<'a>(&self, path: &'a Path) -> Result<Cow<'a, Path>, denort_helper::LoadError> {
++    if self.0.is_path_within(path) {
++      return Err(denort_helper::LoadError::Io(std::io::Error::other("dnr does not extract native libraries from ZIP; install this native library on disk")));
++    }
++    Ok(Cow::Borrowed(path))
+   }
+ }
+ 
+--- a/cli/rt/run.rs
++++ b/cli/rt/run.rs
+@@ -1122,6 +1122,12 @@
+             file_entry.transpiled_offset.unwrap_or(file_entry.offset),
+           )
+           .map_err(JsErrorBox::from_err)?;
++        if self.shared.vfs.dnr_overlay {
++          let specifier = deno_path_util::url_from_file_path(path).map_err(JsErrorBox::from_err)?;
++          let media_type = MediaType::from_specifier(&specifier);
++          let text = String::from_utf8_lossy(&file_bytes).into_owned();
++          return Ok(transpile_runtime_module(&specifier, media_type, text)?.into());
++        }
+         Ok(match from_utf8_lossy_cow(file_bytes) {
+           Cow::Borrowed(s) => FastString::from_static(s),
+           Cow::Owned(s) => s.into(),
+@@ -1362,6 +1368,7 @@
+   data: StandaloneData,
+   options: RunOptions,
+ ) -> Result<i32, AnyError> {
++  let is_dnr_host = sys.is_dnr_overlay();
+   let hmr_watch_dir = options.hmr_watch_dir;
+   let hmr_on_reload = options.hmr_on_reload;
+   let op_state_init = options.op_state_init;
+@@ -1868,6 +1875,7 @@
+       .js_runtime()
+       .execute_script("ext:deno_desktop/init", crate::desktop::DESKTOP_JS)?;
+ 
++    if !is_dnr_host {
+     // Initialize auto-update JS (DesktopUpdater cppgc object is already
+     // registered via the desktop extension's objects).
+     let js = crate::desktop::desktop_auto_update_js(
+@@ -1898,6 +1906,7 @@
+     worker
+       .js_runtime()
+       .execute_script("ext:deno_desktop/error_reporting", js)?;
++    }
+   }
+ 
+   if let Some(watch_dir) = hmr_watch_dir {
+@@ -1953,7 +1962,19 @@
+       .execute_load_phase()
+       .await
+       .map_err(desktop_startup_error)?;
+-    Ok(worker.run_event_loop_to_completion().await?)
++    if !is_dnr_host { return Ok(worker.run_event_loop_to_completion().await?); }
++    loop {
++      worker.run_event_loop(false).await?;
++      if !crate::dnr_desktop::has_live_objects() {
++        if worker.dispatch_beforeunload_event()? { continue; }
++        if worker.dispatch_process_beforeexit_event()? { continue; }
++        if !crate::dnr_desktop::has_live_objects() { break; }
++      }
++      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
++    }
++    worker.dispatch_unload_event()?;
++    worker.dispatch_process_exit_event()?;
++    Ok(worker.exit_code())
+   } else {
+     let exit_code = worker.run().await?;
+     Ok(exit_code)
+--- a/cli/rt/node.rs
++++ b/cli/rt/node.rs
+@@ -113,7 +113,7 @@
+           }
+         }
+         None => {
+-          if self.sys.is_specifier_in_vfs(specifier) {
++          if self.sys.is_specifier_in_vfs(specifier) && !self.sys.is_dnr_overlay() {
+             // VFS-embedded modules always have a pre-computed analysis
+             // written by the compile step. A missing entry here means
+             // the compile step skipped analysis for this file — bug.
