@@ -24,6 +24,12 @@ use std::{
 
 static PACKAGE: OnceLock<Arc<Package>> = OnceLock::new();
 
+pub fn cleanup_native_libraries() {
+    if let Some(package) = PACKAGE.get() {
+        package.cleanup_native_libraries();
+    }
+}
+
 pub fn read_text(path: &Path) -> std::io::Result<String> {
     if let Some(package) = PACKAGE.get()
         && let Ok(relative) = path.strip_prefix(&package.root)

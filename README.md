@@ -46,7 +46,7 @@ dnc examples/desktop --entry main.ts -o desktop.dnp
 
 打包器不分析 import、不安装依赖、不运行前端构建。请提前准备好本地源码、资源与 `node_modules`。可以通过 `--include source=destination` 添加外部资源，通过 `--exclude archive/path` 排除文件或目录。覆盖输出需要 `--force`。
 
-应用全权限运行，不是沙箱。npm/JSR/HTTP 模块不在线下载；网络 API 如 `fetch`、`Deno.serve` 可正常使用。原生库必须存在于磁盘，不会从应用 ZIP 释放原生库。
+应用全权限运行，不是沙箱。npm/JSR/HTTP 模块不在线下载；网络 API 如 `fetch`、`Deno.serve` 可正常使用。兼容的 Node-API 原生插件和显式加载的 FFI 库可放入应用 ZIP，首次加载时按包内路径解压到系统临时目录并加载。
 
 桌面页面通过 `window.bindings.<name>(...)` 调用 `BrowserWindow.bind()` 注册的函数。`Deno.serve()` 本身不会创建窗口。GUI 示例使用显式 `BrowserWindow`；窗口关闭后，应用需要关闭仍运行的 HTTP 服务或其他任务。
 
@@ -55,6 +55,14 @@ dnc examples/desktop --entry main.ts -o desktop.dnp
 设置 Laufey 的应用名和图标后 `exec` 共享 dnr，保留正确的应用名称、Bundle ID 和 Dock 图标。
 其安装与签名由 Songjian 的应用脚本负责，不改变 `.dnp` 格式；验证范围见 [验证记录](VALIDATION.md)。
 包格式见 [FORMAT.md](docs/FORMAT.md)，上游来源见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+
+## 原生插件
+
+- ZIP 内的 `.node`、`.so`、`.dylib` 等原生库按需解压到系统临时目录下的独立 `dnr-native-*` 私有目录，保留相对路径和文件名；不写入应用包所在目录。
+- 同一应用进程（包括 Worker）复用已解压路径，不同应用或进程独立。包旁同名原生库不会覆盖 ZIP 内的版本；ZIP 不包含的库仍按原有磁盘路径加载。
+- 解压先验证尺寸和 CRC，再原子发布文件。正常结束、显式退出及由宿主处理的 JS 错误退出时清理临时目录；强制终止或进程崩溃可能留下系统临时文件。
+- 原生库必须匹配当前平台、架构及 Deno 支持的 Node-API。临时目录必须可写且允许加载动态库。
+- 只释放经 Node-API / FFI 加载钩子请求的库，不自动分析或提取其操作系统级动态链接依赖；插件依赖的其他共享库仍需可由系统加载器找到。
 
 ## 文件系统语义
 
@@ -72,8 +80,8 @@ dnc examples/desktop --entry main.ts -o desktop.dnp
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-# 完整原生运行测试（包含磁盘 Node-API 扩展测试）：
-DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime -- --ignored
+# 完整原生运行测试（包含磁盘 / ZIP Node-API 和 FFI 扩展测试）：
+DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime --test runtime_native -- --ignored
 # 打开测试窗口，完成页面绑定检查后自动退出：
 dist/dnr examples/desktop/smoke.ts
 # macOS 真实快捷键、最小化按钮与 Dock 恢复回归（需要辅助功能/自动化权限）：

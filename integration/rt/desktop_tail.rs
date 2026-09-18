@@ -223,7 +223,10 @@ pub fn main(args: Vec<String>) {
         .expect("creating runtime thread");
     loop {
         match rx.recv() {
-            Ok(MainRequest::Finished(code)) => std::process::exit(code),
+            Ok(MainRequest::Finished(code)) => {
+                crate::dnr::cleanup_native_libraries();
+                std::process::exit(code);
+            }
             Ok(MainRequest::Activate(reply)) => {
                 *READY.lock().unwrap() = Some(reply);
                 // The backend sees only its executable name. Application args

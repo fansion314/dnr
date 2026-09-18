@@ -77,7 +77,7 @@ dnr 核心及运行时二进制未修改。
 
 此前延后的 Linux 验收已于 2026-09-18 在用户指定的本机继续执行，结果如下。复验步骤见 [LINUX.md](docs/LINUX.md)。
 
-dnr/dnc 核心不包含 npm/JSR/HTTP 模块在线安装、ZIP 原生库释放、桌面安装器、macOS bundle 生成或自动更新。
+此前 dnr/dnc 核心不包含 ZIP 原生库释放；当前已增加按需临时解压，见文末本轮记录。仍不包含 npm/JSR/HTTP 模块在线安装、桌面安装器、macOS bundle 生成或自动更新。
 上述 Songjian 薄应用由其应用项目单独构建和安装，不代表 dnc 已提供通用 macOS 打包功能。
 
 
@@ -362,3 +362,55 @@ python3 scripts/bench-read-file.py --dnr target/read-copy-baseline/dnr dist/dnr
 `dist/validation-parallel-cache/`。保留本轮开始前的未提交整文件读取优化及文档；
 本轮没有修改 Deno/Laufey 补丁或锁文件，没有安装/覆盖用户已安装的共享运行时；构建验证时尚未提交，也未推送。
 本轮未执行 Linux WebView/system-CEF 原生构建或 GUI 验证，也未重跑平台专用的标题栏关闭与 Dock 回归。
+
+
+## ZIP 原生插件统一临时解压（2026-09-18）
+
+按用户最终确定的方案，ZIP 内原生库统一释放到系统临时目录，不检查、复用或写入包旁同名文件。
+本节替代历史记录中“ZIP 内原生库拒绝加载”的能力边界；历史验收结果本身不改写。
+
+### 实现与范围
+
+- Node-API / FFI 加载钩子通过 `Package::native_library_path` 解析包内符号链接，
+  完整校验解压尺寸和 CRC，再将请求的库原子发布到 `dnr-native-*` 私有目录（Unix `0700`）。
+  保留包内相对路径及文件名，不修改 VFS 内容，不全量释放应用。
+- 同一 Package 的主线程和 Worker 共享已解压路径；独立进程 / Package 使用不同临时目录。
+  即使包旁存在另一版本，也加载 ZIP 内的版本。只有 ZIP 不包含的库才继续走原有磁盘加载。
+- 宿主处理正常结束、Deno / Node 显式退出和 JS 异常时清理临时目录；独立 Package 对象销毁也会清理。
+  强制杀进程、原生崩溃或应用自行修改临时目录权限时不保证清理成功。
+- 原生插件仍需兼容当前平台、架构及 Deno 的 Node-API；不自动收集其 OS 动态链接依赖。
+  临时目录不可写或不能加载动态库时返回错误，不回退到包旁副本。
+
+### 验证
+
+本机 macOS 27.0（26A428）ARM64、Rust 1.98.1、Apple Clang 21.0.0，WebView 后端。
+sccache 保持启用；沙箱内编译权限失败后通过提权执行完成构建和测试。
+
+- 从固定 mirror 的干净 Deno 快照执行 `cargo run -p xtask -- prepare` 成功，
+  新补丁的反向 `git apply --check` 通过；Deno / Laufey mirror 工作区保持干净。
+- `cargo test --workspace`：5 项单元测试、16 项包测试、3 项原生解压包层测试全部通过（24 项）；
+  13 项需真实宿主的测试按设计忽略，再由下述命令显式执行。
+  包层覆盖共享路径、独立临时目录、退出清理、包内符号链接、磁盘副本不覆盖 ZIP、
+  目录权限，以及 CRC 损坏时不读取磁盘副本。
+- `cargo clippy --workspace --all-targets -- -D warnings`、`cargo fmt --all -- --check`、
+  接入源码的 `rustfmt --check`、`git diff --check` 均通过。
+- 最终 release `xtask build` 成功。以下命令退出 0，9 项原有运行时测试与 4 项新增原生测试全部通过：
+
+  ```sh
+  DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime --test runtime_native -- --ignored
+  ```
+
+  测试编译并加载真实 Node-API 插件，由插件通过 `dladdr` 返回实际 OS 加载路径。
+  确认 6 个并行进程的临时路径独立，8 个 Worker 与主线程共享路径，重复 require 可用，
+  实际临时目录权限为 `0700`；只读包目录可以运行，包旁不同版本不影响 ZIP 内版本。
+  正常结束、Deno 显式退出 7、Node 显式退出 9、JS 异常退出 1 后临时目录均清空。
+  不可用 TMPDIR 明确报错；真实 `Deno.dlopen()` 加载 ZIP 内 `.so` 并调用导出函数成功。
+  磁盘脚本和 ZIP 缺少插件时的磁盘加载仍通过原有回归。
+- `codesign --verify --strict --verbose dist/dnr` 通过；`otool -L` 仍仅包含系统库和 Framework。
+
+- 使用最终 dnc 生成桌面烟雾包，从 `/private/tmp` 用最终 dnr 启动。真实 WebView 页面与绑定检查通过，
+  关窗后异步收尾完成，输出 `DNR_GUI_OK` 并退出 0；日志为 `dist/validation-native-tmp/gui-smoke.log`。
+
+最终 `dist/dnr` SHA-256：`5aab8dcf9fc4b1f88e0c182cf21fdd8dd6472bf4399281bd9738fa9e6b52bca8`。
+工作区及原生测试日志保存于 `dist/validation-native-tmp/`。
+本轮未执行 Linux WebView / system-CEF 原生复验；未修改用户已安装的共享运行时，未提交或推送。

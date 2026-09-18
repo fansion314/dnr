@@ -19,7 +19,7 @@ dnr 将运行时与应用内容分开发行，避免每个 Deno CLI/桌面应用
 3. 应用格式是 shell 启动头 + ZIP；普通文件按条目使用 Zstd level 6。启动头转发参数，manifest 保存入口、格式版本和 appId。
 4. dnc 只打包目录与显式 include/exclude 的资源，不执行前端构建、依赖安装、依赖图收集、转译或 minify。
 5. dnr 支持本地模块和准备好的 `node_modules`，运行时转译 TS/TSX/JSX；不在线获取 npm、JSR、HTTP 模块。应用自己的 `fetch`、HTTP 服务等网络 API 不受此范围限制。
-6. 应用默认全权限运行，不是沙箱。兼容的原生扩展只从磁盘加载，ZIP 内原生库必须明确拒绝，不能偷偷落盘。
+6. 应用默认全权限运行，不是沙箱。兼容的 ZIP 内 Node-API / FFI 原生库在首次加载时校验并释放到独立系统临时目录，进程内复用并在宿主退出时清理；禁止解压到包旁。ZIP 外的原生库继续从磁盘加载。
 7. 实际调用需要 GUI 的桌面 API 时才启动后端。普通脚本、HTTP 服务和 CLI 异常不应打开窗口。
 8. 页面通过 `window.bindings.<name>()` 调用 `BrowserWindow.bind()`。窗口、托盘、后台 JS 任务和退出事件共同决定生命周期；不能在最后一个窗口关闭时直接终止仍有工作的应用。
 9. 不包含每应用独立的 macOS bundle 身份、安装器、深链注册或自动更新。变更这些边界需要用户明确提出。
@@ -27,7 +27,7 @@ dnr 将运行时与应用内容分开发行，避免每个 Deno CLI/桌面应用
 ### VFS 不变量
 
 - ZIP 映射在应用包真实所在目录；ZIP 优先，仅“不存在”时回退磁盘。损坏、CRC 或解压错误不能触发回退。
-- ZIP 节点只读，目录枚举合并两层，同名条目以 ZIP 为准。
+- ZIP 节点只读，目录枚举合并两层，同名条目以 ZIP 为准。原生库仅通过加载钩子按需复制到私有 tmp 目录，普通文件操作仍遵守 VFS 只读语义。
 - 启动和元数据查询不解压普通文件；按文件懒解压并共享进程内缓存，默认内容预算 256 MiB。
 - 打开的文件句柄保留已解压数据，缓存淘汰不能使分段读取重复解压或失效。
 - 启动保留调用者 cwd；模块相对资源使用 `import.meta.url`。显式 `chdir` 仅能进入真实磁盘目录，ZIP-only 目录报错。
@@ -80,14 +80,14 @@ cargo run -p xtask -- build --debug
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime -- --ignored
+DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime --test runtime_native -- --ignored
 ```
 
 原生测试默认被忽略；普通 `cargo test --workspace` 通过不能代表 runtime 已通过。原生测试还需要 C 编译器，会构建真实 Node-API 插件。文档修改检查路径和命令即可，不必重建 runtime。
 
 ## Linux 验证与复验
 
-截至 2026-09-18，macOS ARM64 的历史验收包括 release、12 项包测试、4 项原生测试和真实 WebView 自动验证。本轮已按用户要求在本机 CachyOS x86_64 / KDE Wayland / NVIDIA RTX 3080 完成 WebView 与 system-CEF release、各 6 项原生测试及真实 GUI 自动验证，并检查托盘保活、显式退出、多应用与存储隔离。用户报告的 Songjian 关窗不退出问题已修复，并对原始包进行 KWin 原生关闭请求回归。详细版本、结果和未覆盖范围见 `VALIDATION.md`；本轮改动后未复验 macOS。
+截至 2026-09-18，macOS ARM64 的历史验收包括 release、12 项包测试、4 项原生测试和真实 WebView 自动验证。本轮已按用户要求在本机 CachyOS x86_64 / KDE Wayland / NVIDIA RTX 3080 完成 WebView 与 system-CEF release、各 6 项原生测试及真实 GUI 自动验证，并检查托盘保活、显式退出、多应用与存储隔离。用户报告的 Songjian 关窗不退出问题已修复，并对原始包进行 KWin 原生关闭请求回归。详细版本、结果和未覆盖范围见 `VALIDATION.md`；后续 macOS 复验与原生插件临时解压结果见 `VALIDATION.md`；原生插件临时解压变更尚未复验 Linux。
 
 以下为后续原生复验清单。用户已授权当前 Linux 主机的构建与验证；不要以交叉构建冒充原生验收，也不要自行选择远程主机安装系统依赖。此前只读检查过 yama-ts，它当时缺少所需 GUI 依赖和图形会话，这不是长期有效的环境结论。
 
@@ -110,7 +110,7 @@ cargo run -p xtask -- build
 file dist/dnr
 ldd dist/dnr
 cargo test --workspace
-DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime -- --ignored
+DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime --test runtime_native -- --ignored
 dist/dnr examples/desktop/smoke.ts
 ```
 
@@ -145,7 +145,7 @@ pkg-config --modversion gtk+-3.0 xi x11
 cargo run -p xtask -- build --backend system-cef
 dist/dnr --check-system-cef
 ldd dist/dnr
-DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime -- --ignored
+DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime --test runtime_native -- --ignored
 dist/dnr examples/desktop/smoke.ts
 PATH="$PWD/dist:$PATH" dist/desktop-smoke.dnp
 ```

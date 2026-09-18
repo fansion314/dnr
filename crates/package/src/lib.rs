@@ -11,6 +11,7 @@ use std::{
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 mod cache;
+mod native;
 mod reader;
 
 pub const FORMAT_VERSION: u32 = 1;
@@ -412,6 +413,7 @@ pub struct Package {
     pub root: PathBuf,
     archive: ZipArchive<reader::PackageReader>,
     cache: cache::Cache,
+    native: std::sync::Mutex<native::NativeLibraries>,
 }
 impl std::fmt::Debug for Package {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -515,6 +517,7 @@ impl Package {
             root: path.parent().unwrap().to_owned(),
             archive,
             cache: cache::Cache::new(sizes, budget),
+            native: Default::default(),
         })
     }
 

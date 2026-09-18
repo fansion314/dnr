@@ -253,7 +253,7 @@ console.log('LARGE_TREE_OK');
 
 #[test]
 #[ignore = "requires native dnr and a C compiler; set DNR_BIN and pass --ignored"]
-fn native_addon_disk_only() {
+fn native_addon_disk_and_package() {
     let binary = PathBuf::from(std::env::var_os("DNR_BIN").expect("set DNR_BIN"))
         .canonicalize()
         .unwrap();
@@ -292,9 +292,11 @@ fn native_addon_disk_only() {
     };
     pack(&opts).unwrap();
     let embedded = Command::new(&binary).arg(&package).output().unwrap();
-    assert!(!embedded.status.success());
+    assert!(embedded.status.success());
+    assert_eq!(String::from_utf8_lossy(&embedded.stdout).trim(), "42");
+    assert!(!temp.path().join("addon.node").exists());
     assert!(
-        String::from_utf8_lossy(&embedded.stderr).contains("does not extract native libraries"),
+        embedded.stderr.is_empty(),
         "{}",
         String::from_utf8_lossy(&embedded.stderr)
     );

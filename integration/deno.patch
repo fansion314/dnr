@@ -351,7 +351,7 @@
      let read_range = self.get_read_range(file.offset, pos, buf.len() as u64)?;
      let read_len = read_range.len();
      buf[..read_len].copy_from_slice(&self.vfs_data[read_range]);
-@@ -1852,6 +1953,17 @@
+@@ -1852,6 +1953,23 @@
        VfsEntryRef::Symlink(_) => unreachable!(),
        VfsEntryRef::File(file) => Ok(file),
      }
@@ -362,8 +362,14 @@
 +impl DenoRtNativeAddonLoader for DnrNativeLoader {
 +  fn load_if_in_vfs(&self, _: &Path) -> Option<Cow<'static, [u8]>> { None }
 +  fn load_and_resolve_path<'a>(&self, path: &'a Path) -> Result<Cow<'a, Path>, denort_helper::LoadError> {
-+    if self.0.is_path_within(path) {
-+      return Err(denort_helper::LoadError::Io(std::io::Error::other("dnr does not extract native libraries from ZIP; install this native library on disk")));
++    if let Some(package) = &self.0.dnr_package {
++      if let Ok(relative) = path.strip_prefix(&package.root) {
++        if !relative.as_os_str().is_empty() {
++          let resolved = package.native_library_path(&relative.to_string_lossy())
++            .map_err(|e| denort_helper::LoadError::Io(std::io::Error::other(format!("{e:#}"))))?;
++          if let Some(resolved) = resolved { return Ok(Cow::Owned(resolved)); }
++        }
++      }
 +    }
 +    Ok(Cow::Borrowed(path))
    }

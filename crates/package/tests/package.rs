@@ -173,6 +173,12 @@ fn corrupted_payload_is_lazy_and_never_cached() {
     for _ in 0..2 {
         assert!(p.read("main.js").is_err());
     }
+    fs::write(temp.path().join("main.js"), b"disk override").unwrap();
+    assert!(p.native_library_path("main.js").is_err());
+    assert_eq!(
+        fs::read(temp.path().join("main.js")).unwrap(),
+        b"disk override"
+    );
     assert_eq!(p.stats().resident_bytes, 0);
     assert_eq!(p.stats().hits, 0);
     // A failed flight must allow a later retry; repair the same open inode.
