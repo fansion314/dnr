@@ -41,7 +41,57 @@
    return true;
 --- a/cef/src/runtime_loader.cc
 +++ b/cef/src/runtime_loader.cc
-@@ -1980,7 +1980,15 @@
+@@ -217,23 +217,35 @@
+   }
+ 
+   // With callback: send IPC to renderer for eval with result
+-  uint64_t eval_id = loader->StoreEvalCallback(callback, callback_data);
++  uint64_t eval_id = loader->StoreEvalCallback(window_id, callback, callback_data);
+   std::string script_str(script);
+   CefPostTask(TID_UI,
+               base::BindOnce(
+                   [](CefRefPtr<CefBrowser> b, uint64_t id, std::string s) {
++                    auto frame = b->GetMainFrame();
++                    if (!b->IsValid() || !frame || !frame->IsValid()) {
++                      RuntimeLoader::GetInstance()->HandleEvalResult(
++                          id, nullptr, "Window closed");
++                      return;
++                    }
+                     CefRefPtr<CefProcessMessage> msg =
+                         CefProcessMessage::Create("laufey_eval");
+                     CefRefPtr<CefListValue> args = msg->GetArgumentList();
+                     args->SetDouble(0, static_cast<double>(id));
+                     args->SetString(1, s);
+-                    b->GetMainFrame()->SendProcessMessage(PID_RENDERER, msg);
++                    frame->SendProcessMessage(PID_RENDERER, msg);
+                   },
+                   browser, eval_id, script_str));
+ }
+ 
+ static void Backend_Quit(void* data) {
+-  CefPostTask(TID_UI, base::BindOnce([]() { CefQuitMessageLoop(); }));
++  CefPostTask(TID_UI, base::BindOnce([]() {
++    if (auto* handler = LaufeyHandler::GetInstance()) {
++      handler->Quit();
++    } else {
++      CefQuitMessageLoop();
++    }
++  }));
+ }
+ 
+ static void Backend_SetWindowSize(void* data, uint32_t window_id, int width,
+@@ -1830,6 +1842,10 @@
+   backend_api_.set_resize_handler = Backend_SetResizeHandler;
+   backend_api_.set_move_handler = Backend_SetMoveHandler;
+   backend_api_.set_close_requested_handler = Backend_SetCloseRequestedHandler;
++  backend_api_.set_page_load_handler = [](void* data, laufey_page_load_fn handler,
++                                         void* user_data) {
++    static_cast<RuntimeLoader*>(data)->SetPageLoadHandler(handler, user_data);
++  };
+   backend_api_.test_trigger_close_requested = Backend_TestTriggerCloseRequested;
+ 
+   backend_api_.poll_js_calls = [](void* data) {
+@@ -1980,7 +1996,15 @@
    return instance_;
  }
  
@@ -57,7 +107,7 @@
  #ifndef _WIN32
    library_handle_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
    if (!library_handle_) {
-@@ -2063,7 +2071,7 @@
+@@ -2063,7 +2087,7 @@
    }
  
    running_ = true;
@@ -66,6 +116,34 @@
  
    std::cout << "Runtime started" << std::endl;
    return true;
+@@ -2084,6 +2108,27 @@
+ 
+   if (runtime_thread_.joinable()) {
+     runtime_thread_.join();
++  }
++}
++
++void RuntimeLoader::CancelEvalCallbacks(uint32_t window_id,
++                                        const std::string& error) {
++  std::vector<PendingEval> cancelled;
++  {
++    std::lock_guard<std::mutex> lock(eval_mutex_);
++    for (auto it = pending_evals_.begin(); it != pending_evals_.end();) {
++      if (it->second.window_id == window_id) {
++        cancelled.push_back(it->second);
++        it = pending_evals_.erase(it);
++      } else {
++        ++it;
++      }
++    }
++  }
++  // Callbacks may re-enter the runtime; never invoke them under a native lock.
++  laufey_value error_value(laufey::Value::String(error));
++  for (const auto& eval : cancelled) {
++    eval.callback(nullptr, &error_value, eval.callback_data);
+   }
+ }
+ 
 --- a/webview/src/main_linux.cc
 +++ b/webview/src/main_linux.cc
 @@ -12,7 +12,7 @@
@@ -79,9 +157,35 @@
    // desktop) passes LAUFEY_APP_ID (the reverse-DNS identifier it also uses for
 --- a/cef/src/main_linux.cc
 +++ b/cef/src/main_linux.cc
-@@ -814,6 +814,8 @@
+@@ -21,6 +21,7 @@
+ #include "runtime_loader.h"
+ 
+ #include <gio/gio.h>
++#include <gtk/gtk.h>
+ 
+ void LaufeyOpenExternalURL(const std::string& url) {
+   g_app_info_launch_default_for_uri(url.c_str(), nullptr, nullptr);
+@@ -718,6 +719,9 @@
+     // Electron/Puppeteer do). Only the browser process needs the switch; CEF
+     // propagates it to subprocesses.
+     if (process_type.empty()) {
++      // Embedded applications must not show Chrome onboarding/default-browser UI.
++      command_line->AppendSwitch("no-first-run");
++      command_line->AppendSwitch("no-default-browser-check");
+       command_line->AppendSwitch("disable-background-networking");
+     }
+   }
+@@ -813,7 +817,16 @@
+     return run_headless(g_runtime_path);
    }
  
++  // Native menus, trays and dialogs use GTK even when CEF uses Ozone/Wayland.
++  // Renderer/subprocess and headless paths above must not initialize a display.
++  if (!gtk_init_check(nullptr, nullptr)) {
++    std::cerr << "dnr: no usable graphical display" << std::endl;
++    return 1;
++  }
++
    CefSettings settings;
 +  CefString(&settings.resources_dir_path) = "/usr/lib/cef";
 +  CefString(&settings.locales_dir_path) = "/usr/lib/cef/locales";
@@ -119,7 +223,7 @@
  // "delete-event" fires when the user requests a close (e.g. clicks the
 --- a/cef/src/app.cc
 +++ b/cef/src/app.cc
-@@ -212,14 +212,7 @@
+@@ -212,14 +212,29 @@
        break;
      }
    }
@@ -128,10 +232,179 @@
 -    // macOS runs [NSApp run] (external_message_pump); stop that instead.
 -    LaufeyQuitMainLoopMac();
 -#else
--    CefQuitMessageLoop();
++  // Closing a window alone must not stop background JS or trays.
++  if (quit_requested_ && browser_list_.empty()) {
+     CefQuitMessageLoop();
 -#endif
 -  }
-+  // dnr owns lifetime; keep the native loop alive until the JS host exits.
++  }
++}
++
++void LaufeyHandler::OnLoadStart(CefRefPtr<CefBrowser> browser,
++                               CefRefPtr<CefFrame> frame,
++                               TransitionType transition_type) {
++  CEF_REQUIRE_UI_THREAD();
++  if (!frame->IsMain()) return;
++  auto* loader = RuntimeLoader::GetInstance();
++  uint32_t wid = loader->GetLaufeyIdForBrowser(browser);
++  if (wid > 0) loader->CancelEvalCallbacks(wid, "Page navigated");
++}
++
++void LaufeyHandler::OnLoadEnd(CefRefPtr<CefBrowser> browser,
++                             CefRefPtr<CefFrame> frame, int http_status_code) {
++  CEF_REQUIRE_UI_THREAD();
++  if (!frame->IsMain()) return;
++  auto* loader = RuntimeLoader::GetInstance();
++  uint32_t wid = loader->GetLaufeyIdForBrowser(browser);
++  if (wid > 0) loader->DispatchPageLoadEvent(wid);
  }
  
  void LaufeyHandler::OnTitleChange(CefRefPtr<CefBrowser> browser,
+@@ -395,6 +410,17 @@
+     bool is_reload, CefRefPtr<CefJSDialogCallback> callback) {
+   callback->Continue(true, "");
+   return true;
++}
++
++void LaufeyHandler::Quit() {
++  CEF_REQUIRE_UI_THREAD();
++  quit_requested_ = true;
++  if (browser_list_.empty()) {
++    CefQuitMessageLoop();
++  } else {
++    // CefShutdown requires all browsers to have delivered OnBeforeClose.
++    CloseAllBrowsers(true);
++  }
+ }
+ 
+ void LaufeyHandler::CloseAllBrowsers(bool force_close) {
+--- a/cef/src/app.h
++++ b/cef/src/app.h
+@@ -13,6 +13,7 @@
+ #include "include/cef_app.h"
+ #include "include/cef_client.h"
+ #include "include/cef_jsdialog_handler.h"
++#include "include/cef_load_handler.h"
+ #include "include/views/cef_browser_view.h"
+ #include "include/views/cef_window.h"
+ 
+@@ -119,6 +120,7 @@
+ 
+ class LaufeyHandler : public CefClient,
+                       public CefLifeSpanHandler,
++                      public CefLoadHandler,
+                       public CefDisplayHandler,
+                       public CefKeyboardHandler,
+                       public CefDragHandler,
+@@ -128,6 +130,14 @@
+   ~LaufeyHandler() override;
+ 
+   static LaufeyHandler* GetInstance();
++
++  CefRefPtr<CefLoadHandler> GetLoadHandler() override {
++    return this;
++  }
++  void OnLoadStart(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
++                   TransitionType transition_type) override;
++  void OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
++                 int http_status_code) override;
+ 
+   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override {
+     return this;
+@@ -188,6 +198,7 @@
+                                 CefProcessId source_process,
+                                 CefRefPtr<CefProcessMessage> message) override;
+ 
++  void Quit();
+   void CloseAllBrowsers(bool force_close);
+   bool IsClosing() const {
+     return is_closing_;
+@@ -196,6 +207,7 @@
+  private:
+   std::list<CefRefPtr<CefBrowser>> browser_list_;
+   bool is_closing_ = false;
++  bool quit_requested_ = false;
+ 
+   IMPLEMENT_REFCOUNTING(LaufeyHandler);
+ };
+--- a/cef/src/runtime_loader.h
++++ b/cef/src/runtime_loader.h
+@@ -36,6 +36,17 @@
+     return backend_api_;
+   }
+ 
++  void SetPageLoadHandler(laufey_page_load_fn handler, void* user_data) {
++    std::lock_guard<std::mutex> lock(page_load_mutex_);
++    page_load_handler_ = handler;
++    page_load_user_data_ = user_data;
++  }
++
++  void DispatchPageLoadEvent(uint32_t window_id) {
++    std::lock_guard<std::mutex> lock(page_load_mutex_);
++    if (page_load_handler_) page_load_handler_(page_load_user_data_, window_id);
++  }
++
+   uint32_t AllocateWindowId() {
+     return next_window_id_.fetch_add(1);
+   }
+@@ -56,13 +67,16 @@
+   }
+ 
+   void UnregisterBrowser(uint32_t window_id) {
+-    std::lock_guard<std::mutex> lock(windows_mutex_);
+-    close_allowed_.erase(window_id);
+-    auto it = browsers_.find(window_id);
+-    if (it != browsers_.end()) {
+-      browser_id_to_laufey_id_.erase(it->second->GetIdentifier());
+-      browsers_.erase(it);
+-    }
++    {
++      std::lock_guard<std::mutex> lock(windows_mutex_);
++      close_allowed_.erase(window_id);
++      auto it = browsers_.find(window_id);
++      if (it != browsers_.end()) {
++        browser_id_to_laufey_id_.erase(it->second->GetIdentifier());
++        browsers_.erase(it);
++      }
++    }
++    CancelEvalCallbacks(window_id, "Window closed");
+   }
+ 
+   // Programmatic closes (close_window(), app quit) mark the window
+@@ -362,13 +376,15 @@
+     js_call_notify_data_ = notify_data;
+   }
+ 
+-  uint64_t StoreEvalCallback(laufey_js_result_fn callback,
++  uint64_t StoreEvalCallback(uint32_t window_id, laufey_js_result_fn callback,
+                              void* callback_data) {
+     std::lock_guard<std::mutex> lock(eval_mutex_);
+     uint64_t id = next_eval_id_++;
+-    pending_evals_[id] = {callback, callback_data};
++    pending_evals_[id] = {window_id, callback, callback_data};
+     return id;
+   }
++
++  void CancelEvalCallbacks(uint32_t window_id, const std::string& error);
+ 
+   void HandleEvalResult(uint64_t eval_id, CefRefPtr<CefValue> result,
+                         const std::string& error);
+@@ -416,6 +432,10 @@
+ 
+   laufey_backend_api_t backend_api_;
+ 
++  laufey_page_load_fn page_load_handler_ = nullptr;
++  void* page_load_user_data_ = nullptr;
++  std::mutex page_load_mutex_;
++
+   laufey_js_call_fn js_call_handler_ = nullptr;
+   void* js_call_user_data_ = nullptr;
+   std::mutex handler_mutex_;
+@@ -471,6 +491,7 @@
+   mutable std::mutex js_namespace_mutex_;
+ 
+   struct PendingEval {
++    uint32_t window_id;
+     laufey_js_result_fn callback;
+     void* callback_data;
+   };

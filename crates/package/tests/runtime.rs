@@ -1,7 +1,12 @@
 //! Run explicitly after building the native host:
 //! DNR_BIN=dist/dnr cargo test -p dnr-package --test runtime -- --ignored
 use dnr_package::{PackOptions, pack};
-use std::{fs, path::PathBuf, process::Command};
+use std::{
+    fs,
+    path::PathBuf,
+    process::{Command, Stdio},
+    time::{Duration, Instant},
+};
 
 #[test]
 #[ignore = "requires native dnr and a C compiler; set DNR_BIN and pass --ignored"]
@@ -233,6 +238,45 @@ fn typescript_script_without_module_syntax() {
 
 #[test]
 #[ignore = "requires a built native dnr; set DNR_BIN and pass --ignored"]
+fn top_level_await_in_blocks() {
+    let binary = PathBuf::from(std::env::var_os("DNR_BIN").expect("set DNR_BIN"))
+        .canonicalize()
+        .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    fs::create_dir(&source).unwrap();
+    for extension in ["ts", "js"] {
+        let entry = format!("main.{extension}");
+        fs::write(
+            source.join(&entry),
+            "if (true) { console.log(await Promise.resolve(42)); }\n",
+        )
+        .unwrap();
+        let package = temp.path().join(format!("{extension}.dnp"));
+        pack(&PackOptions {
+            directory: source.clone(),
+            entry: entry.clone(),
+            output: package.clone(),
+            includes: vec![],
+            excludes: vec![],
+            app_id: Some("test.top-level-await".into()),
+            force: false,
+        })
+        .unwrap();
+        for input in [source.join(&entry), package] {
+            let output = Command::new(&binary).arg(input).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "42");
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a built native dnr; set DNR_BIN and pass --ignored"]
 fn cli_server_and_errors_do_not_start_gui() {
     let binary = PathBuf::from(std::env::var_os("DNR_BIN").expect("set DNR_BIN"))
         .canonicalize()
@@ -264,4 +308,78 @@ fn cli_server_and_errors_do_not_start_gui() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("BEFORE_EXIT_OK"));
+
+    for (code, source) in [
+        (7, "Deno.exit(7); console.log('UNREACHABLE');"),
+        (
+            9,
+            "import process from 'node:process'; setTimeout(() => process.exit(9), 0);",
+        ),
+    ] {
+        fs::write(&script, source).unwrap();
+        let output = Command::new(&binary).arg(&script).output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(code),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("UNREACHABLE"));
+    }
+}
+
+#[test]
+#[ignore = "requires a built native dnr; set DNR_BIN and pass --ignored"]
+fn explicit_exit_with_active_server() {
+    let binary = PathBuf::from(std::env::var_os("DNR_BIN").expect("set DNR_BIN"))
+        .canonicalize()
+        .unwrap();
+    let temporary = tempfile::tempdir().unwrap();
+    let script = temporary.path().join("exit.ts");
+    for (code, exit) in [(7, "Deno.exit(7)"), (9, "process.exit(9)")] {
+        // Native desktop events also run in microtasks. An active HTTP server
+        // must not keep the host alive after an explicit exit in that callback.
+        fs::write(
+            &script,
+            format!(
+                "import process from 'node:process';
+                 Deno.serve({{ hostname: '127.0.0.1', port: 0, onListen() {{}} }},
+                   () => new Response('active'));
+                 setTimeout(() => queueMicrotask(() => {{
+                   console.log('EXIT_READY');
+                   {exit};
+                   console.log('UNREACHABLE');
+                 }}), 50);\n"
+            ),
+        )
+        .unwrap();
+        let mut child = Command::new(&binary)
+            .arg(&script)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let exited = loop {
+            if child.try_wait().unwrap().is_some() {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let output = child.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            exited,
+            "explicit exit hung with an active server: {stdout}\n{stderr}"
+        );
+        assert_eq!(output.status.code(), Some(code), "{stdout}\n{stderr}");
+        assert!(stdout.contains("EXIT_READY"));
+        assert!(!stdout.contains("UNREACHABLE"));
+        assert!(!stdout.contains("Runtime started"));
+    }
 }

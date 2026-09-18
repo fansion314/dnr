@@ -78,6 +78,58 @@ pub fn has_live_objects() -> bool {
     })
 }
 
+pub async fn run_worker(
+    worker: &mut deno_lib::worker::LibMainWorker,
+) -> Result<i32, deno_core::error::AnyError> {
+    use deno_runtime::deno_os::{WatcherExitHandle, WatcherExited};
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    // Reuse Deno's isolate termination path so Deno.exit()/process.exit()
+    // preserve the requested status without running GUI cleanup off-thread.
+    let handle = worker.js_runtime().v8_isolate().thread_safe_handle();
+    let state = worker.js_runtime().op_state();
+    state.borrow_mut().put(WatcherExitHandle(handle));
+    let result: Result<(), deno_core::error::AnyError> = {
+        let mut run = std::pin::pin!(async {
+            worker.execute_load_phase().await?;
+            loop {
+                worker.run_event_loop(false).await?;
+                if !has_live_objects() {
+                    if worker.dispatch_beforeunload_event()? {
+                        continue;
+                    }
+                    if worker.dispatch_process_beforeexit_event()? {
+                        continue;
+                    }
+                    if !has_live_objects() {
+                        break;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            worker.dispatch_unload_event()?;
+            worker.dispatch_process_exit_event()?;
+            Ok(())
+        });
+        poll_fn(|cx| {
+            let result = run.as_mut().poll(cx);
+            // A native event listener runs in an async-op continuation. V8
+            // termination there need not finish the event-loop future while
+            // an HTTP server or another referenced task is still active.
+            // Honor the exit request after every poll, including Pending.
+            if state.borrow().has::<WatcherExited>() {
+                Poll::Ready(Ok(()))
+            } else {
+                result
+            }
+        })
+        .await
+    };
+    result?;
+    Ok(worker.exit_code())
+}
+
 pub fn options() -> RunOptions {
     RunOptions {
         auto_serve: false,
@@ -162,9 +214,10 @@ pub fn main(args: Vec<String>) {
                 }
             };
             let _ = tx.send(MainRequest::Finished(code));
-            // The main thread may be inside a platform event loop.
+            // Return the native loop to the main thread before exiting. GTK /
+            // WebKit exit handlers and CEF shutdown must run on that thread.
             if laufey::is_initialized() {
-                std::process::exit(code);
+                laufey::quit();
             }
         })
         .expect("creating runtime thread");

@@ -17,6 +17,9 @@ win.bind("report", async (value: string) => {
   console.log("DNR_GUI_OK");
 });
 win.addEventListener("load", async () => {
+  // CEF also reports the blank document created before navigate().
+  const location = await win.executeJs("location.href");
+  if (!location.ok || location.value === "about:blank") return;
   const title = await win.executeJs("document.title");
   if (!title.ok || title.value !== "dnr smoke") throw new Error(`Unexpected page title: ${JSON.stringify(title)}`);
   await win.executeJs("document.getElementById('go').click(); 'clicked'");

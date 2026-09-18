@@ -59,7 +59,7 @@ dnr 将运行时与应用内容分开发行，避免每个 Deno CLI/桌面应用
 
 - 不修改用户提供的 mirror 源仓库。当前固定 Deno `abd22074e4`、Laufey `1fe8787`；升级时同时核对补丁、snapshot、Laufey C ABI、CEF API 和测试。
 - 保留 `Cargo.lock` 和 `integration/deno.Cargo.lock`。新增依赖尽量使用兼容的最新稳定版，不因“最新”破坏固定上游的兼容关系。
-- 保持 sccache 默认启用；遇到沙箱权限问题申请提权，不清空 `RUSTC_WRAPPER` 绕过。
+- 保留已安装并配置的 sccache；遇到沙箱权限问题申请提权，不清空 `RUSTC_WRAPPER` 绕过。按用户要求，本地未安装 sccache 时直接构建，不必另行安装。
 - 遵循宿主环境的 RTK 约定。下面展示原生命令以便跨机器复用；执行时按环境要求加 `rtk` 或 `rtk proxy`。
 - 未经用户主动要求，不自动采用本地 ExecPlan/plan-doc 流程；不自动提交或推送。
 - 若新增独立前端项目，默认使用 Node、pnpm、React、Vite+（`vp`）。
@@ -85,11 +85,11 @@ DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime -- --ignored
 
 原生测试默认被忽略；普通 `cargo test --workspace` 通过不能代表 runtime 已通过。原生测试还需要 C 编译器，会构建真实 Node-API 插件。文档修改检查路径和命令即可，不必重建 runtime。
 
-## Linux 验证的接续任务
+## Linux 验证与复验
 
-截至 2026-09-18，macOS ARM64 已完成 release、12 项包测试、4 项原生测试和真实 WebView 自动验证。Linux 原生构建及 GUI 验收尚未执行，不能继承 macOS 的“通过”结论。
+截至 2026-09-18，macOS ARM64 的历史验收包括 release、12 项包测试、4 项原生测试和真实 WebView 自动验证。本轮已按用户要求在本机 CachyOS x86_64 / KDE Wayland / NVIDIA RTX 3080 完成 WebView 与 system-CEF release、各 6 项原生测试及真实 GUI 自动验证，并检查托盘保活、显式退出、多应用与存储隔离。用户报告的 Songjian 关窗不退出问题已修复，并对原始包进行 KWin 原生关闭请求回归。详细版本、结果和未覆盖范围见 `VALIDATION.md`；本轮改动后未复验 macOS。
 
-用户明确要求 Linux 验收留待之后进行。后续只有在用户要求开始 Linux 验证并指定环境时再执行；不要自行在当前 Mac 上交叉构建冒充验收，也不要自行选择远程主机安装系统依赖。此前只读检查过 yama-ts，它当时缺少所需 GUI 依赖和图形会话，这不是长期有效的环境结论。
+以下为后续原生复验清单。用户已授权当前 Linux 主机的构建与验证；不要以交叉构建冒充原生验收，也不要自行选择远程主机安装系统依赖。此前只读检查过 yama-ts，它当时缺少所需 GUI 依赖和图形会话，这不是长期有效的环境结论。
 
 ### 1. 准备原生环境
 
@@ -133,6 +133,8 @@ export PATH="$dnr_project_root/dist:$PATH"
 确认参数、调用者 cwd、ZIP 资源和磁盘回退一致。再在真实 Wayland/NVIDIA 会话中复验：dnr 会在初始化后端前设置 `__NV_DISABLE_EXPLICIT_SYNC=1`，其实际效果需要实机证据。若出现 Wayland 协议错误，记录 compositor、驱动及必要的 `WAYLAND_DEBUG=1` 日志，不要只凭服务端开始监听就宣布 GUI 正常。
 
 补充检查托盘保活、最后一个窗口关闭后的后台任务、多应用并行和应用存储隔离。没有相应环境或示例覆盖时，在结果中明确标为未验证。
+
+程序主动 `win.close()` 不能代替标题栏关闭按钮的验收。`examples/desktop/native-close.ts` 覆盖原生关闭事件中的显式退出与异步收尾；KDE Wayland 自动复验脚本为 `scripts/test-linux-close.py`，命令见 `docs/LINUX.md`。
 
 ### 4. system-CEF 变体
 

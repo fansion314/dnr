@@ -21,6 +21,17 @@ cargo run -p xtask -- build --backend system-cef
 
 `dist/dnr` 和 `dist/dnc` 是两个独立工具。将它们放进 PATH 即可。dnr 本体静态包含 Laufey 桥接和 Deno runtime，系统 WebView/CEF 库仍由操作系统提供。只构建打包器可执行 `cargo build --release -p dnc`，不需要准备 Deno 源码或原生 GUI 依赖。
 
+Linux 系统安装（下面选择 system-CEF 变体）：
+
+```sh
+cargo run -p xtask -- build --backend system-cef
+sudo install -m 0755 dist/dnr dist/dnc /usr/local/bin/
+dnr --check-system-cef
+dnc --version
+```
+
+应用可以共用 `/usr/local/bin/dnr`；其桌面入口、图标和应用包由应用自身安装。system-CEF 仍依赖兼容的系统 `/usr/lib/cef`，更新系统 CEF 后需重新检查 ABI。
+
 ## 使用
 
 ```sh
@@ -63,4 +74,4 @@ DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime -- --ignored
 dist/dnr examples/desktop/smoke.ts
 ```
 
-平台验证以实际运行结果为准；Linux GUI、Wayland 和 system-CEF 需要原生 Linux 环境，不能用 macOS 上的文件检查替代。当前实现与验证状态见 [验证记录](VALIDATION.md)，延后的 Linux 验收步骤见 [LINUX.md](docs/LINUX.md)。
+平台验证以实际运行结果为准；Linux GUI、Wayland 和 system-CEF 需要原生 Linux 环境，不能用 macOS 上的文件检查替代。当前实现与验证状态见 [验证记录](VALIDATION.md)，Linux 复验步骤见 [LINUX.md](docs/LINUX.md)。

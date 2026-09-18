@@ -405,27 +405,16 @@
    }
  
    if let Some(watch_dir) = hmr_watch_dir {
-@@ -1953,7 +1962,19 @@
-       .execute_load_phase()
-       .await
-       .map_err(desktop_startup_error)?;
--    Ok(worker.run_event_loop_to_completion().await?)
-+    if !is_dnr_host { return Ok(worker.run_event_loop_to_completion().await?); }
-+    loop {
-+      worker.run_event_loop(false).await?;
-+      if !crate::dnr_desktop::has_live_objects() {
-+        if worker.dispatch_beforeunload_event()? { continue; }
-+        if worker.dispatch_process_beforeexit_event()? { continue; }
-+        if !crate::dnr_desktop::has_live_objects() { break; }
-+      }
-+      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+@@ -1942,6 +1951,9 @@
+     worker.dispatch_process_exit_event()?;
+     Ok(worker.exit_code())
+   } else if has_desktop {
++    if is_dnr_host {
++      return crate::dnr_desktop::run_worker(&mut worker).await;
 +    }
-+    worker.dispatch_unload_event()?;
-+    worker.dispatch_process_exit_event()?;
-+    Ok(worker.exit_code())
-   } else {
-     let exit_code = worker.run().await?;
-     Ok(exit_code)
+     // Same as `LibMainWorker::run()`, but tag any failure from the load phase
+     // (main module still loading or first evaluating) as a
+     // `DesktopStartupError` (see its docs for why these otherwise vanish). The
 --- a/cli/rt/node.rs
 +++ b/cli/rt/node.rs
 @@ -113,7 +113,7 @@
@@ -437,3 +426,15 @@
              // VFS-embedded modules always have a pre-computed analysis
              // written by the compile step. A missing entry here means
              // the compile step skipped analysis for this file — bug.
+@@ -170,7 +170,10 @@
+     maybe_syntax: None,
+   })
+   .map_err(JsErrorBox::from_err)?;
+-  let is_script = parsed.compute_is_script();
++  // The parser may classify await inside a top-level block as a script.
++  // It still requires ESM; await inside an async function remains valid CJS.
++  let is_script = parsed.compute_is_script()
++    && !deno_ast::swc::utils::contains_top_level_await(parsed.program().as_ref());
+   let is_cjs = cjs_tracker
+     .is_cjs_with_known_is_script(specifier, media_type, is_script)
+     .map_err(JsErrorBox::from_err)?;
