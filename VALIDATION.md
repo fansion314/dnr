@@ -308,3 +308,57 @@ python3 scripts/bench-read-file.py --dnr target/read-copy-baseline/dnr dist/dnr
 这是本机合成负载，约 1.56 倍吞吐改善，不代表所有文件大小或应用同比提速。
 源码可确定减少一次整文件复制；约 3S → 2S 的瞬时缓冲区存活量是大小模型，
 本轮没有把它当成实测 RSS 降幅。返回后的缓存及 JS 数组占用、GC 压力和首次解压成本仍存在。
+
+
+## 并行 ZIP 解压与 CLOCK 缓存（2026-09-18，macOS ARM64）
+
+环境：Apple M3 / 8 核 / 16 GiB，macOS 27.0（26A428），Rust 1.98.1；固定 Deno/Laufey
+与依赖锁未变。保留 sccache；首次沙箱测试因 sccache 权限失败，提权后设置
+`CARGO_CACHE_RUSTC_INFO=0` 重新探测并成功构建，没有关闭 wrapper。
+
+### 实现与测量
+
+- 位置读取器共享同一个已打开文件，但各自保留逻辑游标；zip 8.6.0 的 archive 克隆共享中央目录。
+  不同条目独立解码，同条目通过 Flight 合并正在执行的读取，包括未缓存的大文件和失败结果。
+- 缓存改为每条目短锁与按字节预算的 CLOCK；命中不获取全局管理锁。保留 CRC/尺寸/EOF 校验、
+  只在不存在时回退磁盘、懒解压与文件句柄 Arc 保活。新增代码不含 unsafe、不增加依赖。
+- 每包并发最多 min(可用并行度, 8)，在途声明解压尺寸合计默认不超过 256 MiB；更大文件单独执行。
+  这是解码准入限制，不是进程 RSS 上限；驻留缓存仍有独立的 256 MiB 默认预算。
+- 编译和测试结束后运行相同输入、相同 release 配置的前后对照。真实 Worker：16 × 8 MiB
+  资源，冷缓存单 Worker 为 173.611 → 171.617 ms；2/4/8 Worker 分别为
+  172.854 → 89.614、173.930 → 52.139、175.447 → 49.382 ms，8 Worker 约快 3.55 倍。
+- 真实 8 Worker 热缓存文件 API：20,000 次打开/首尾读取/关闭，39.520 → 34.834 ms；
+  Rust 包层 8 线程的 200,000 次热命中为 41.188 → 2.027 ms。上层 API 成本仍在，
+  不把微基准收益等同于整个应用收益。完整表格及计时边界见 `docs/PERFORMANCE.md`。
+- 每项预热一轮，取 7 轮中位数；Worker 对照逐轮交换二进制顺序。冷缓存指解压缓存，
+  操作系统文件缓存是暖的。单线程冷解压没有稳定加速结论，本轮没有测量进程峰值 RSS。
+
+### 验证
+
+- `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、
+  `git diff --check` 通过。
+- `cargo test --workspace`：5 项包层单元测试与 16 项包集成测试通过；9 项原生测试按设计忽略。
+  确定性测试确认两个不同条目在任一任务完成前均能进入解码，且驻留命中可同时完成；
+  同条目等待者共享结果/错误，panic 展开唤醒后可重试，超预算数据也合并本轮读取。
+  另覆盖 CLOCK 第二次机会、5 种预算 × 2,000 次访问、并发淘汰及保留引用、
+  在途数量/字节限制、CRC 损坏不缓存及修复后重试、包路径替换与非法索引。
+- `DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime -- --ignored`：
+  最终 release 上 9 项全部通过，退出 0。新增 8 个真实 Worker 同时读取相同与不同 ZIP 文件，
+  校验全部字节及 seek/EOF；原有 TS/CJS、Node 插件磁盘边界、目录合并、读结果所有权、
+  HTTP 服务与显式退出回归全部通过。
+- release `xtask build` 成功，输出已精简并 ad-hoc 签名的 `dist/dnr` 与 `dist/dnc`。
+  `codesign --verify --strict --verbose dist/dnr` 通过；`otool -L` 仍仅显示系统库与 Framework。
+
+- 新版 dnc 生成桌面烟雾包，从 `/private/tmp` 直接启动，真实 WebView 页面与双向绑定通过，
+  关窗后异步收尾完成，输出 `DNR_GUI_OK` 并退出 0；日志为 `gui-smoke.log`。
+
+原生基线为本轮开始前的 release，SHA-256：
+`3feb4b987e4c212ee8b3424384e1077f3aea7cca0deef1f414cc96747e7775fd`。
+新版 `dist/dnr` SHA-256：
+`b26a98d748f5ba4a8eab032e09c0bbb85741762bfdb2a937c6ddcebed53ad71c`。
+包层基线使用 `4467e78` 的 `lib.rs` 与同一个新基准程序，临时源码位置记录在证据目录。
+
+构建、工作区测试、原生测试、Worker 原始测量、包层前后对照和基准包保存在
+`dist/validation-parallel-cache/`。保留本轮开始前的未提交整文件读取优化及文档；
+本轮没有修改 Deno/Laufey 补丁或锁文件，没有安装/覆盖用户已安装的共享运行时；构建验证时尚未提交，也未推送。
+本轮未执行 Linux WebView/system-CEF 原生构建或 GUI 验证，也未重跑平台专用的标题栏关闭与 Dock 回归。

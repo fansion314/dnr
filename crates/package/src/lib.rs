@@ -2,13 +2,16 @@
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     fs::{self, File},
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
+
+mod cache;
+mod reader;
 
 pub const FORMAT_VERSION: u32 = 1;
 pub const MARKER: &str = "# DNRZIP1\n";
@@ -400,55 +403,15 @@ pub struct CacheStats {
     pub decompressions: u64,
     pub hits: u64,
     pub resident_bytes: usize,
-}
-struct State {
-    archive: ZipArchive<Region<File>>,
-    cache: HashMap<usize, CachedFile>,
-    oldest: Option<usize>,
-    newest: Option<usize>,
-    stats: CacheStats,
-}
-struct CachedFile {
-    bytes: Arc<[u8]>,
-    previous: Option<usize>,
-    next: Option<usize>,
-}
-impl State {
-    // An intrusive list keyed by ZIP index keeps promotion/eviction O(1),
-    // without unsafe pointers or an allocation on every cache hit.
-    fn unlink(&mut self, index: usize) {
-        let entry = &self.cache[&index];
-        let (previous, next) = (entry.previous, entry.next);
-        if let Some(previous) = previous {
-            self.cache.get_mut(&previous).unwrap().next = next;
-        } else {
-            self.oldest = next;
-        }
-        if let Some(next) = next {
-            self.cache.get_mut(&next).unwrap().previous = previous;
-        } else {
-            self.newest = previous;
-        }
-    }
-
-    fn append_newest(&mut self, index: usize) {
-        let entry = self.cache.get_mut(&index).unwrap();
-        entry.previous = self.newest;
-        entry.next = None;
-        if let Some(previous) = self.newest {
-            self.cache.get_mut(&previous).unwrap().next = Some(index);
-        } else {
-            self.oldest = Some(index);
-        }
-        self.newest = Some(index);
-    }
+    /// Calls that joined an already running load (not resident cache hits).
+    pub coalesced: u64,
 }
 pub struct Package {
     pub manifest: Manifest,
     pub entries: BTreeMap<String, Entry>,
     pub root: PathBuf,
-    state: Mutex<State>,
-    budget: usize,
+    archive: ZipArchive<reader::PackageReader>,
+    cache: cache::Cache,
 }
 impl std::fmt::Debug for Package {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -463,7 +426,7 @@ impl Package {
         let path = path.canonicalize()?;
         let mut file = File::open(&path)?;
         let offset = zip_offset(&mut file)?;
-        let mut archive = ZipArchive::new(Region::new(file, offset)?)?;
+        let mut archive = ZipArchive::new(reader::PackageReader::new(file, offset)?)?;
         let manifest: Manifest = {
             let mut source = archive.by_name(MANIFEST)?;
             ensure!(source.size() <= 65536, "oversized manifest");
@@ -487,8 +450,10 @@ impl Package {
         );
         let mut entries = BTreeMap::new();
         let mut seen = std::collections::HashSet::new();
+        let mut sizes = Vec::with_capacity(archive.len());
         for index in 0..archive.len() {
             let mut file = archive.by_index(index)?;
+            sizes.push(file.size());
             let name = normalized_name(file.name().trim_end_matches('/'))?;
             ensure!(seen.insert(name.clone()), "duplicate archive path: {name}");
             if name == MANIFEST {
@@ -548,14 +513,8 @@ impl Package {
             manifest,
             entries,
             root: path.parent().unwrap().to_owned(),
-            state: Mutex::new(State {
-                archive,
-                cache: HashMap::new(),
-                oldest: None,
-                newest: None,
-                stats: CacheStats::default(),
-            }),
-            budget,
+            archive,
+            cache: cache::Cache::new(sizes, budget),
         })
     }
 
@@ -600,22 +559,11 @@ impl Package {
     }
 
     pub fn read_index(&self, index: usize) -> Result<Arc<[u8]>> {
-        // One lock intentionally includes decompression: concurrent reads never
-        // inflate the same entry twice and the shared archive cursor is safe.
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("archive lock poisoned"))?;
-        if let Some(bytes) = state.cache.get(&index).map(|entry| entry.bytes.clone()) {
-            state.stats.hits += 1;
-            if state.newest != Some(index) {
-                state.unlink(index);
-                state.append_newest(index);
-            }
-            return Ok(bytes);
-        }
-        let bytes: Arc<[u8]> = {
-            let mut source = state.archive.by_index(index)?;
+        self.cache.read(index, || {
+            // Clones share immutable ZIP metadata and the open file, but each
+            // reader has its own logical cursor and each entry its own decoder.
+            let mut archive = self.archive.clone();
+            let mut source = archive.by_index(index)?;
             let size = usize::try_from(source.size()).context("file too large")?;
             let mut bytes = Vec::new();
             bytes.try_reserve_exact(size)?;
@@ -626,30 +574,10 @@ impl Package {
             ensure!(bytes.len() == size, "ZIP size mismatch");
             // Read once beyond declared size so the decoder validates EOF/CRC.
             ensure!(source.read(&mut [0u8; 1])? == 0, "ZIP size mismatch");
-            bytes.into()
-        };
-        state.stats.decompressions += 1;
-        if bytes.len() <= self.budget {
-            while state.stats.resident_bytes > self.budget - bytes.len() {
-                let key = state.oldest.expect("resident bytes belong to cached files");
-                state.unlink(key);
-                let old = state.cache.remove(&key).unwrap();
-                state.stats.resident_bytes -= old.bytes.len();
-            }
-            state.stats.resident_bytes += bytes.len();
-            state.cache.insert(
-                index,
-                CachedFile {
-                    bytes: bytes.clone(),
-                    previous: None,
-                    next: None,
-                },
-            );
-            state.append_newest(index);
-        }
-        Ok(bytes)
+            Ok(bytes.into())
+        })
     }
     pub fn stats(&self) -> CacheStats {
-        self.state.lock().unwrap().stats
+        self.cache.stats()
     }
 }

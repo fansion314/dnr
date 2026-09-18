@@ -61,7 +61,7 @@ dnc examples/desktop --entry main.ts -o desktop.dnp
 - ZIP 挂载在应用包所在目录，先查 ZIP，只有不存在才回退磁盘。
 - 保留调用者 cwd。资源使用 `new URL('./resource', import.meta.url)`，裸相对路径遵循 cwd。
 - ZIP 内节点只读；目录枚举合并 ZIP 和磁盘内容，同名条目以 ZIP 为准。
-- 目录和元数据查询不解压普通文件；文件首次读取时解压，后续共享进程内 LRU 缓存（默认 256 MiB）。
+- 目录和元数据查询不解压普通文件；文件首次读取时解压，后续共享进程内 CLOCK 近似淘汰缓存（默认 256 MiB）。
 - 缓存预算不包含仍在使用的文件句柄、JS 字符串和引擎堆。
 - 外部进程不认识这个 VFS；调用外部工具时只能传递真实文件。
 - `chdir` 只能进入真实磁盘目录。仅存在于 ZIP 的目录不是 OS 挂载点，会明确报错；资源定位使用 `import.meta.url`。

@@ -21,7 +21,7 @@ fn fixture() -> (tempfile::TempDir, PackOptions) {
 }
 
 #[test]
-fn lazy_reads_and_lru() {
+fn lazy_reads_and_clock() {
     let (_temp, opts) = fixture();
     pack(&opts).unwrap();
     let package = Package::open(&opts.output, 8192).unwrap();
@@ -55,7 +55,59 @@ fn concurrent_reads_share_decompression() {
 }
 
 #[test]
-fn lru_matches_reference_across_hits_evictions_and_oversized_files() {
+fn parallel_zip_reads_survive_eviction_and_retained_handles() {
+    let (_temp, opts) = fixture();
+    for n in 0..16 {
+        let bytes: Vec<_> = (0..65537).map(|i| ((i * 37 + n) % 251) as u8).collect();
+        fs::write(opts.directory.join(format!("file{n}")), bytes).unwrap();
+    }
+    pack(&opts).unwrap();
+    let package = Package::open(&opts.output, 3 * 65537).unwrap();
+    std::thread::scope(|scope| {
+        for worker in 0..8 {
+            let package = &package;
+            scope.spawn(move || {
+                let retained = package.read("file0").unwrap().unwrap();
+                for iteration in 0..100 {
+                    let n = (iteration * 7 + worker) % 16;
+                    let bytes = package.read(&format!("file{n}")).unwrap().unwrap();
+                    assert_eq!(bytes.len(), 65537);
+                    for (i, &byte) in bytes.iter().enumerate() {
+                        assert_eq!(byte, ((i * 37 + n) % 251) as u8);
+                    }
+                    assert!(package.stats().resident_bytes <= 3 * 65537);
+                }
+                for (i, &byte) in retained.iter().enumerate() {
+                    assert_eq!(byte, ((i * 37) % 251) as u8);
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn replacing_package_path_does_not_replace_open_reader() {
+    let (_temp, mut opts) = fixture();
+    pack(&opts).unwrap();
+    let original = Package::open(&opts.output, 0).unwrap();
+    fs::rename(&opts.output, opts.output.with_extension("old")).unwrap();
+    fs::write(opts.directory.join("assets/a.txt"), "new").unwrap();
+    opts.force = true;
+    pack(&opts).unwrap();
+    assert_eq!(original.read("assets/a.txt").unwrap().unwrap().len(), 8192);
+    assert_eq!(
+        &*Package::open(&opts.output, 0)
+            .unwrap()
+            .read("assets/a.txt")
+            .unwrap()
+            .unwrap(),
+        b"new"
+    );
+    assert!(original.read_index(usize::MAX).is_err());
+}
+
+#[test]
+fn cache_budget_and_data_survive_hits_evictions_and_oversized_files() {
     let (_temp, opts) = fixture();
     for n in 0..16 {
         fs::write(
@@ -67,39 +119,23 @@ fn lru_matches_reference_across_hits_evictions_and_oversized_files() {
     pack(&opts).unwrap();
     for budget in [0, 7, 49, 200, 1000] {
         let p = Package::open(&opts.output, budget).unwrap();
-        let mut lru = std::collections::VecDeque::new();
-        let mut resident = 0;
-        let (mut hits, mut misses) = (0, 0);
         let mut seed = 42u64;
         let mut retained = Vec::new();
         for step in 0..2000 {
             seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
             let key = ((seed >> 32) % 16) as usize;
             let size = key * 7;
-            if let Some(at) = lru.iter().position(|&n| n == key) {
-                lru.remove(at);
-                lru.push_back(key);
-                hits += 1;
-            } else {
-                misses += 1;
-                if size <= budget {
-                    while resident + size > budget {
-                        resident -= lru.pop_front().unwrap() * 7;
-                    }
-                    resident += size;
-                    lru.push_back(key);
-                }
-            }
             let bytes = p.read(&format!("cache{key}")).unwrap().unwrap();
             assert_eq!(&*bytes, vec![key as u8; size]);
             if step % 101 == 0 {
                 retained.push((key, bytes));
             }
             let stats = p.stats();
-            assert_eq!(
-                (stats.hits, stats.decompressions, stats.resident_bytes),
-                (hits, misses, resident)
-            );
+            assert!(stats.resident_bytes <= budget);
+            assert_eq!(stats.hits + stats.decompressions, step + 1);
+            if budget >= 840 {
+                assert!(stats.decompressions <= 16);
+            }
         }
         // Eviction removes only the cache's reference, never a reader's data.
         for (key, bytes) in retained {
@@ -139,6 +175,18 @@ fn corrupted_payload_is_lazy_and_never_cached() {
     }
     assert_eq!(p.stats().resident_bytes, 0);
     assert_eq!(p.stats().hits, 0);
+    // A failed flight must allow a later retry; repair the same open inode.
+    use std::os::unix::fs::FileExt;
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .write_all_at(b"u", start as u64)
+        .unwrap();
+    assert_eq!(
+        &*p.read("main.js").unwrap().unwrap(),
+        b"unique payload for CRC testing"
+    );
 }
 
 #[test]

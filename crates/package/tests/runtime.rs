@@ -10,6 +10,98 @@ use std::{
 
 #[test]
 #[ignore = "requires a built native dnr; set DNR_BIN and pass --ignored"]
+fn parallel_workers_read_shared_and_distinct_zip_entries() {
+    let binary = PathBuf::from(std::env::var_os("DNR_BIN").expect("set DNR_BIN"))
+        .canonicalize()
+        .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    fs::create_dir(&source).unwrap();
+    for n in 0..16 {
+        let bytes: Vec<_> = (0..262145).map(|i| ((i * 37 + n) % 251) as u8).collect();
+        fs::write(source.join(format!("file{n}")), bytes).unwrap();
+    }
+    fs::write(
+        source.join("worker.js"),
+        r#"
+postMessage('ready');
+onmessage = ({data: id}) => {
+  for (const n of [0, id, id + 8, 0, id + 8]) {
+    const url = new URL(`./file${n}`, import.meta.url);
+    const bytes = Deno.readFileSync(url);
+    if (bytes.length !== 262145) throw Error('bad size');
+    for (let i = 0; i < bytes.length; i++) {
+      if (bytes[i] !== ((i * 37 + n) % 251)) throw Error(`bad bytes: ${n}/${i}`);
+    }
+    const file = Deno.openSync(url);
+    const tail = new Uint8Array(1);
+    file.seekSync(-1, Deno.SeekMode.End);
+    if (file.readSync(tail) !== 1 || tail[0] !== bytes[bytes.length - 1]) throw Error('bad tail');
+    if (file.readSync(tail) !== null) throw Error('bad EOF');
+    file.close();
+  }
+  postMessage('done');
+};
+"#,
+    )
+    .unwrap();
+    fs::write(
+        source.join("main.js"),
+        r#"
+const timer = setTimeout(() => Deno.exit(88), 15000);
+const workers = Array.from({length: 8}, () =>
+  new Worker(new URL('./worker.js', import.meta.url).href, {type:'module'}));
+await Promise.all(workers.map(w => new Promise((resolve, reject) => {
+  w.onmessage = () => resolve(); w.onerror = reject;
+})));
+const done = workers.map(w => new Promise((resolve, reject) => {
+  w.onmessage = ({data}) => data === 'done' ? resolve() : reject(Error('bad message'));
+  w.onerror = reject;
+}));
+workers.forEach((w, id) => w.postMessage(id));
+await Promise.all(done);
+workers.forEach(w => w.terminate());
+clearTimeout(timer);
+console.log('PARALLEL_ZIP_OK');
+"#,
+    )
+    .unwrap();
+    let package = temp.path().join("workers.dnp");
+    pack(&PackOptions {
+        directory: source,
+        entry: "main.js".into(),
+        output: package.clone(),
+        includes: vec![],
+        excludes: vec![],
+        app_id: Some("test.parallel-zip".into()),
+        force: false,
+    })
+    .unwrap();
+    let mut child = Command::new(binary)
+        .arg(package)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("PARALLEL_ZIP_OK"));
+}
+
+#[test]
+#[ignore = "requires a built native dnr; set DNR_BIN and pass --ignored"]
 fn read_file_results_own_their_bytes() {
     let binary = PathBuf::from(std::env::var_os("DNR_BIN").expect("set DNR_BIN"))
         .canonicalize()
