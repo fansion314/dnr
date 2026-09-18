@@ -87,7 +87,7 @@ DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime --test runtime_
 
 ## Linux 验证与复验
 
-截至 2026-09-18，macOS ARM64 的历史验收包括 release、12 项包测试、4 项原生测试和真实 WebView 自动验证。本轮已按用户要求在本机 CachyOS x86_64 / KDE Wayland / NVIDIA RTX 3080 完成 WebView 与 system-CEF release、各 6 项原生测试及真实 GUI 自动验证，并检查托盘保活、显式退出、多应用与存储隔离。用户报告的 Songjian 关窗不退出问题已修复，并对原始包进行 KWin 原生关闭请求回归。详细版本、结果和未覆盖范围见 `VALIDATION.md`；后续 macOS 复验与原生插件临时解压结果见 `VALIDATION.md`；原生插件临时解压变更尚未复验 Linux。
+截至 2026-09-18，macOS ARM64 的历史验收包括 release、包测试、原生测试和真实 WebView 自动验证。本机 CachyOS x86_64 / KDE Wayland / NVIDIA RTX 3080 已完成最新 WebView 与 system-CEF release、各 14 项 runtime/原生测试及真实 GUI 自动验证，覆盖原生插件临时解压与清理、并行读取、tree/extract、托盘保活、显式退出、多应用与存储隔离。两个后端通过两轮 KWin 原生关闭回归；新 desktop manifest 的真实 Arch 打包与 Songjian 安装验证通过。系统共享运行时已更新为 system-CEF，旧 Songjian 与 pi 安装已替换。详细版本、结果和未覆盖范围见 `VALIDATION.md`。
 
 以下为后续原生复验清单。用户已授权当前 Linux 主机的构建与验证；不要以交叉构建冒充原生验收，也不要自行选择远程主机安装系统依赖。此前只读检查过 yama-ts，它当时缺少所需 GUI 依赖和图形会话，这不是长期有效的环境结论。
 

@@ -495,3 +495,151 @@ tree/extract 命令合并；冲突仅涉及文档，保留两侧功能说明和�
   包括 macOS 原生启动器编译、PNG 转 ICNS、签名、首次与 force 打包、参数/cwd/身份，
   以及 10 项 runtime、4 项 Node-API/FFI 测试。
 - 本次未执行真实 GUI 或 Linux 原生复验；历史 GUI 与 Linux 证据仍以各节范围为准。
+
+## macOS 更新后的 Linux 复验与应用安装（2026-09-18）
+
+本轮以 `6d4062b` 为源码基线，在 CachyOS x86_64 / Linux 7.2.6-1-cachyos-bore-lto、
+KDE KWin 6.7.5 Wayland、NVIDIA RTX 3080 / 615.71.09 上原生执行。
+Rust 1.98.1、GCC 16.2.1、CMake 4.4.3；GTK 3.24.52、WebKitGTK 2.52.6、
+系统 CEF 152.0.6-1，CEF API 14900。没有使用交叉构建或无头浏览器替代原生验收。
+
+### 构建与新功能
+
+- 保留旧缓存目录后，从固定 mirror 提交重新 `xtask prepare`，两份补丁干净应用成功，
+  构建后反向 `git apply --check` 通过；mirror 工作区未修改。
+- sccache 保持启用。首次沙箱内编译器探测报权限错误，改为沙箱外执行并设置
+  `CARGO_CACHE_RUSTC_INFO=0` 后正常完成，没有禁用 wrapper。
+- `cargo test --locked --workspace`：33 项通过，15 项宿主/平台测试按设计忽略。
+  `cargo clippy --locked --workspace --all-targets -- -D warnings`、格式检查通过。
+- 原生 `arch_package_metadata_and_payload` 显式测试通过：真实调用 makepkg，验证
+  pacman 元数据、压缩包结构和安装文件。命令与输出见 `arch-package.log`。
+- 分别执行 `xtask build` 和 `xtask build --backend system-cef`，两个 release 构建成功，
+  保存在 `dist/webview/`、`dist/system-cef/`。本轮结束时 `dist/dnr` 为 system-CEF 版。
+- 两个后端分别显式执行 `DNR_BIN=... cargo test --locked -p dnr-package --test runtime
+  --test runtime_native -- --ignored`：每个后端 10 项 runtime、4 项原生测试全部通过。
+  覆盖并行 Worker / CLOCK 缓存语义、文件读取所有权、目录合并、tree/extract、
+  ZIP 内 Node-API / FFI、只读包目录、主线程与 Worker 复用临时路径、多进程隔离，
+  以及正常退出、显式退出和异常退出后的临时目录清理。
+- 两个 ELF x86-64 产物都无缺失动态库、随附 libdenort 或 Laufey 动态库依赖。
+  system-CEF 的 `libcef.so` 来自 `/usr/lib/cef`，`--check-system-cef` 通过。
+
+### 真实桌面回归
+
+- 两个后端均通过磁盘与 ZIP GUI 烟雾测试：真实页面、双向绑定、关窗后的异步收尾，
+  输出 `DNR_GUI_OK` 且退出 0。ZIP 从 `/tmp` 执行，另验证 CLI 参数与调用者 cwd。
+- 两个后端均通过托盘保活、多应用独立进程、appId 存储隔离与持久化，以及 GUI 中的
+  Deno 退出 7、Node 退出 9、异常退出 1；最后确认测试 runtime 没有残留进程。
+- `scripts/test-linux-close.py --repeat 2` 对每个后端执行两轮真实 KWin 原生关闭，
+  覆盖 Deno、Node、异步关闭和自然结束四种模式，均通过；检查对应进程组全部结束。
+  新 Songjian 包额外执行两轮 CEF 原生关闭，均退出 0，无遗留子进程。
+- 首次 WebView 附加测试的全局进程扫描撞上同时运行的 pi 烟雾进程；pi 完成后单独重跑，
+  `webview-extra-final.log` 全部通过。早期日志保留，不把测试间干扰记为 runtime 缺陷。
+
+### Songjian 新包与旧安装迁移
+
+- 相邻项目依赖按锁文件同步，执行
+  `DNC=/home/fansion/codebase/dnr/target/release/dnc node scripts/dnr.mjs --target archlinux`。
+  构建前端、Deno bundle，再由新 dnc / desktop manifest 调用 makepkg。
+- 产物：`../Songjian/release/dnr-linux-x86_64/songjian-1.1.0-1-x86_64.pkg.tar.zst`，
+  88,579 字节，包声明依赖 `cef`、`gtk3`，共享 dnr 为实际运行必需。
+  安装前已向用户列出所有有效载荷和 `.PKGINFO`、`.BUILDINFO`、`.MTREE`。
+  有效载荷只有以下四个文件：
+  - `/usr/bin/songjian`
+  - `/usr/lib/world.fansionia.songjian/application.dnp`
+  - `/usr/share/applications/world.fansionia.songjian.desktop`
+  - `/usr/share/pixmaps/world.fansionia.songjian.png`
+- 真实执行新版 `dnr tree` 与 `dnr extract`，确认内部包含原始 manifest、
+  `desktop/main.js`、前端 HTML/JS/CSS 与 favicon；没有捆绑 runtime 或 CEF。
+- Songjian 前端类型检查无错误/警告，Deno 资源与存储测试 4 项通过，Vite+ Linux 脚本
+  测试 13 项通过、5 项旧布局测试条件跳过。首次误用 Node runner 的日志保留；
+  正确的 `vp test --run ...` 结果见 `songjian-vitest.log`。
+- 经系统管理员认证，更新 `/usr/local/bin/dnr` 为本轮 system-CEF release，并更新 dnc。
+  删除旧 `/opt/Songjian`、`/usr/local/bin/Songjian`、旧桌面入口与 hicolor 图标后，
+  用 `pacman -U` 安装新包。宿主上的 `pacman -Qkk songjian` 为 11 项、0 项改变。
+- 从实际安装的 `.desktop` 通过 GIO 启动；KWin 确认窗口标题“松间”，
+  resourceClass / desktopFileName 为 `world.fansionia.songjian`，图标名匹配。
+  原生关窗后退出 0。测试使用隔离数据目录；真实 `workspace.json` 安装前后 SHA-256 一致。
+
+### pi 单文件构建与用户安装
+
+- 相邻 pi 项目执行 `npm ci --ignore-scripts`、`npm run hydrate:model-data`，再执行
+  `node scripts/build-dnp.mjs --dnc /home/fansion/codebase/dnr/target/release/dnc`。
+  产物 `../pi/packages/coding-agent/dist/dnr/pi.dnp` 为 6,435,579 字节，版本 0.85.1，
+  574 个应用文件，包含 Linux x64 原生插件、JS、WASM、主题、文档与许可证。
+- 在 WebView、system-CEF 两个新版 runtime 上分别执行 `scripts/dnp-smoke.test.mjs`，
+  均通过：离开源码目录单文件部署、原生插件释放与清理、CLI、TS 扩展、模型目录、
+  Photon 图片缩放、bash 工具、会话保存、HTML 导出和调用者 cwd。
+- 使用真实 PTY（本机无 tmux）验证交互输入、本地 faux 模型调用 bash 并回复，
+  出现 `PI_TUI_TOOL_OK`、`PI_TUI_REPLY_OK`，Ctrl-D 退出 0。安装后使用系统 CEF runtime
+  再次通过相同交互回归；没有调用付费模型 API。
+- 用 `pacman -R pi-coding-agent` 删除旧系统安装，再安装单文件到
+  `/home/fansion/.local/bin/pi`，所有者 fansion、权限 0755。通过 fish 的通用变量
+  `fish_add_path -U /home/fansion/.local/bin` 持久加入 PATH。
+  新 fish 中 `command -v pi` 指向该文件，`pi --version` 输出 `0.85.1`。
+  旧 `/usr/bin/pi` 与旧 pacman 包均已移除；没有删除 pi 用户配置或会话。
+
+### 证据与边界
+
+日志、安装脚本、文件清单和校验和位于 `dist/validation-linux-update/`。
+关键日志：`workspace.log`、`arch-package.log`、`webview-runtime.log`、
+`system-cef-runtime.log`、`webview-extra-final.log`、`system-cef-extra.log`、
+两个 `*-close.log`、`pi-smoke-*.log`、`pi-installed-interactive.log`、
+`install.log`、`installed-desktop.log`。安装后 dnr、dnc、pi 均与验证产物逐字节一致。
+
+| 产物 | SHA-256 |
+| --- | --- |
+| WebView dnr（92,929,208 字节） | `670cc21e58cdae5e3885eb2f788ea2a51d813bf51f06a52865306957cd831db6` |
+| system-CEF dnr（94,744,296 字节） | `87e2511a156f54dc3fbc6b67f9133d7ea81df52ea293de17e5f4beda4f279a58` |
+| dnc（2,707,024 字节） | `208754d9c5eb4d30277b7b2bd79904a67c6af7d2ae24d9e9ac99641a148c63a2` |
+| Songjian pkg.tar.zst | `08953f6b71115c6bd57bc454110989347ce05a29b9c93296018db22f2351e9a4` |
+| pi.dnp / 用户本地 pi | `6da005165bd846099ed8a72389e8a6471c610b373fd7f48128d25c49b6645422` |
+
+本轮没有发现需要修改实现的新 Linux 问题。未重新测量性能加速比例，未执行 macOS、
+独立 X11 会话或其他 GPU/发行版验证；真实剪贴板读写、付费模型请求和 Songjian 的全部
+业务交互不属于本轮覆盖范围。没有提交或推送代码，两个应用源码工作区保持干净。
+
+### pi 安装位置调整（2026-09-18）
+
+按用户后续要求，将同一份已验证的 pi 从 `/home/fansion/.local/bin/pi` 迁移到
+`/usr/local/bin/pi`，与 dnr 同目录，所有者 root、权限 0755。逐字节校验后删除旧位置文件；
+SHA-256 未变。fish 中 `command -v pi` 为 `/usr/local/bin/pi`，`pi --version` 输出 `0.85.1`。
+
+### KDE 启动器旧路径缓存修复（2026-09-18）
+
+用户报告 KDE 启动器仍尝试 `/opt/Songjian/Songjian`。系统桌面文件已经正确指向
+`/usr/bin/songjian`，没有找到用户级覆盖入口，但 `ksycoca6_en-POSIX_*` 缓存仍含旧路径；
+中文缓存已含新路径。此前 GIO 启动验证没有覆盖 KDE 的服务缓存与启动流程。
+
+以桌面用户分别在 C 与 `zh_CN.UTF-8` 语言环境执行 `kbuildsycoca6 --noincremental`。
+重建后两份缓存均不再包含旧路径；直接调用 KDE `KService::serviceByDesktopName`
+确认两种语言都返回已安装的桌面文件和 `/usr/bin/songjian`。
+随后通过该 KService 与 `KIO::ApplicationLauncherJob` 真实启动，KWin 确认标题“松间”、
+应用身份 `world.fansionia.songjian`，原生关闭后宿主进程消失，测试退出 0。
+日志见 `dist/validation-linux-update/kde-cache-*.log`、`kde-launch.log`。
+打包文档补充桌面用户刷新 KDE 服务缓存的步骤；不重建应用，不恢复旧 `/opt` 启动链接。
+
+
+## v0.1.0 AUR 配方与发布准备（2026-09-18）
+
+- 从 origin 快进合并 `d32963f` 的项目元数据、双语 README 与 MIT 许可证；保留并提交
+  本地 Linux 复验和安装记录，同步 README 中已过时的验证状态。
+- 新增 `packaging/aur/dnr`（system-CEF）与 `dnr-webview`（WebKitGTK）两份配方及
+  `.SRCINFO`。源码来自 GitHub `fansion314/dnr` 的 `v0.1.0` 标签，上游使用完整固定提交。
+  两包互斥，均安装 dnr/dnc；WebView 包提供 `dnr=0.1.0`。
+- 依据 ELF 的 NEEDED、pkg-config、pacman 文件归属和后端源码核对直接链接依赖，
+  补充托盘 `libayatana-appindicator`、通知 `libnotify` 和 dnc 打包 `base-devel` 可选依赖。
+  `bash -n`、`.SRCINFO` 重新生成比对、`pacman -T` 和本地文档链接检查通过。
+- 在独立干净源码副本上执行 xtask prepare，两份补丁反向检查通过；固定锁文件的
+  `cargo fetch --locked --target x86_64-unknown-linux-gnu` 通过，mirror 未修改。
+- 原有参数下工作区 33 项测试通过；两个既有 Linux release 后端分别再次通过
+  10 项 runtime 和 4 项 Node-API/FFI 测试，CEF API 14900 检查通过。
+- 使用既有已验证产物执行两份配方的真实 `makepkg --repackage --force --nodeps`，
+  验证 package()、pacman 元数据、互斥/provides、许可证和安装文件清单。
+  没有安装或替换系统软件。
+- 曾额外运行 `makepkg --noextract --force` 验证完整构建；本机 makepkg 的
+  `RUSTFLAGS=-C opt-level=3 -C target-cpu=native` 与原有参数不同，触发 Deno 重编译。
+  system-CEF 编译完成后，在工作区测试重编阶段停止；WebView 完整构建未启动。
+  不将这次未完成的流程记为完整 makepkg 或干净 chroot 验收。V8 仍使用预编译库。
+  `dist/dnr`、`dist/dnc` 恢复为原有已验证的 system-CEF 产物。
+- 本轮未重新执行 GUI、macOS 或 AUR 服务器上传。发行内容为源码和 AUR 配方，
+  不上传本机按 native CPU 参数构建的二进制。日志与本地测试包位于 `dist/validation-aur/`。

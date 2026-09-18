@@ -1,6 +1,6 @@
 # Linux x86_64 验收
 
-2026-09-18 已在用户的 CachyOS x86_64 / KDE Wayland / NVIDIA RTX 3080 主机完成 WebView 与 system-CEF 原生构建、原生测试和真实 GUI 自动验收，结果和具体版本见 [VALIDATION.md](../VALIDATION.md)。以下命令用于后续复验；本机按用户要求直接编译，不使用 sccache。
+2026-09-18 已在用户的 CachyOS x86_64 / KDE Wayland / NVIDIA RTX 3080 主机完成 WebView 与 system-CEF 原生构建、原生测试和真实 GUI 自动验收，结果和具体版本见 [VALIDATION.md](../VALIDATION.md)。以下命令用于后续复验；保留已安装并配置的 sccache，未安装时直接构建。
 
 ## WebView
 

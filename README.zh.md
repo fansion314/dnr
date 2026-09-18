@@ -25,7 +25,7 @@ dnr 将应用与运行时分开发行。安装一次运行时，就可以把 Jav
 
 运行时静态包含定制 Deno runtime 和 Laufey 后端；系统 Framework、WebView/CEF 库仍由操作系统提供。目前不支持 Windows、macOS Intel 和 Linux ARM64。
 
-macOS 和 Linux 均已有原生运行时与 GUI 验证记录。最新的原生插件改动仅在 macOS 完成复验，Linux 桌面打包完整流程仍待原生验证。各次验证的日期与覆盖范围见[验证记录](VALIDATION.md)。
+macOS 和 Linux 均已有原生运行时与 GUI 验证记录。包内原生插件已在 macOS 和 Linux 复验，Linux 两个后端与 Arch 桌面打包流程均已通过原生验证。各次验证的日期与覆盖范围见[验证记录](VALIDATION.md)。
 
 ## 快速上手
 
@@ -134,6 +134,10 @@ macOS `.app` 使用原生启动器，并进行本地 ad-hoc 签名；Linux 软�
 原生库必须匹配目标平台、架构与运行时 ABI。它们依赖的操作系统级共享库不会被自动收集或解压。ZIP 外的原生库继续从磁盘加载。纯 JS/TS 应用在代码与依赖均可移植时，可以跨支持的平台使用同一个包。
 
 完整文件系统语义与校验规则见[包格式文档](docs/FORMAT.md)。
+
+## Arch Linux / CachyOS 软件包
+
+固定发行版的 AUR 配方位于 [`packaging/aur`](packaging/aur/README.md)：默认 `dnr` 使用系统 CEF，`dnr-webview` 使用 WebKitGTK。两者都安装 `dnr` 和 `dnc`，只能选择其一。依赖与构建方法见[打包说明](packaging/aur/README.md)。
 
 ## 从源码构建
 

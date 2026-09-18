@@ -9,7 +9,6 @@ authors = ["Peilin Fan <peilin.fan@foxmail.com>"]
 description = "A shared Deno runtime for lightweight CLI and desktop application packages"
 readme = "README.md"
 license = "MIT"
-license-file = "LICENSE"
 
 [workspace.dependencies]
 anyhow = "1.0.104"

@@ -6,7 +6,6 @@ authors.workspace = true
 description = "Build tooling for the dnr runtime and dnc packager"
 readme.workspace = true
 license.workspace = true
-license-file.workspace = true
 publish = false
 
 [dependencies]

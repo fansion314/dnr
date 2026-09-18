@@ -100,6 +100,12 @@ sudo pacman -U release/songjian-1.1.0-1-x86_64.pkg.tar.zst
 sudo pacman -R songjian
 ```
 
+KDE Plasma 从旧的手工安装迁移时，还应以当前桌面用户执行
+`kbuildsycoca6 --noincremental`，刷新应用服务缓存。`update-desktop-database`
+只更新桌面文件的 MIME 缓存，不能替代 KDE 缓存刷新；不要用 sudo 为 root 重建。
+若启动器仍引用旧路径，检查当前会话语言对应的缓存，必要时分别使用
+`LANG=C LC_ALL=C kbuildsycoca6 --noincremental` 和实际桌面语言重建。
+
 安装位置由包管理器追踪：
 
 | 路径 | 内容 |

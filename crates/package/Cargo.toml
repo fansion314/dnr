@@ -6,7 +6,6 @@ authors.workspace = true
 description = "Application package format, virtual filesystem, and decompression cache for dnr"
 readme.workspace = true
 license.workspace = true
-license-file.workspace = true
 keywords = ["deno", "zip", "vfs", "packaging", "zstd"]
 categories = ["filesystem", "compression"]
 

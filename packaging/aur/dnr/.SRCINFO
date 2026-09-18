@@ -1,0 +1,38 @@
+pkgbase = dnr
+	pkgdesc = Shared Deno runtime and lightweight application packager (system CEF)
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/fansion314/dnr
+	arch = x86_64
+	license = MIT
+	license = Apache-2.0
+	license = BSD-3-Clause
+	makedepends = git
+	makedepends = rust
+	makedepends = clang
+	makedepends = cmake
+	makedepends = python
+	makedepends = pkgconf
+	depends = glibc
+	depends = gcc-libs
+	depends = gtk3
+	depends = glib2
+	depends = cairo
+	depends = zlib
+	depends = libx11
+	depends = libxi
+	depends = cef
+	optdepends = libayatana-appindicator: system tray support
+	optdepends = libnotify: desktop notifications via notify-send
+	optdepends = base-devel: build Arch application packages with dnc
+	conflicts = dnr-webview
+	options = !lto
+	options = !debug
+	source = dnr::git+https://github.com/fansion314/dnr.git#tag=v0.1.0
+	source = deno::git+https://github.com/denoland/deno.git#commit=abd22074e47c6a5cd14e9e4e84743f084aa5a575
+	source = laufey::git+https://github.com/littledivy/laufey.git#commit=1fe87874288e8359fa3de04d18cc14f56957b000
+	sha256sums = SKIP
+	sha256sums = SKIP
+	sha256sums = SKIP
+
+pkgname = dnr

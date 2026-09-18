@@ -6,7 +6,6 @@ authors.workspace = true
 description = "Package prepared JavaScript and TypeScript applications without bundling a runtime"
 readme.workspace = true
 license.workspace = true
-license-file.workspace = true
 keywords = ["deno", "packaging", "desktop", "cli", "typescript"]
 categories = ["command-line-utilities", "development-tools"]
 

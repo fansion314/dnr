@@ -1,0 +1,54 @@
+# Maintainer: Peilin Fan <peilin.fan@foxmail.com>
+pkgname=dnr
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Shared Deno runtime and lightweight application packager (system CEF)'
+arch=('x86_64')
+url='https://github.com/fansion314/dnr'
+license=('MIT' 'Apache-2.0' 'BSD-3-Clause')
+depends=('glibc' 'gcc-libs' 'gtk3' 'glib2' 'cairo' 'zlib' 'libx11' 'libxi' 'cef')
+makedepends=('git' 'rust' 'clang' 'cmake' 'python' 'pkgconf')
+optdepends=('libayatana-appindicator: system tray support'
+            'libnotify: desktop notifications via notify-send'
+            'base-devel: build Arch application packages with dnc')
+conflicts=('dnr-webview')
+# xtask handles Rust LTO and stripping; avoid distro C/C++ LTO and debug packages.
+options=('!lto' '!debug')
+_deno_commit=abd22074e47c6a5cd14e9e4e84743f084aa5a575
+_laufey_commit=1fe87874288e8359fa3de04d18cc14f56957b000
+source=("dnr::git+https://github.com/fansion314/dnr.git#tag=v${pkgver}"
+        "deno::git+https://github.com/denoland/deno.git#commit=${_deno_commit}"
+        "laufey::git+https://github.com/littledivy/laufey.git#commit=${_laufey_commit}")
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+
+prepare() {
+    cd "$srcdir/dnr"
+    cargo run --locked -p xtask -- prepare --deno "$srcdir/deno" --laufey "$srcdir/laufey"
+    cargo fetch --locked --manifest-path .upstream/deno/Cargo.toml --target x86_64-unknown-linux-gnu
+}
+
+build() {
+    cd "$srcdir/dnr"
+    cargo run --locked -p xtask -- build --backend system-cef
+}
+
+check() {
+    cd "$srcdir/dnr"
+    cargo test --locked --workspace
+    DNR_BIN="$srcdir/dnr/dist/dnr" cargo test --locked -p dnr-package \
+        --test runtime --test runtime_native -- --ignored
+    dist/dnr --check-system-cef
+}
+
+package() {
+    cd "$srcdir/dnr"
+    install -Dm755 dist/dnr "$pkgdir/usr/bin/dnr"
+    install -Dm755 dist/dnc "$pkgdir/usr/bin/dnc"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 .upstream/deno/LICENSE.md "$pkgdir/usr/share/licenses/$pkgname/LICENSE-DENO"
+    install -Dm644 .upstream/laufey/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-LAUFEY"
+    install -Dm644 .upstream/laufey/LICENSE.cef "$pkgdir/usr/share/licenses/$pkgname/LICENSE-CEF"
+    install -Dm644 THIRD_PARTY.md "$pkgdir/usr/share/licenses/$pkgname/THIRD_PARTY.md"
+    install -Dm644 README.md README.zh.md -t "$pkgdir/usr/share/doc/$pkgname"
+    install -Dm644 docs/*.md -t "$pkgdir/usr/share/doc/$pkgname/docs"
+}

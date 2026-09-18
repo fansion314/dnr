@@ -25,7 +25,7 @@ Apps share the **installed runtime binary**, while each app runs in its own proc
 
 The runtime statically includes the customized Deno runtime and Laufey backend; system frameworks and WebView/CEF libraries remain external dependencies. Windows, macOS Intel, and Linux ARM64 are not currently supported targets.
 
-macOS and Linux have native runtime and GUI validation records. The newest native-plugin changes have been revalidated on macOS only; the full Linux desktop-packaging workflow still needs native validation. See [validation records](VALIDATION.md) for the scope and dates of each result.
+macOS and Linux have native runtime and GUI validation records, including packaged native plugins. Both Linux backends and the Arch desktop-packaging workflow have passed native validation. See [validation records](VALIDATION.md) for the scope and dates of each result.
 
 ## Quick start
 
@@ -134,6 +134,10 @@ A `.dnp` is a shell launcher followed by a ZIP archive, with ordinary files comp
 Native libraries must match the platform, architecture, and runtime ABI. Their OS-level shared-library dependencies are not collected or extracted automatically. Libraries outside the ZIP load from disk as usual. Pure JS/TS packages can be reused across supported platforms when their code and dependencies are portable.
 
 See the [package format](docs/FORMAT.md) for precise filesystem and integrity rules.
+
+## Arch Linux / CachyOS packages
+
+Release-pinned AUR recipes are in [`packaging/aur`](packaging/aur/README.md): `dnr` uses system CEF, and `dnr-webview` uses WebKitGTK. Both install `dnr` and `dnc`; choose one variant. See the [packaging guide](packaging/aur/README.md) for dependencies and build instructions.
 
 ## Build from source
 
