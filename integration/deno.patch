@@ -438,3 +438,16 @@
    let is_cjs = cjs_tracker
      .is_cjs_with_known_is_script(specifier, media_type, is_script)
      .map_err(JsErrorBox::from_err)?;
+--- a/cli/tsc/dts/lib.deno.desktop.d.ts
++++ b/cli/tsc/dts/lib.deno.desktop.d.ts
+@@ -720,8 +720,8 @@
+   /** App-level dock / taskbar handle.
+    *
+    * A `"reopen"` event fires on macOS when the user clicks the dock icon;
+-   * the default behavior of showing the last hidden window is swallowed,
+-   * so listeners decide what (if anything) to do.
++   * AppKit also performs its default window restoration (for example,
++   * restoring a minimized window). Listeners can handle additional app work.
+    */
+   export class Dock extends EventTarget {
+     constructor();

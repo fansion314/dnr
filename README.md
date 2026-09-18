@@ -50,7 +50,11 @@ dnc examples/desktop --entry main.ts -o desktop.dnp
 
 桌面页面通过 `window.bindings.<name>(...)` 调用 `BrowserWindow.bind()` 注册的函数。`Deno.serve()` 本身不会创建窗口。GUI 示例使用显式 `BrowserWindow`；窗口关闭后，应用需要关闭仍运行的 HTTP 服务或其他任务。
 
-系统签名和应用身份属于 dnr，不提供每个包独立的 macOS `.app`、通知身份或深链安装。包格式见 [FORMAT.md](docs/FORMAT.md)，上游来源见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+直接运行 `.dnp` 时使用 dnr 的系统身份；dnr/dnc 核心不生成 macOS `.app`、通知身份或深链安装。
+应用项目可以另行提供薄 `.app` 启动器：Songjian 已验证通过 LaunchServices 启动原生启动器，
+设置 Laufey 的应用名和图标后 `exec` 共享 dnr，保留正确的应用名称、Bundle ID 和 Dock 图标。
+其安装与签名由 Songjian 的应用脚本负责，不改变 `.dnp` 格式；验证范围见 [验证记录](VALIDATION.md)。
+包格式见 [FORMAT.md](docs/FORMAT.md)，上游来源见 [THIRD_PARTY.md](THIRD_PARTY.md)。
 
 ## 文件系统语义
 
@@ -72,6 +76,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime -- --ignored
 # 打开测试窗口，完成页面绑定检查后自动退出：
 dist/dnr examples/desktop/smoke.ts
+# macOS 真实快捷键、最小化按钮与 Dock 恢复回归（需要辅助功能/自动化权限）：
+python3 scripts/test-macos-window.py dist/dnr
 ```
 
 平台验证以实际运行结果为准；Linux GUI、Wayland 和 system-CEF 需要原生 Linux 环境，不能用 macOS 上的文件检查替代。当前实现与验证状态见 [验证记录](VALIDATION.md)，Linux 复验步骤见 [LINUX.md](docs/LINUX.md)。

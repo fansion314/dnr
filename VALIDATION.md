@@ -38,11 +38,47 @@ PATH="$PWD/dist:$PATH" dist/desktop-smoke.dnp
 | `dist/hello.dnp` | 783 字节 | CLI 示例，含脚本与文本资源 |
 | `dist/desktop-smoke.dnp` | 1,798 字节 | 原生窗口、双向绑定及关窗后异步任务测试 |
 
+## Songjian 应用接入（2026-09-18）
+
+- 在 macOS ARM64 上使用现有 release dnc/dnr 重新打包 Songjian；前端由 Vite+ 单独构建，
+  `Songjian/release/dnr/Songjian.dnp` 为 48,210 字节，包含前端资源和 4 个桌面源码/配置文件，不带运行时。
+- Songjian 桌面入口改用随机本机端口并显式导航窗口；新增 `desktop:build:dnr` 命令。
+  实际产物从 `/private/tmp` 启动成功，随后主动结束该验证进程。
+- 使用相同前端和桌面代码、仅替换数据目录并注入测试探针的独立烟雾包，从 `/private/tmp` 直接执行两次。
+  真实 WebView 自动确认 Svelte 渲染、120% 缩放、DOM 添加待办、JSON 落盘及新进程/新端口恢复。
+  两次均输出 `SONGJIAN_GUI_OK`，程序关窗并关闭 HTTP 服务后退出码均为 0。
+- 程序调用 `window.close()` 不触发用户关闭请求的 `close` 事件；测试需显式关闭 HTTP 服务。
+  本轮未自动点击红色关闭按钮，未验证音频或 Linux，也未重新构建原 Deno Desktop `.app`。
+- Songjian 的 `vp check`、`vp run check`、Deno 类型检查/lint 通过；29 项前端/脚本测试及
+  4 项 Deno 桌面测试通过，5 项 Linux 安装测试在 Mac 上跳过。dnr 本身未修改实现或重建。
+
+## Songjian macOS 薄应用安装（2026-09-18）
+
+用户明确要求独立 macOS 应用及 Dock 图标，并选择继续共享 dnr。实现位于 Songjian 的
+`scripts/macos-dnr.mjs`、`scripts/macos-launcher.m` 和 `scripts/install-macos-dnr.mjs`，
+dnr 核心及运行时二进制未修改。
+
+- ARM64 原生启动器 + Info.plist + ICNS + `.dnp` 的 `.app` 实际文件总大小 182,314 字节，
+  安装到 `/Applications/松间.app`；共享 dnr 为 74,095,072 字节。
+- 共享运行时安装在当前用户 `~/Library/Application Support/dnr/runtimes/<SHA-256>/dnr`，
+  应用按哈希引用固定版本；已核对安装后哈希与构建输入一致，不引用源码仓库路径。
+- `codesign --verify --deep --strict` 通过。LaunchServices 实测显示名称“松间”、
+  Bundle ID `world.fansionia.songjian`、bundle path `/Applications/松间.app`，
+  executable path 为共享运行时，originalExecutablePath 为包内原生启动器。
+- 原图背景铺满画布导致 Dock 图标视觉过大；macOS 派生 SVG 改为 1024 画布内 824 主体，
+  每边 100 透明像素，resvg 渲染各尺寸后生成 ICNS。用户已观察修正后的测试版并确认“现在大小正常”。
+  自动 UI 工具超时，未取得自动截图；该视觉结论来自用户确认。
+- 安装时曾备份旧版 `.app`，确认替换成功后按用户要求删除了本次备份。
+  替换完成后从正式安装位置启动成功；安装前后 `workspace.json` 哈希相同。
+- Songjian 的格式/lint/类型检查、Svelte 检查和 29 项现有测试通过；5 项 Linux 专用测试跳过。
+  Objective-C 启动器以 `-Wall -Wextra -Werror` 编译通过。应用为本地 ad-hoc 签名，未公证。
+
 ## 原有范围
 
 此前延后的 Linux 验收已于 2026-09-18 在用户指定的本机继续执行，结果如下。复验步骤见 [LINUX.md](docs/LINUX.md)。
 
-首版不包含 npm/JSR/HTTP 模块在线安装、ZIP 原生库释放、桌面安装器、每应用独立的 macOS bundle 身份或自动更新。这些是已约定的范围边界。
+dnr/dnc 核心不包含 npm/JSR/HTTP 模块在线安装、ZIP 原生库释放、桌面安装器、macOS bundle 生成或自动更新。
+上述 Songjian 薄应用由其应用项目单独构建和安装，不代表 dnc 已提供通用 macOS 打包功能。
 
 
 ## Linux x86_64（2026-09-18）
@@ -163,3 +199,35 @@ GUI 结果来自真实 KDE Wayland 会话中的原生后端自动验证，不是
 相邻 Songjian 项目经 Vite+ 构建后生成 48,210 字节的 `.dnp`。旧 `/opt/Songjian` 中的独立 `Songjian.so`、原生后端与 CEF 资源链接已移除，替换为约 104 KiB 的应用目录和共享运行时启动器。原桌面入口 ID `world.fansionia.songjian`、中文名称和主题图标沿用；启动器在每次运行前检查 system-CEF ABI。
 
 使用 GIO 从实际安装的 `.desktop` 入口启动，KWin 报告窗口标题“松间”、`resourceClass` 与 `desktopFileName` 均为 `world.fansionia.songjian`，匹配安装的主题图标；发送原生关窗请求后退出码为 0。GUI 验证使用隔离数据目录，安装前后真实 `workspace.json` 的 SHA-256 一致。安装与桌面启动证据保存在 `dist/validation-linux/install/`，没有将应用数据加入仓库。
+
+## macOS 隐藏与 Dock 恢复（2026-09-18）
+
+本轮在 macOS 27.0（26A428）ARM64 / Rust 1.98.1 上，将远程 `b81c530`
+快进合并到本地，并保留原有 Songjian 文档改动。随后修复 WebView 后端的两个问题：
+
+- 默认应用菜单缺少 `hide:` 菜单项，现增加 Cmd+H，并将目标显式设为 `NSApp`。
+  应用自行替换菜单时仍由自定义菜单负责提供 `hide` role。
+- `applicationShouldHandleReopen:hasVisibleWindows:` 原先总是返回 `NO`，拦截系统恢复窗口。
+  现保留 JS `Dock.reopen` 通知并返回 `YES`，允许 AppKit 执行默认恢复；同步更新接口注释。
+  返回值语义见 [Apple 文档](https://developer.apple.com/documentation/appkit/nsapplicationdelegate/applicationshouldhandlereopen(_:hasvisiblewindows:))。
+
+### 实际验证
+
+- 旧版二进制的真实窗口上，Cmd+H 后应用仍可见；点击黄色最小化按钮再点击 Dock 后，
+  `AXMinimized` 仍为 `true`。新增脚本对旧版执行时明确失败于 `Cmd+H did not hide application`。
+- 新版 `python3 scripts/test-macos-window.py dist/dnr` 退出 0，输出 `DNR_MACOS_WINDOW_OK`。
+  使用 macOS System Events 实际发送 Cmd+H、点击黄色按钮及 Dock 图标，连续两轮确认：
+  应用隐藏、Dock 取消隐藏并激活、最小化、Dock 还原、没有重复窗口。
+  同时收到 4 次 JS Dock reopen 通知；点击原生关闭按钮后异步收尾完成，进程退出 0。
+- 两份补丁的所有目标文件先恢复并逐字核对固定上游版本，再执行 `xtask prepare`，成功应用。
+  `xtask build` release 成功；sccache 保持启用。构建时 Cargo 缓存了先前的 sccache
+  权限失败，重启 sccache 并使用 `CARGO_CACHE_RUSTC_INFO=0` 重新探测后恢复。
+- `cargo test --workspace`：12 项包测试通过；显式执行新版 release 的原生测试，6 项全部通过。
+  `cargo clippy --workspace --all-targets -- -D warnings` 和 `cargo fmt --all -- --check` 通过。
+- 重新打包 `examples/desktop/smoke.ts`，从 `/private/tmp` 启动应用包，输出 `DNR_GUI_OK`、
+  退出 0，覆盖页面绑定及关闭后的异步任务。`codesign --verify --strict --verbose dist/dnr` 通过。
+
+新版产物为 `dist/dnr`，SHA-256：
+`e91a63c9688a2a9ae439d7ce661ac2110a9cb0568a2a672afcf843d90b0b3f52`。
+本轮没有替换已安装的 Songjian `.app` 或其按哈希固定的共享运行时；应用需更新运行时引用后
+才会使用本次修复。没有在本轮重新执行 Linux GUI 验证，Linux 证据仍来自合并的远程记录。

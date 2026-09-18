@@ -194,7 +194,7 @@
  
 --- a/webview/src/main_mac.mm
 +++ b/webview/src/main_mac.mm
-@@ -134,7 +134,8 @@
+@@ -134,15 +134,16 @@
  }
  
  - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
@@ -204,6 +204,32 @@
  }
  
  - (BOOL)applicationShouldHandleReopen:(NSApplication*)sender
+                     hasVisibleWindows:(BOOL)hasVisibleWindows {
+   laufey_common::FireDockReopenMac(hasVisibleWindows ? true : false);
+-  // Always swallow the default "show last hidden window" behavior — the
+-  // embedder's callback decides what to do.
+-  return NO;
++  // Keep the JS notification, but let AppKit restore minimized/hidden windows.
++  // The notification is asynchronous and cannot implement the native default.
++  return YES;
+ }
+ 
+ - (NSMenu*)applicationDockMenu:(NSApplication*)sender {
+@@ -264,6 +265,14 @@
+     [menubar addItem:appMenuItem];
+ 
+     NSMenu* appMenu = [[NSMenu alloc] init];
++    NSMenuItem* hideItem =
++        [[NSMenuItem alloc] initWithTitle:[@"Hide " stringByAppendingString:
++                                            [[NSProcessInfo processInfo] processName]]
++                                   action:@selector(hide:)
++                            keyEquivalent:@"h"];
++    [hideItem setTarget:NSApp];
++    [appMenu addItem:hideItem];
++    [appMenu addItem:[NSMenuItem separatorItem]];
+     NSMenuItem* quitItem =
+         [[NSMenuItem alloc] initWithTitle:@"Quit"
+                                    action:@selector(terminate:)
 --- a/webview/src/webview_linux.cc
 +++ b/webview/src/webview_linux.cc
 @@ -478,13 +478,7 @@
