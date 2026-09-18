@@ -10,6 +10,89 @@ use std::{
 
 #[test]
 #[ignore = "requires a built native dnr; set DNR_BIN and pass --ignored"]
+fn read_file_results_own_their_bytes() {
+    let binary = PathBuf::from(std::env::var_os("DNR_BIN").expect("set DNR_BIN"))
+        .canonicalize()
+        .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let install = temp.path().join("installed");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(&install).unwrap();
+    for (name, size) in [
+        ("empty.bin", 0),
+        ("small.bin", 4097),
+        ("large.bin", 2 * 1024 * 1024),
+        ("disk-only.bin", 257),
+    ] {
+        let bytes: Vec<u8> = (0..size).map(|i| (i * 37 + 11) as u8).collect();
+        fs::write(source.join(name), bytes).unwrap();
+    }
+    fs::write(
+        source.join("main.ts"),
+        r#"
+import { readFileSync, readFile } from 'node:fs';
+import { readFile as readFilePromise } from 'node:fs/promises';
+const readers = [
+  (url: URL) => Deno.readFileSync(url),
+  (url: URL) => Deno.readFile(url),
+  (url: URL) => readFileSync(url),
+  (url: URL) => readFilePromise(url),
+  (url: URL) => new Promise<Uint8Array>((resolve, reject) =>
+    readFile(url, (error, bytes) => error ? reject(error) : resolve(bytes))),
+];
+function check(bytes: Uint8Array, size: number) {
+  if (!(bytes instanceof Uint8Array) || bytes.length !== size) throw Error('bad result');
+  for (let i = 0; i < size; i++) {
+    if (bytes[i] !== ((i * 37 + 11) & 255)) throw Error(`data corrupted at ${i}`);
+  }
+}
+for (const [name, size] of [['empty.bin', 0], ['small.bin', 4097],
+    ['large.bin', 2 * 1024 * 1024], ['disk-only.bin', 257]] as const) {
+  const url = new URL(name, import.meta.url);
+  for (const read of readers) {
+    const first = await read(url);
+    check(first, size);
+    first.fill(0);
+    const second = await read(url);
+    check(second, size); // Neither the ZIP cache nor the disk file was mutated.
+    second.fill(255);
+    if (first.some(byte => byte !== 0)) throw Error('results alias each other');
+  }
+  const simultaneous = await Promise.all(readers.map(read => read(url)));
+  simultaneous[0].fill(0);
+  for (const bytes of simultaneous.slice(1)) check(bytes, size);
+  check(await Deno.readFile(url), size);
+}
+console.log('READ_FILE_OWNERSHIP_OK');
+"#,
+    )
+    .unwrap();
+    let package = install.join("app.dnp");
+    pack(&PackOptions {
+        directory: source.clone(),
+        entry: "main.ts".into(),
+        output: package.clone(),
+        includes: vec![],
+        excludes: vec!["disk-only.bin".into()],
+        app_id: Some("test.read-file-ownership".into()),
+        force: false,
+    })
+    .unwrap();
+    fs::copy(source.join("disk-only.bin"), install.join("disk-only.bin")).unwrap();
+    for entry in [source.join("main.ts"), package] {
+        let output = Command::new(&binary).arg(entry).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("READ_FILE_OWNERSHIP_OK"));
+    }
+}
+
+#[test]
+#[ignore = "requires a built native dnr; set DNR_BIN and pass --ignored"]
 fn large_tree_and_overlay_directory_types() {
     let binary = PathBuf::from(std::env::var_os("DNR_BIN").expect("set DNR_BIN"));
     let temp = tempfile::tempdir().unwrap();

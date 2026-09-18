@@ -272,3 +272,39 @@ GUI 结果来自真实 KDE Wayland 会话中的原生后端自动验证，不是
 - 已更新 `dist/dnr`、`dist/dnc` 与产物校验和。本轮未覆盖用户已安装的共享运行时。
 - 本轮没有执行 Linux WebView/system-CEF 构建或 GUI 复验，也未重跑原生标题栏关闭等
   平台专项验收；此前记录保留为历史证据。桌面生命周期代码未作修改。
+
+
+## 整文件读取复制优化（2026-09-18，macOS ARM64）
+
+基线为 `4467e78` 的 release。同步/异步 `op_fs_read_file_*` 将
+`buf.into_owned().to_vec().into()` 改为 `buf.into_owned().into()`，由返回的
+Uint8Array 接管独占缓冲区；借用数据仍由 `into_owned()` 复制。
+改动保存在 `integration/deno.patch`，不修改 mirror、缓存策略、模块加载或桌面生命周期。
+
+- `cargo run -p xtask -- build`：macOS ARM64 release 构建成功，sccache 保持启用。
+- `cargo test --workspace`：14 项包测试通过；8 项原生测试默认忽略。
+- 最终 release 显式执行原生测试：8 项全部通过。新增返回值所有权测试先在旧版通过，
+  再在新版验证 Deno 同步/异步、Node 同步/Promise/回调 API 的内容与可独立修改性。
+  覆盖空文件、4,097 字节及 2 MiB 文件、同时发起的读取、磁盘入口、ZIP 与磁盘回退。
+- 格式检查、Clippy 与补丁应用检查通过；完整补丁作用于干净固定版本文件后的结果逐文件等于构建树。
+- 最终 release 从 `/private/tmp` 运行桌面烟雾包，输出 `DNR_GUI_OK`，退出码 0；签名验证通过。
+- 本轮未执行 Linux 原生构建/验证，也未更新用户已安装的 dnr/dnc。
+
+新增可复用基准 `scripts/bench-read-file.py`，在编译结束后执行：
+
+```sh
+python3 scripts/bench-read-file.py --dnr target/read-copy-baseline/dnr dist/dnr
+```
+
+每个样本使用独立进程，先预热整个 16 MiB ZIP 条目，再计时 8 次读取；
+丢弃一轮预热结果，取后续 7 轮中位数，逐轮交替新旧二进制顺序。
+计时不含进程启动或首次解压，包含返回值分配；同样校验长度和抽样内容。
+
+| 每次 16 MiB 热缓存读取 | 优化前 | 优化后 | 耗时减少 |
+| --- | --- | --- | --- |
+| `Deno.readFileSync` | 1.6956 ms | 1.0869 ms | 35.9% |
+| `Deno.readFile` | 1.6728 ms | 1.0748 ms | 35.7% |
+
+这是本机合成负载，约 1.56 倍吞吐改善，不代表所有文件大小或应用同比提速。
+源码可确定减少一次整文件复制；约 3S → 2S 的瞬时缓冲区存活量是大小模型，
+本轮没有把它当成实测 RSS 降幅。返回后的缓存及 JS 数组占用、GC 压力和首次解压成本仍存在。

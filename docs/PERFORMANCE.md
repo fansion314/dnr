@@ -10,6 +10,7 @@
 | `integration/rt/dnr.rs` 的 VFS 建树 | 每遇到目录就递归扫描整个扁平索引，约 O(目录数 × 条目数) | 逆序遍历已排序的索引，自底向上组装，每个节点处理一次；仍有 BTreeMap 查找及目录内排序成本 |
 | `crates/package/src/lib.rs` 的缓存命中 | `VecDeque::retain` 扫描全部缓存条目，再移至队尾 | HashMap 条目保存前后索引，平均 O(1) 提升和淘汰；最近一次命中的条目无需重连 |
 | `integration/deno.patch` 的目录合并 | 每个磁盘条目线性扫描已有条目；metadata 路径还会额外枚举一次磁盘 | HashSet 查重，metadata 路径复用已取得的 ZIP 元数据；每次调用只枚举一次磁盘 |
+| `integration/deno.patch` 的同步/异步文件 op | `buf.into_owned().to_vec().into()` 复制已有的独占 Vec | `buf.into_owned().into()` 将独占缓冲区交给 V8；借用数据仍由 `into_owned()` 复制 |
 
 VFS 仍保留目录排序、ZIP 优先、只读和符号链接语义。缓存仍按内容字节数淘汰，
 打开的文件句柄通过 `Arc` 保留数据；不因 LRU 淘汰导致已有读取者的数据失效。
@@ -43,13 +44,33 @@ DNR_BIN="$PWD/dist/dnr" cargo run --release -p dnr-package --example performance
 这些是暖文件系统缓存下的合成负载，不代表所有应用同比提速，也不代表冷启动或 Linux 实测。
 基准不设置硬性耗时断言，以免把系统负载抖动当成正确性失败。
 
+## 整文件读取基准
+
+```sh
+python3 scripts/bench-read-file.py --dnr "$PWD/dist/dnr"
+# 对照两个使用相同 release 配置构建的原生运行时
+python3 scripts/bench-read-file.py --dnr /absolute/path/to/before /absolute/path/to/after
+```
+
+脚本使用 `dist/dnc` 生成包含 16 MiB 文件的 Zstd 应用包，也可通过 `--dnc` 指定打包器。
+每个样本启动独立进程，先用文件句柄读取一个字节，预热整个 ZIP 条目；计时只包含
+随后 8 次同步或异步 `Deno.readFile` 及少量内容校验，不包含打包、进程启动和首次解压。
+丢弃一轮预热结果，再取 7 轮中位数；逐轮交替运行时顺序。参数支持
+`--size-mib`、`--iterations`、`--samples`。返回值分配及测量期间可能发生的 GC 包含在计时内。
+
+这次优化只移除文件 op 中冗余的第二次整文件复制。对于仍驻留缓存的 S 字节文件，
+热缓存二进制读取从两次 S 字节复制减少到一次，相关数据的理论瞬时存活量由约 3S 降到约 2S。
+返回后的缓存与一个 JS 结果仍约为 2S；反复创建返回数组的 GC 压力不会消失。
+这些是缓冲区大小模型，不是进程 RSS 保证。模块加载、文本读取、首次解压和 LRU 策略未修改。
+
 ## 审查后保留的成本
 
 - 包内不同文件的解压目前仍由同一个 Mutex 串行化；缓存命中也要获取此锁。
   这保护共享 ZIP 游标，并避免同一可缓存条目并发重复解压。进一步优化需要独立读取游标、
   每条目的并发合并及错误重试设计，先用真实多 Worker 负载确认锁竞争。
 - `read_file_all` 接入 Deno 的 `Cow<[u8]>` 时仍会复制缓存中的 `Arc<[u8]>` 内容；
-  JS 返回值也有自己的内存成本。减少复制需要配合上游所有权接口，不能直接借出可淘汰数据。
+  文件 op 已直接转移独占缓冲区，不再复制第二遍。JS 返回值仍需与缓存隔离，防止修改数组污染文件。
+  模块等只读路径若要保留共享所有权，需要让下游持有 `Arc`，不能将可释放数据的裸切片伪装为静态引用。
 - TS 转译和 CJS 分析仍在运行时完成，dnc 仍只打包。没有引入持久转译缓存或改变包内容。
 - 桌面 worker 在事件循环已空闲但窗口/托盘仍存活时，保留 10 ms 等待后复查的逻辑。
   改成事件通知需覆盖所有关闭、托盘与退出路径，并测量实际空闲 CPU；本轮未修改生命周期。
@@ -61,3 +82,7 @@ DNR_BIN="$PWD/dist/dnr" cargo run --release -p dnr-package --example performance
 零字节文件、超预算文件和持有引用的读取者；损坏 CRC 的文件仍按需报错且不进入缓存。
 原生回归另覆盖大目录树、前缀相近的目录名、Unicode、空目录、符号链接及两层目录合并。
 这些测试与原有的 Node 插件、Worker、TS/CJS、退出等原生测试一并执行。
+
+文件读取另有所有权回归：Deno 同步/异步与 Node 同步/Promise/回调 API 返回的数组可独立修改，
+不会影响缓存、原文件或其他读取结果；覆盖空文件、4,097 字节与 2 MiB 文件、并发读取、
+磁盘入口、ZIP 入口和包旁磁盘回退。
