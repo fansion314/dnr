@@ -675,3 +675,15 @@ fork/exec 时，子进程可能短暂继承另一个测试的可写脚本句柄�
 - 首次沙箱内保留源文件所有权失败，改为复制时不保留所有权后两份配方通过。
 - 提交时尚未执行远程 Actions；实际构建、测试和发布状态以对应 tag 的 Actions
   运行记录为准。本地配方验证不等同于 CI 或真实 GUI 验收。
+
+### GitHub Actions 实际构建与下载复验
+
+- [运行 35341683353](https://github.com/fansion314/dnr/actions/runs/35341683353)
+  的 CEF/WebView 两个 job 构建、测试及包归档均成功。首次发布 job 因重建标签后
+  原 Release 变为草稿、脚本提前设置 Latest 而收到 HTTP 422。
+- 恢复原 Release 的公开状态后，仅重跑发布 job，14 秒完成，整次运行最终 Success；
+  复用已通过测试的两个归档，没有重编译。脚本修复为上传完成并发布后才设置 Latest。
+- 从公开 GitHub Release 实际下载两种归档和 SHA-256，通过两份 `-bin` 配方生成
+  pacman 包。下载到的两种 dnr 分别再次通过 10 项 runtime 和 4 项原生插件测试。
+- 此次发行二进制来自 tag `v0.1.0` 的 `e4d7eb8`；后续发布脚本修复不改变运行时源码。
+  本地下载复验证据位于 `dist/validation-github-bin/`。

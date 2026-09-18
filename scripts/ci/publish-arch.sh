@@ -28,7 +28,7 @@ done
 
 if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
     gh release edit "$tag" --repo "$GITHUB_REPOSITORY" \
-        --title "dnr $tag" --notes-file "$notes" --latest
+        --title "dnr $tag" --notes-file "$notes"
 else
     gh release create "$tag" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
         --title "dnr $tag" --notes-file "$notes"
