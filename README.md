@@ -137,7 +137,7 @@ See the [package format](docs/FORMAT.md) for precise filesystem and integrity ru
 
 ## Arch Linux / CachyOS packages
 
-Release-pinned AUR recipes are in [`packaging/aur`](packaging/aur/README.md): `dnr` uses system CEF, and `dnr-webview` uses WebKitGTK. Both install `dnr` and `dnc`; choose one variant. See the [packaging guide](packaging/aur/README.md) for dependencies and build instructions.
+Release-pinned AUR recipes are in [`packaging/aur`](packaging/aur/README.md): `dnr` uses system CEF, and `dnr-webview` uses WebKitGTK. Choose `dnr-bin` or `dnr-webview-bin` to use GitHub Release binaries without compiling the runtime. All install `dnr` and `dnc`; choose one package. Tagged releases build both backends in the official Arch container. See the [packaging guide](packaging/aur/README.md) for dependencies and installation instructions.
 
 ## Build from source
 

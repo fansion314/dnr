@@ -137,7 +137,7 @@ macOS `.app` 使用原生启动器，并进行本地 ad-hoc 签名；Linux 软�
 
 ## Arch Linux / CachyOS 软件包
 
-固定发行版的 AUR 配方位于 [`packaging/aur`](packaging/aur/README.md)：默认 `dnr` 使用系统 CEF，`dnr-webview` 使用 WebKitGTK。两者都安装 `dnr` 和 `dnc`，只能选择其一。依赖与构建方法见[打包说明](packaging/aur/README.md)。
+固定发行版的 AUR 配方位于 [`packaging/aur`](packaging/aur/README.md)：默认 `dnr` 使用系统 CEF，`dnr-webview` 使用 WebKitGTK。选择 `dnr-bin` 或 `dnr-webview-bin` 可下载 GitHub Release 预编译包，无需编译运行时。四种配方均安装 `dnr` 和 `dnc`，只能选择其一。推送版本标签后，Actions 在 Arch 官方容器中构建两个后端。依赖与安装方法见[打包说明](packaging/aur/README.md)。
 
 ## 从源码构建
 

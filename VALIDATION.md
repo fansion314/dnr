@@ -643,3 +643,35 @@ SHA-256 未变。fish 中 `command -v pi` 为 `/usr/local/bin/pi`，`pi --versio
   `dist/dnr`、`dist/dnc` 恢复为原有已验证的 system-CEF 产物。
 - 本轮未重新执行 GUI、macOS 或 AUR 服务器上传。发行内容为源码和 AUR 配方，
   不上传本机按 native CPU 参数构建的二进制。日志与本地测试包位于 `dist/validation-aur/`。
+
+## Linux 并行脚本测试 ETXTBSY 修复（2026-09-18）
+
+用户在本地 PKGBUILD 的 `check()` 遇到 `missing_runtime_exits_before_zip_bytes`
+启动失败：`Text file busy`（ETXTBSY）。写句柄在 pack 返回前已经关闭；两个测试并发
+fork/exec 时，子进程可能短暂继承另一个测试的可写脚本句柄，触发 Rust/Linux 已知
+竞争（rust-lang/rust#114554）。修复只对两个“创建并直接执行脚本”的测试加互斥锁，
+保留直接执行、参数传递、缺失 runtime 退出码等断言，其他测试继续并行。
+
+- 原有 16 项包测试以 16 线程重复执行，第 12 轮在另一脚本测试复现同样 ETXTBSY。
+- 修复后连续 300 轮、共 4,800 项包测试通过，仍使用 16 线程。
+- 工作区 33 项测试通过，15 项宿主测试按设计忽略；Clippy 和格式检查通过。
+- 同步测试修复到用户已构建的 `packaging/aur/dnr/src/dnr`，保留其编译产物以便
+  用 `makepkg --noextract` 重试；本轮没有重编 Deno 或修改系统安装。
+
+## Arch 标签构建工作流与二进制配方（2026-09-18）
+
+新增仅在版本标签 push 时运行的 `release-arch.yml`。两个 job 分别在 Arch 官方
+`ghcr.io/archlinux/archlinux:base-devel` 镜像中，以普通用户构建 CEF/WebView 包并运行
+工作区及 runtime/native 测试；全部成功后更新 GitHub Release。产物带单包 SHA-256、
+统一 SHA256SUMS、容器镜像摘要及工具链/系统库记录，面向通用 x86_64。
+
+新增 `dnr-bin`、`dnr-webview-bin` 及 `.SRCINFO`。配方从对应 GitHub Release 下载包和
+校验文件，在提取前验证 SHA-256，仅重新封装二进制、许可证与文档，不执行编译。
+
+- actionlint、Bash 语法、Git 空白检查通过。
+- 本地使用两份既有已验证包，实际完成两个 `-bin` 的 makepkg 重新封装；确认二进制
+  逐字节一致、包名/依赖/provides/conflicts 正确，`.SRCINFO` 与生成结果一致。
+- 错误摘要与错误文件名的校验文件均在提取前被拒绝。
+- 首次沙箱内保留源文件所有权失败，改为复制时不保留所有权后两份配方通过。
+- 提交时尚未执行远程 Actions；实际构建、测试和发布状态以对应 tag 的 Actions
+  运行记录为准。本地配方验证不等同于 CI 或真实 GUI 验收。

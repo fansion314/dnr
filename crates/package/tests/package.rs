@@ -1,6 +1,13 @@
 use dnr_package::*;
 use std::{fs, sync::Arc};
 
+// Concurrent fork/exec can inherit another test's writable script descriptor
+// until exec closes it, causing ETXTBSY even after the writer was dropped.
+// Serialize creation and execution of scripts, preserving direct-exec coverage.
+// https://github.com/rust-lang/rust/issues/114554
+#[cfg(unix)]
+static EXECUTABLE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn fixture() -> (tempfile::TempDir, PackOptions) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("app");
@@ -294,6 +301,7 @@ fn malformed_package_fails() {
 #[test]
 #[cfg(unix)]
 fn shell_header_preserves_arguments_and_entry_quotes() {
+    let _guard = EXECUTABLE_TEST_LOCK.lock().unwrap();
     use std::os::unix::fs::PermissionsExt;
     let (temp, mut opts) = fixture();
     fs::rename(
@@ -325,6 +333,7 @@ fn shell_header_preserves_arguments_and_entry_quotes() {
 #[test]
 #[cfg(unix)]
 fn missing_runtime_exits_before_zip_bytes() {
+    let _guard = EXECUTABLE_TEST_LOCK.lock().unwrap();
     let (_temp, opts) = fixture();
     pack(&opts).unwrap();
     let output = std::process::Command::new(&opts.output)
