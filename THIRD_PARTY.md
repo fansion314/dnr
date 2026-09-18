@@ -1,5 +1,9 @@
 # Upstream components
 
+dnr's original code is licensed under the [MIT License](LICENSE), copyright
+2026 Peilin Fan <peilin.fan@foxmail.com>. Third-party components retain their
+own licenses and copyright notices.
+
 dnr builds modified upstream sources locally. Original copyright and license
 notices remain in the prepared source trees; those sources and local changes are
 available through the following references:
