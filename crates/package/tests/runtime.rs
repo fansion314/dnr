@@ -10,6 +10,112 @@ use std::{
 
 #[test]
 #[ignore = "requires a built native dnr; set DNR_BIN and pass --ignored"]
+fn package_tree_and_extract_commands() {
+    let binary = PathBuf::from(std::env::var_os("DNR_BIN").expect("set DNR_BIN"))
+        .canonicalize()
+        .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    fs::create_dir_all(source.join("empty")).unwrap();
+    // Inspection and extraction must never execute the application entrypoint.
+    fs::write(source.join("main.ts"), "throw Error('ENTRY_EXECUTED');").unwrap();
+    fs::write(source.join("asset.txt"), b"asset bytes").unwrap();
+    let package = temp.path().join("app with spaces.dnp");
+    pack(&PackOptions {
+        directory: source,
+        entry: "main.ts".into(),
+        output: package.clone(),
+        includes: vec![],
+        excludes: vec![],
+        app_id: Some("test.commands".into()),
+        force: false,
+    })
+    .unwrap();
+    let run = |args: &[&std::ffi::OsStr]| {
+        Command::new(&binary)
+            .args(args)
+            .current_dir(temp.path())
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_DISPLAY")
+            .output()
+            .unwrap()
+    };
+    let tree = run(&["tree".as_ref(), package.as_os_str()]);
+    assert!(
+        tree.status.success(),
+        "{}",
+        String::from_utf8_lossy(&tree.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(tree.stdout).unwrap(),
+        ".\n├── .dnr/\n│   └── manifest.json\n├── asset.txt\n├── empty/\n└── main.ts\n"
+    );
+    assert!(tree.stderr.is_empty());
+    let destination = temp.path().join("extracted app");
+    let extracted = run(&[
+        "extract".as_ref(),
+        package.as_os_str(),
+        destination.as_os_str(),
+    ]);
+    assert!(
+        extracted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&extracted.stderr)
+    );
+    assert!(extracted.stderr.is_empty());
+    assert_eq!(
+        fs::read(destination.join("asset.txt")).unwrap(),
+        b"asset bytes"
+    );
+    assert!(destination.join(".dnr/manifest.json").is_file());
+    assert!(destination.join("empty").is_dir());
+    let repeated = run(&[
+        "extract".as_ref(),
+        package.as_os_str(),
+        destination.as_os_str(),
+    ]);
+    assert!(!repeated.status.success());
+    assert!(String::from_utf8_lossy(&repeated.stderr).contains("not empty"));
+    for command in ["tree", "extract"] {
+        assert!(run(&[command.as_ref(), "--help".as_ref()]).status.success());
+        let missing = run(&[command.as_ref()]);
+        assert!(!missing.status.success());
+        assert!(String::from_utf8_lossy(&missing.stderr).contains("usage:"));
+        assert!(
+            !run(&[
+                command.as_ref(),
+                package.as_os_str(),
+                "extra".as_ref(),
+                "extra".as_ref()
+            ])
+            .status
+            .success()
+        );
+    }
+    assert!(
+        !run(&["tree".as_ref(), "missing.dnp".as_ref()])
+            .status
+            .success()
+    );
+    let script = temp.path().join("args.ts");
+    fs::write(&script, "console.log(JSON.stringify(Deno.args));").unwrap();
+    let args = run(&[script.as_os_str(), "tree".as_ref(), "extract".as_ref()]);
+    assert!(args.status.success());
+    assert_eq!(
+        String::from_utf8(args.stdout).unwrap().trim(),
+        "[\"tree\",\"extract\"]"
+    );
+    fs::write(temp.path().join("tree"), "console.log('SCRIPT_OK');").unwrap();
+    let named_script = run(&["./tree".as_ref()]);
+    assert!(named_script.status.success());
+    assert_eq!(
+        String::from_utf8(named_script.stdout).unwrap().trim(),
+        "SCRIPT_OK"
+    );
+}
+
+#[test]
+#[ignore = "requires a built native dnr; set DNR_BIN and pass --ignored"]
 fn parallel_workers_read_shared_and_distinct_zip_entries() {
     let binary = PathBuf::from(std::env::var_os("DNR_BIN").expect("set DNR_BIN"))
         .canonicalize()

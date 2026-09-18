@@ -11,6 +11,7 @@ use std::{
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 mod cache;
+mod contents;
 mod native;
 mod reader;
 

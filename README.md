@@ -2,7 +2,7 @@
 
 共享安装的 Deno runtime，以及不携带运行时的可执行应用包。
 
-- `dnr`：运行本地 JS/TS 或 `.dnp` 应用包；调用 GUI API 时启动桌面后端。
+- `dnr`：运行本地 JS/TS 或 `.dnp` 应用包，查看包目录树或解压包；调用 GUI API 时启动桌面后端。
 - `dnc`：将准备好的目录打包成 shell 启动头 + ZIP，文件使用 Zstd level 6。
 - 支持目标：macOS ARM64 WebView、Linux x86_64 WebView、Linux x86_64 system-CEF。
 
@@ -40,11 +40,23 @@ dnc examples/hello --entry main.ts -o hello.dnp
 ./hello.dnp one two
 dnr hello.dnp one two
 
+# 查看 ZIP 的完整目录树（含 .dnr/manifest.json）
+dnr tree hello.dnp
+# 将 ZIP 全部内容解压到指定的新目录或空目录
+dnr extract hello.dnp ./hello-unpacked
+
 dnc examples/desktop --entry main.ts -o desktop.dnp
 ./desktop.dnp
 ```
 
 打包器不分析 import、不安装依赖、不运行前端构建。请提前准备好本地源码、资源与 `node_modules`。可以通过 `--include source=destination` 添加外部资源，通过 `--exclude archive/path` 排除文件或目录。覆盖输出需要 `--force`。
+
+`tree` 按名称排序显示目录树，目录以 `/` 结尾，符号链接显示为 `名称 -> 目标`，不展开链接。
+它只读取包内索引、manifest 和链接目标，不解压普通文件，也不混入包旁磁盘文件。
+`extract` 包含隐藏文件与原始 manifest，保留空目录、符号链接及 Unix 权限（不恢复 setuid/setgid 等特殊位），不导出 ZIP 外的 shell 启动头。
+目标目录必须不存在或为空，不能是符号链接；父目录会自动创建。解压逐文件检查尺寸与 CRC，先写入同级临时目录，全部成功后再发布，失败不留下部分目标内容。
+两个命令都不会执行应用或启动 JS/GUI 后端，可通过 `dnr tree --help` 和 `dnr extract --help` 查看用法。
+运行文件名恰为 `tree` 或 `extract` 的脚本时，使用 `dnr ./tree` 或 `dnr ./extract`。
 
 应用全权限运行，不是沙箱。npm/JSR/HTTP 模块不在线下载；网络 API 如 `fetch`、`Deno.serve` 可正常使用。兼容的 Node-API 原生插件和显式加载的 FFI 库可放入应用 ZIP，首次加载时按包内路径解压到系统临时目录并加载。
 

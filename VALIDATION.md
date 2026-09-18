@@ -414,3 +414,27 @@ sccache 保持启用；沙箱内编译权限失败后通过提权执行完成构
 最终 `dist/dnr` SHA-256：`5aab8dcf9fc4b1f88e0c182cf21fdd8dd6472bf4399281bd9738fa9e6b52bca8`。
 工作区及原生测试日志保存于 `dist/validation-native-tmp/`。
 本轮未执行 Linux WebView / system-CEF 原生复验；未修改用户已安装的共享运行时，未提交或推送。
+
+## 包目录树与完整解压（2026-09-18）
+
+新增 `dnr tree <application.dnp>` 和 `dnr extract <application.dnp> <directory>`。
+命令在进入 JS/GUI 宿主之前处理，包含 ZIP 内的原始 manifest，不使用运行时的磁盘回退。
+解压流式校验内容，在同级私有临时目录准备完成后发布至新目录或空目录；非空目录、文件和符号链接目标均拒绝覆盖。
+
+本机 `Darwin arm64`、Rust 1.98.1、WebView 后端，sccache 保持启用（构建/测试通过沙箱提权运行）。
+
+- `cargo test --locked --workspace`：29 项通过，14 项真实宿主测试按设计忽略。
+  新增 5 项包层测试覆盖目录排序、隐式父目录、Unicode/控制字符显示、链接不展开、原始 manifest 字节、
+  Zstd 文件、空文件/空目录、执行权限、新建/现有空目录、非空目录与符号链接目标拒绝覆盖。
+  CRC 损坏时仍可查看树，但解压失败不发布部分目标内容；越界路径、链接循环、文件/目录冲突和规范化重名均拒绝。
+- `cargo clippy --locked --workspace --all-targets -- -D warnings`、`cargo fmt --all -- --check`、
+  `rustfmt --check --edition 2024 integration/rt/dnr_main.rs`、`git diff --check` 均通过。
+- `cargo run -p xtask -- build`：macOS ARM64 WebView release 构建成功，更新 `dist/dnr` 和 `dist/dnc`。
+  `codesign --verify --strict --verbose dist/dnr` 通过；真实执行 `dist/dnr tree dist/hello.dnp` 显示
+  `.dnr/manifest.json`、`main.ts` 与 `message.txt`。
+- `DNR_BIN="$PWD/dist/dnr" cargo test --locked -p dnr-package --test runtime --test runtime_native -- --ignored`：
+  10 项 runtime 测试与 4 项 Node-API/FFI 原生测试全部通过，退出码 0。
+  新增命令回归使用入口必定抛错的包，确认 tree/extract 不执行入口，路径含空格可用，
+  缺失/多余参数及非空目标报错，帮助可用，脚本参数透传及 `dnr ./tree` 仍可正常运行。
+
+本轮未执行 Linux WebView / system-CEF 原生验证或真实 GUI 复验；未修改已安装的共享运行时。
