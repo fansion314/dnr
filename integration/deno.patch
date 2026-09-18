@@ -135,7 +135,7 @@
        Ok(Rc::new(self.vfs.open_file(&path)?))
      } else {
        RealFs.open_async(path, options).await
-@@ -774,10 +785,21 @@
+@@ -774,10 +785,23 @@
      Box<dyn Iterator<Item = std::io::Result<Self::ReadDirEntry>>>,
    > {
      if self.is_vfs_path(path) {
@@ -145,13 +145,15 @@
 -      ))
 +      let mut entries = self.vfs.read_dir_with_metadata(path)?.map(BoxedFsDirEntry::new).collect::<Vec<_>>();
 +      if self.vfs.dnr_overlay {
-+        let names = self.vfs.read_dir(path)?.into_iter().map(|e| e.name).collect::<std::collections::HashSet<_>>();
++        // Reuse ZIP metadata already collected above. Enumerate the disk
++        // once and check only ZIP names, with no per-child linear scan.
++        use sys_traits::FsDirEntry;
++        let names = entries.iter().map(|e| e.file_name().to_string_lossy().into_owned()).collect::<std::collections::HashSet<_>>();
 +        match sys_traits::impls::RealSys.fs_read_dir_boxed(path) {
 +          Ok(disk) => for entry in disk {
 +            let entry = entry?;
-+            use sys_traits::FsDirEntry;
 +            let name = entry.file_name().to_string_lossy().into_owned();
-+            if names.contains(&name) && !entries.iter().any(|e| e.file_name() == entry.file_name()) { entries.push(entry); }
++            if !names.contains(&name) { entries.push(entry); }
 +          },
 +          Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => {},
 +          Err(e) => return Err(e),
@@ -161,7 +163,7 @@
      } else {
        #[allow(
          clippy::disallowed_methods,
-@@ -1318,11 +1340,40 @@
+@@ -1318,11 +1342,40 @@
  pub struct FileBackedVfsFile {
    file: VirtualFile,
    pos: RefCell<u64>,
@@ -202,7 +204,7 @@
      match pos {
        SeekFrom::Start(pos) => {
          *self.pos.borrow_mut() = pos;
-@@ -1363,14 +1414,10 @@
+@@ -1363,14 +1416,10 @@
    }
  
    pub fn read_to_buf(&self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -221,7 +223,7 @@
    }
  
    fn metadata(&self) -> FileBackedVfsMetadata {
-@@ -1396,6 +1443,9 @@
+@@ -1396,6 +1445,9 @@
      if read_pos > self.file.offset.len {
        return Ok(Cow::Borrowed(&[]));
      }
@@ -231,7 +233,7 @@
      if read_pos == 0 {
        Ok(self.vfs.read_file_all(&self.file)?)
      } else {
-@@ -1560,8 +1610,7 @@
+@@ -1560,8 +1612,7 @@
      position: u64,
    ) -> FsResult<usize> {
      self
@@ -241,7 +243,7 @@
        .map_err(FsError::Io)
    }
    async fn read_at_async(
-@@ -1570,8 +1619,7 @@
+@@ -1570,8 +1621,7 @@
      position: u64,
    ) -> FsResult<(usize, BufMutView)> {
      let nread = self
@@ -251,7 +253,7 @@
        .map_err(FsError::Io)?;
      Ok((nread, buf))
    }
-@@ -1674,6 +1722,8 @@
+@@ -1674,6 +1724,8 @@
  
  #[derive(Debug)]
  pub struct FileBackedVfs {
@@ -260,7 +262,7 @@
    vfs_data: Cow<'static, [u8]>,
    fs_root: VfsRoot,
    case_sensitivity: FileSystemCaseSensitivity,
-@@ -1686,6 +1736,8 @@
+@@ -1686,6 +1738,8 @@
      case_sensitivity: FileSystemCaseSensitivity,
    ) -> Self {
      Self {
@@ -269,7 +271,7 @@
        vfs_data: data,
        fs_root,
        case_sensitivity,
-@@ -1701,6 +1753,21 @@
+@@ -1701,6 +1755,21 @@
    }
  
    pub fn is_path_within(&self, path: &Path) -> bool {
@@ -291,7 +293,7 @@
      path.starts_with(&self.fs_root.root_path)
    }
  
-@@ -1717,11 +1784,30 @@
+@@ -1717,11 +1786,31 @@
        file: file.clone(),
        vfs: self.clone(),
        pos: Default::default(),
@@ -306,10 +308,11 @@
 +        name: entry.name().to_string(), is_file: matches!(entry, VfsEntry::File(_)),
 +        is_directory: matches!(entry, VfsEntry::Dir(_)), is_symlink: matches!(entry, VfsEntry::Symlink(_)),
 +      }).collect();
++      let mut names = entries.iter().map(|e| e.name.clone()).collect::<std::collections::HashSet<_>>();
 +      match std::fs::read_dir(path) {
 +        Ok(disk) => for child in disk {
 +          let child = child?; let name = child.file_name().to_string_lossy().into_owned();
-+          if entries.iter().any(|e| e.name == name) { continue; }
++          if !names.insert(name.clone()) { continue; }
 +          let kind = child.file_type()?;
 +          entries.push(FsDirEntry { name, is_file: kind.is_file(), is_directory: kind.is_dir(), is_symlink: kind.is_symlink() });
 +        },
@@ -322,7 +325,7 @@
      Ok(
        dir
          .entries
-@@ -1797,6 +1883,10 @@
+@@ -1797,6 +1886,10 @@
      &self,
      offset_with_len: OffsetWithLength,
    ) -> std::io::Result<Cow<'static, [u8]>> {
@@ -333,7 +336,7 @@
      let read_range =
        self.get_read_range(offset_with_len, 0, offset_with_len.len)?;
      match &self.vfs_data {
-@@ -1811,6 +1901,14 @@
+@@ -1811,6 +1904,14 @@
      pos: u64,
      buf: &mut [u8],
    ) -> std::io::Result<usize> {
@@ -348,7 +351,7 @@
      let read_range = self.get_read_range(file.offset, pos, buf.len() as u64)?;
      let read_len = read_range.len();
      buf[..read_len].copy_from_slice(&self.vfs_data[read_range]);
-@@ -1852,6 +1950,17 @@
+@@ -1852,6 +1953,17 @@
        VfsEntryRef::Symlink(_) => unreachable!(),
        VfsEntryRef::File(file) => Ok(file),
      }

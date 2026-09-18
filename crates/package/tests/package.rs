@@ -55,6 +55,93 @@ fn concurrent_reads_share_decompression() {
 }
 
 #[test]
+fn lru_matches_reference_across_hits_evictions_and_oversized_files() {
+    let (_temp, opts) = fixture();
+    for n in 0..16 {
+        fs::write(
+            opts.directory.join(format!("cache{n}")),
+            vec![n as u8; n * 7],
+        )
+        .unwrap();
+    }
+    pack(&opts).unwrap();
+    for budget in [0, 7, 49, 200, 1000] {
+        let p = Package::open(&opts.output, budget).unwrap();
+        let mut lru = std::collections::VecDeque::new();
+        let mut resident = 0;
+        let (mut hits, mut misses) = (0, 0);
+        let mut seed = 42u64;
+        let mut retained = Vec::new();
+        for step in 0..2000 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let key = ((seed >> 32) % 16) as usize;
+            let size = key * 7;
+            if let Some(at) = lru.iter().position(|&n| n == key) {
+                lru.remove(at);
+                lru.push_back(key);
+                hits += 1;
+            } else {
+                misses += 1;
+                if size <= budget {
+                    while resident + size > budget {
+                        resident -= lru.pop_front().unwrap() * 7;
+                    }
+                    resident += size;
+                    lru.push_back(key);
+                }
+            }
+            let bytes = p.read(&format!("cache{key}")).unwrap().unwrap();
+            assert_eq!(&*bytes, vec![key as u8; size]);
+            if step % 101 == 0 {
+                retained.push((key, bytes));
+            }
+            let stats = p.stats();
+            assert_eq!(
+                (stats.hits, stats.decompressions, stats.resident_bytes),
+                (hits, misses, resident)
+            );
+        }
+        // Eviction removes only the cache's reference, never a reader's data.
+        for (key, bytes) in retained {
+            assert_eq!(&*bytes, vec![key as u8; key * 7]);
+        }
+    }
+}
+
+#[test]
+fn corrupted_payload_is_lazy_and_never_cached() {
+    use std::io::Write;
+    use zip::{ZipWriter, write::SimpleFileOptions};
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("corrupt.dnp");
+    let header = format!("#!/bin/sh\nexit 127\n{MARKER}");
+    let mut file = fs::File::create(&path).unwrap();
+    file.write_all(header.as_bytes()).unwrap();
+    let mut zip = ZipWriter::new(Region::new(file, header.len() as u64).unwrap());
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file(MANIFEST, options).unwrap();
+    zip.write_all(br#"{"formatVersion":1,"entry":"main.js","appId":"crc-test"}"#)
+        .unwrap();
+    zip.start_file("main.js", options).unwrap();
+    zip.write_all(b"unique payload for CRC testing").unwrap();
+    zip.finish().unwrap();
+    let mut bytes = fs::read(&path).unwrap();
+    let start = bytes
+        .windows(14)
+        .position(|v| v == b"unique payload")
+        .unwrap();
+    bytes[start] ^= 1;
+    fs::write(&path, bytes).unwrap();
+    let p = Package::open(&path, DEFAULT_CACHE_BYTES).unwrap();
+    assert_eq!(p.stats().decompressions, 0);
+    for _ in 0..2 {
+        assert!(p.read("main.js").is_err());
+    }
+    assert_eq!(p.stats().resident_bytes, 0);
+    assert_eq!(p.stats().hits, 0);
+}
+
+#[test]
 fn reproducible_and_compressed() {
     let (_temp, mut opts) = fixture();
     let report = pack(&opts).unwrap();

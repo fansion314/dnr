@@ -39,16 +39,21 @@ pub fn read_text(path: &Path) -> std::io::Result<String> {
     std::fs::read_to_string(path)
 }
 
-fn directory(package: &Package, prefix: &str) -> Result<VirtualDirectory, AnyError> {
-    let mut entries = Vec::new();
-    for (name, entry) in &package.entries {
-        let path = Path::new(name);
-        if path.parent().unwrap_or(Path::new("")).to_string_lossy() != prefix {
-            continue;
-        }
-        let basename = path.file_name().unwrap().to_string_lossy().into_owned();
-        entries.push(match &entry.kind {
-            EntryKind::Directory => VfsEntry::Dir(directory(package, name)?),
+fn directory(package: &Package) -> Result<VirtualDirectory, AnyError> {
+    // Parents sort before descendants in the validated flat index. Walking it
+    // backwards lets us finish each directory once, without rescanning the
+    // entire archive per directory (or recursively growing the call stack).
+    let mut children: BTreeMap<&str, Vec<VfsEntry>> = BTreeMap::new();
+    for (name, entry) in package.entries.iter().rev() {
+        let (parent, basename) = name.rsplit_once('/').unwrap_or(("", name));
+        let basename = basename.to_owned();
+        let node = match &entry.kind {
+            EntryKind::Directory => VfsEntry::Dir(VirtualDirectory {
+                name: basename,
+                entries: VirtualDirectoryEntries::new(
+                    children.remove(name.as_str()).unwrap_or_default(),
+                ),
+            }),
             EntryKind::Symlink(target) => {
                 let target = dnr_package::resolve_link(name, target)?;
                 VfsEntry::Symlink(VirtualSymlink {
@@ -73,15 +78,12 @@ fn directory(package: &Package, prefix: &str) -> Result<VirtualDirectory, AnyErr
                 mtime: None,
                 executable: false,
             }),
-        });
+        };
+        children.entry(parent).or_default().push(node);
     }
     Ok(VirtualDirectory {
-        name: Path::new(prefix)
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned(),
-        entries: VirtualDirectoryEntries::new(entries),
+        name: String::new(),
+        entries: VirtualDirectoryEntries::new(children.remove("").unwrap_or_default()),
     })
 }
 
@@ -120,7 +122,7 @@ pub fn application(mut args: Vec<String>) -> Result<StandaloneData, AnyError> {
             }
         }
         let root = package.root.clone();
-        let tree = directory(&package, "")?;
+        let tree = directory(&package)?;
         let entry = package.manifest.entry.clone();
         let id = package.manifest.app_id.clone();
         let mut vfs = FileBackedVfs::new(

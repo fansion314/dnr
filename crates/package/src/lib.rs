@@ -2,7 +2,7 @@
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap},
     fs::{self, File},
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
@@ -403,9 +403,45 @@ pub struct CacheStats {
 }
 struct State {
     archive: ZipArchive<Region<File>>,
-    cache: HashMap<usize, Arc<[u8]>>,
-    lru: VecDeque<usize>,
+    cache: HashMap<usize, CachedFile>,
+    oldest: Option<usize>,
+    newest: Option<usize>,
     stats: CacheStats,
+}
+struct CachedFile {
+    bytes: Arc<[u8]>,
+    previous: Option<usize>,
+    next: Option<usize>,
+}
+impl State {
+    // An intrusive list keyed by ZIP index keeps promotion/eviction O(1),
+    // without unsafe pointers or an allocation on every cache hit.
+    fn unlink(&mut self, index: usize) {
+        let entry = &self.cache[&index];
+        let (previous, next) = (entry.previous, entry.next);
+        if let Some(previous) = previous {
+            self.cache.get_mut(&previous).unwrap().next = next;
+        } else {
+            self.oldest = next;
+        }
+        if let Some(next) = next {
+            self.cache.get_mut(&next).unwrap().previous = previous;
+        } else {
+            self.newest = previous;
+        }
+    }
+
+    fn append_newest(&mut self, index: usize) {
+        let entry = self.cache.get_mut(&index).unwrap();
+        entry.previous = self.newest;
+        entry.next = None;
+        if let Some(previous) = self.newest {
+            self.cache.get_mut(&previous).unwrap().next = Some(index);
+        } else {
+            self.oldest = Some(index);
+        }
+        self.newest = Some(index);
+    }
 }
 pub struct Package {
     pub manifest: Manifest,
@@ -515,7 +551,8 @@ impl Package {
             state: Mutex::new(State {
                 archive,
                 cache: HashMap::new(),
-                lru: VecDeque::new(),
+                oldest: None,
+                newest: None,
                 stats: CacheStats::default(),
             }),
             budget,
@@ -569,10 +606,12 @@ impl Package {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("archive lock poisoned"))?;
-        if let Some(bytes) = state.cache.get(&index).cloned() {
+        if let Some(bytes) = state.cache.get(&index).map(|entry| entry.bytes.clone()) {
             state.stats.hits += 1;
-            state.lru.retain(|i| *i != index);
-            state.lru.push_back(index);
+            if state.newest != Some(index) {
+                state.unlink(index);
+                state.append_newest(index);
+            }
             return Ok(bytes);
         }
         let bytes: Arc<[u8]> = {
@@ -591,18 +630,22 @@ impl Package {
         };
         state.stats.decompressions += 1;
         if bytes.len() <= self.budget {
-            while state.stats.resident_bytes + bytes.len() > self.budget {
-                if let Some(key) = state.lru.pop_front() {
-                    if let Some(old) = state.cache.remove(&key) {
-                        state.stats.resident_bytes -= old.len();
-                    }
-                } else {
-                    break;
-                }
+            while state.stats.resident_bytes > self.budget - bytes.len() {
+                let key = state.oldest.expect("resident bytes belong to cached files");
+                state.unlink(key);
+                let old = state.cache.remove(&key).unwrap();
+                state.stats.resident_bytes -= old.bytes.len();
             }
             state.stats.resident_bytes += bytes.len();
-            state.lru.push_back(index);
-            state.cache.insert(index, bytes.clone());
+            state.cache.insert(
+                index,
+                CachedFile {
+                    bytes: bytes.clone(),
+                    previous: None,
+                    next: None,
+                },
+            );
+            state.append_newest(index);
         }
         Ok(bytes)
     }

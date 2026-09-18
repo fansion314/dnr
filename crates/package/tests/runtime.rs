@@ -9,6 +9,74 @@ use std::{
 };
 
 #[test]
+#[ignore = "requires a built native dnr; set DNR_BIN and pass --ignored"]
+fn large_tree_and_overlay_directory_types() {
+    let binary = PathBuf::from(std::env::var_os("DNR_BIN").expect("set DNR_BIN"));
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let install = temp.path().join("installed");
+    fs::create_dir_all(source.join("wide/empty")).unwrap();
+    fs::create_dir_all(install.join("wide")).unwrap();
+    for n in 0..400 {
+        let nested = format!("tree/pkg{n}/inner");
+        fs::create_dir_all(source.join(&nested)).unwrap();
+        fs::write(source.join(nested).join("value.txt"), n.to_string()).unwrap();
+        fs::write(source.join(format!("wide/f{n}")), "zip").unwrap();
+        fs::write(install.join(format!("wide/f{n}")), "disk loses").unwrap();
+        fs::write(install.join(format!("wide/d{n}")), "disk").unwrap();
+    }
+    for name in ["a", "a-", "a.", "中文"] {
+        fs::create_dir_all(source.join(format!("{name}/empty"))).unwrap();
+        fs::write(source.join(format!("{name}/value.txt")), name).unwrap();
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("../tree/pkg399", source.join("wide/link")).unwrap();
+    fs::write(source.join("main.ts"), r#"
+import * as fs from 'node:fs';
+function check(ok: unknown) { if (!ok) throw Error('tree/overlay mismatch'); }
+const root = new URL('./', import.meta.url);
+for (let n = 0; n < 400; n++) {
+  check(Deno.readTextFileSync(new URL(`tree/pkg${n}/inner/value.txt`, root)) === String(n));
+  check(fs.readFileSync(new URL(`wide/f${n}`, root), 'utf8') === 'zip');
+}
+for (const name of ['a', 'a-', 'a.', '中文']) {
+  check(Deno.readTextFileSync(new URL(`${name}/value.txt`, root)) === name);
+  check([...Deno.readDirSync(new URL(`${name}/empty/`, root))].length === 0);
+}
+const dir = new URL('wide/', root);
+const deno = [...Deno.readDirSync(dir)];
+const node = fs.readdirSync(dir, { withFileTypes: true });
+check(deno.length === 802 && node.length === 802);
+check(new Set(deno.map(e => e.name)).size === 802);
+check(JSON.stringify(deno.map(e => e.name).sort()) === JSON.stringify(node.map(e => e.name).sort()));
+check(deno.find(e => e.name === 'empty')?.isDirectory);
+check(node.find(e => e.name === 'empty')?.isDirectory());
+check(deno.find(e => e.name === 'link')?.isSymlink);
+check(node.find(e => e.name === 'link')?.isSymbolicLink());
+check(Deno.readTextFileSync(new URL('link/inner/value.txt', dir)) === '399');
+console.log('LARGE_TREE_OK');
+"#).unwrap();
+    let package = install.join("app.dnp");
+    pack(&PackOptions {
+        directory: source,
+        entry: "main.ts".into(),
+        output: package.clone(),
+        includes: vec![],
+        excludes: vec![],
+        app_id: Some("test.large-tree".into()),
+        force: false,
+    })
+    .unwrap();
+    let output = Command::new(binary).arg(package).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("LARGE_TREE_OK"));
+}
+
+#[test]
 #[ignore = "requires native dnr and a C compiler; set DNR_BIN and pass --ignored"]
 fn native_addon_disk_only() {
     let binary = PathBuf::from(std::env::var_os("DNR_BIN").expect("set DNR_BIN"))
