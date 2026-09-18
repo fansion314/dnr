@@ -1,16 +1,18 @@
+mod desktop;
+
 use clap::Parser;
 use dnr_package::{Include, PackOptions, pack};
 use std::path::PathBuf;
 
-/// Package a prepared JS/TS application without bundling its runtime.
+/// Package a prepared JS/TS application as .dnp or a thin desktop app.
 #[derive(Parser)]
 #[command(version)]
 struct Args {
     /// Directory containing the prepared application and its dependencies.
     directory: PathBuf,
     /// Entry module, relative to the application directory.
-    #[arg(long)]
-    entry: String,
+    #[arg(long, required_unless_present = "desktop_manifest")]
+    entry: Option<String>,
     #[arg(short, long)]
     output: PathBuf,
     /// Include an external file/directory: source[=archive/path].
@@ -24,13 +26,22 @@ struct Args {
     app_id: Option<String>,
     #[arg(long)]
     force: bool,
+    /// JSON desktop manifest. Relative icon paths are resolved beside this file.
+    #[arg(long, requires = "target")]
+    desktop_manifest: Option<PathBuf>,
+    /// Build a thin macOS .app or Arch/CachyOS .pkg.tar.zst (on the native host).
+    #[arg(long, value_enum, requires = "desktop_manifest")]
+    target: Option<desktop::Target>,
 }
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    if let Some(manifest) = &args.desktop_manifest {
+        return desktop::build(&args, manifest, args.target.unwrap());
+    }
     let options = PackOptions {
         directory: args.directory,
-        entry: args.entry,
+        entry: args.entry.unwrap(),
         output: args.output,
         includes: args
             .include

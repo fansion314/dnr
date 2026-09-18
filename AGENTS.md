@@ -22,7 +22,7 @@ dnr 将运行时与应用内容分开发行，避免每个 Deno CLI/桌面应用
 6. 应用默认全权限运行，不是沙箱。兼容的 ZIP 内 Node-API / FFI 原生库在首次加载时校验并释放到独立系统临时目录，进程内复用并在宿主退出时清理；禁止解压到包旁。ZIP 外的原生库继续从磁盘加载。
 7. 实际调用需要 GUI 的桌面 API 时才启动后端。普通脚本、HTTP 服务和 CLI 异常不应打开窗口。
 8. 页面通过 `window.bindings.<name>()` 调用 `BrowserWindow.bind()`。窗口、托盘、后台 JS 任务和退出事件共同决定生命周期；不能在最后一个窗口关闭时直接终止仍有工作的应用。
-9. 不包含每应用独立的 macOS bundle 身份、安装器、深链注册或自动更新。变更这些边界需要用户明确提出。
+9. 按用户要求，dnc 支持 desktop manifest 驱动的 macOS ARM64 薄 `.app` 和 Arch/CachyOS x86_64 pacman 包；两者不携带运行时。macOS 原生启动器保留 bundle 身份；Linux 使用系统 makepkg。仍不包含 DMG/PKG 安装器、深链注册或自动更新。用法见 `docs/DESKTOP-PACKAGING.md`。
 
 ### VFS 不变量
 
@@ -40,7 +40,7 @@ dnr 将运行时与应用内容分开发行，避免每个 Deno CLI/桌面应用
 | 位置 | 职责 |
 | --- | --- |
 | `crates/package/` | 包格式、目录收集、ZIP 读写、路径检查和解压缓存；不依赖 Deno/GUI |
-| `crates/dnc/` | 打包器 CLI 参数与输出 |
+| `crates/dnc/` | 打包器 CLI、desktop manifest、原生薄启动器和平台包输出 |
 | `integration/rt/` | dnr 启动、应用元数据、桌面生命周期和原生构建脚本 |
 | `integration/native/` | 静态 Laufey 接入、CMake、系统 CEF ABI 检查 |
 | `integration/deno.patch` | Deno 模块加载、文件系统、原生库边界和事件循环改造 |
