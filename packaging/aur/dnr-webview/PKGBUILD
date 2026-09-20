@@ -2,15 +2,14 @@
 pkgname=dnr-webview
 pkgver=0.1.0
 pkgrel=1
-pkgdesc='Shared Deno runtime and lightweight application packager (WebView)'
+pkgdesc='Shared Deno runtime (WebView)'
 arch=('x86_64')
 url='https://github.com/fansion314/dnr'
 license=('MIT' 'Apache-2.0' 'BSD-3-Clause')
 depends=('glibc' 'gcc-libs' 'gtk3' 'glib2' 'cairo' 'zlib' 'webkit2gtk-4.1' 'libsoup3')
 makedepends=('git' 'rust' 'clang' 'cmake' 'python' 'pkgconf')
 optdepends=('libayatana-appindicator: system tray support'
-            'libnotify: desktop notifications via notify-send'
-            'base-devel: build Arch application packages with dnc')
+            'libnotify: desktop notifications via notify-send')
 provides=("dnr=$pkgver")
 conflicts=('dnr')
 # xtask handles Rust LTO and stripping; avoid distro C/C++ LTO and debug packages.
@@ -30,12 +29,12 @@ prepare() {
 
 build() {
     cd "$srcdir/dnr"
-    cargo run --locked -p xtask -- build --backend webview
+    cargo run --locked -p xtask -- build --runtime-only --backend webview
 }
 
 check() {
     cd "$srcdir/dnr"
-    cargo test --locked --workspace
+    cargo test --locked -p dnr-package -p xtask
     DNR_BIN="$srcdir/dnr/dist/dnr" cargo test --locked -p dnr-package \
         --test runtime --test runtime_native -- --ignored
 }
@@ -43,7 +42,6 @@ check() {
 package() {
     cd "$srcdir/dnr"
     install -Dm755 dist/dnr "$pkgdir/usr/bin/dnr"
-    install -Dm755 dist/dnc "$pkgdir/usr/bin/dnc"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm644 .upstream/deno/LICENSE.md "$pkgdir/usr/share/licenses/$pkgname/LICENSE-DENO"
     install -Dm644 .upstream/laufey/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-LAUFEY"

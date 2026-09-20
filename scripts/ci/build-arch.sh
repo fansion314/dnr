@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-variant=${1:?usage: build-arch.sh dnr|dnr-webview tag commit}
+variant=${1:?usage: build-arch.sh dnr|dnr-webview|dnc tag commit}
 tag=${2:?missing release tag}
 commit=${3:?missing commit}
-[[ $variant == dnr || $variant == dnr-webview ]]
+[[ $variant == dnr || $variant == dnr-webview || $variant == dnc ]]
 [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
 [[ $commit =~ ^[0-9a-f]{40}$ ]]
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -29,14 +29,23 @@ cd "$root"
 [[ $(git rev-parse HEAD) == "$commit" ]]
 source "$recipe"
 [[ v$pkgver == "$tag" ]]
-[[ $(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])') == "$pkgver" ]]
+workspace_version=$(awk '
+    $0 == "[workspace.package]" { section = 1; next }
+    /^\[/ { section = 0 }
+    section && $1 == "version" { gsub(/"/, "", $3); print $3 }
+' Cargo.toml)
+[[ $workspace_version == "$pkgver" ]]
 export SOURCE_DATE_EPOCH
 SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$commit")
 
 # Shallow, pinned upstream checkouts avoid downloading their entire Git history.
 # The application snapshot is exactly the commit that triggered this tag run.
 git archive "$commit" | tar -x -C "$build_root/src" --one-top-level=dnr
-for upstream in deno laufey; do
+upstreams=()
+if [[ $variant != dnc ]]; then
+    upstreams=(deno laufey)
+fi
+for upstream in "${upstreams[@]}"; do
     case $upstream in
         deno) url=https://github.com/denoland/deno.git; revision=$_deno_commit ;;
         laufey) url=https://github.com/littledivy/laufey.git; revision=$_laufey_commit ;;
@@ -71,9 +80,15 @@ package_file="$variant-$pkgver-$pkgrel-x86_64.pkg.tar.zst"
 
 mkdir -p installed
 bsdtar -xf "$package_file" -C installed usr/bin
-installed/usr/bin/dnr --version | tee "$output/$variant-version.txt"
-installed/usr/bin/dnc --version | tee -a "$output/$variant-version.txt"
-ldd installed/usr/bin/dnr | tee "$output/$variant-libraries.txt"
+binary=dnr
+excluded_binary=dnc
+if [[ $variant == dnc ]]; then
+    binary=dnc
+    excluded_binary=dnr
+fi
+[[ -x installed/usr/bin/$binary && ! -e installed/usr/bin/$excluded_binary ]]
+installed/usr/bin/"$binary" --version | tee "$output/$variant-version.txt"
+ldd installed/usr/bin/"$binary" | tee "$output/$variant-libraries.txt"
 if grep -q 'not found' "$output/$variant-libraries.txt"; then
     exit 1
 fi

@@ -1,0 +1,18 @@
+pkgbase = dnc
+	pkgdesc = Lightweight application packager for the shared dnr runtime
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/fansion314/dnr
+	arch = x86_64
+	license = MIT
+	makedepends = git
+	makedepends = rust
+	depends = glibc
+	depends = gcc-libs
+	optdepends = base-devel: build Arch application packages with dnc
+	options = !lto
+	options = !debug
+	source = dnr::git+https://github.com/fansion314/dnr.git#tag=v0.1.0
+	sha256sums = SKIP
+
+pkgname = dnc

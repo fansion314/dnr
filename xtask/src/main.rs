@@ -26,6 +26,9 @@ enum Task {
         backend: String,
         #[arg(long)]
         debug: bool,
+        /// Build only dnr, leaving dnc to its standalone Cargo/package build.
+        #[arg(long)]
+        runtime_only: bool,
     },
 }
 
@@ -109,7 +112,11 @@ fn main() -> Result<()> {
             }
             sync_integration(&root)?;
         }
-        Task::Build { backend, debug } => {
+        Task::Build {
+            backend,
+            debug,
+            runtime_only,
+        } => {
             if !((cfg!(target_os = "macos") && cfg!(target_arch = "aarch64"))
                 || (cfg!(target_os = "linux") && cfg!(target_arch = "x86_64")))
             {
@@ -127,15 +134,17 @@ fn main() -> Result<()> {
             if !manifest.exists() {
                 bail!("run cargo run -p xtask -- prepare first");
             }
-            let mut packager = Command::new("cargo");
-            packager
-                .current_dir(&root)
-                .args(["build", "--locked", "-p", "dnc"])
-                .env("CARGO_TARGET_DIR", root.join("target"));
-            if !debug {
-                packager.arg("--release");
+            if !runtime_only {
+                let mut packager = Command::new("cargo");
+                packager
+                    .current_dir(&root)
+                    .args(["build", "--locked", "-p", "dnc"])
+                    .env("CARGO_TARGET_DIR", root.join("target"));
+                if !debug {
+                    packager.arg("--release");
+                }
+                run(&mut packager)?;
             }
-            run(&mut packager)?;
             let mut cargo = Command::new("cargo");
             sync_integration(&root)?;
             cargo
@@ -156,14 +165,16 @@ fn main() -> Result<()> {
             }
             run(&mut cargo)?;
             fs::create_dir_all(root.join("dist"))?;
-            fs::copy(
-                root.join(if debug {
-                    "target/debug/dnc"
-                } else {
-                    "target/release/dnc"
-                }),
-                root.join("dist/dnc"),
-            )?;
+            if !runtime_only {
+                fs::copy(
+                    root.join(if debug {
+                        "target/debug/dnc"
+                    } else {
+                        "target/release/dnc"
+                    }),
+                    root.join("dist/dnc"),
+                )?;
+            }
             fs::copy(
                 root.join(if debug {
                     "target/runtime/debug/dnr"

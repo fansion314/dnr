@@ -687,3 +687,37 @@ fork/exec 时，子进程可能短暂继承另一个测试的可写脚本句柄�
   pacman 包。下载到的两种 dnr 分别再次通过 10 项 runtime 和 4 项原生插件测试。
 - 此次发行二进制来自 tag `v0.1.0` 的 `e4d7eb8`；后续发布脚本修复不改变运行时源码。
   本地下载复验证据位于 `dist/validation-github-bin/`。
+
+## AUR 独立 dnc 与三产物发布流程（2026-09-20）
+
+本轮在 macOS ARM64 修改并验证打包入口，不是 Arch 原生构建验收。
+
+- 四份 dnr 配方只安装运行时，新增 dnc/dnc-bin 及 `.SRCINFO`。dnc 源码配方只声明
+  Git、Rust 构建依赖和 glibc/gcc-libs 运行依赖，使用 base-devel 提供的 C 构建工具；
+  不准备 Deno/Laufey，不安装 GUI 依赖。runtime 配方使用 `xtask build --runtime-only`。
+- 同一 Actions 工作流并行构建 dnr、dnr-webview、dnc；每包检查可执行文件隔离，
+  三个包和摘要全部齐全且校验成功后才调用 GitHub Release 发布。
+- 在含其他未提交功能的工作区执行
+  `cargo test --locked --offline -p dnc -p dnr-package -p xtask`：47 项通过，17 项忽略。
+  Clippy（workspace/all-targets、拒绝警告）、格式和 Git 空白检查通过。
+- 独立 `cargo build --locked --offline --release -p dnc` 通过，并用产物将 hello 示例
+  打包、检查 ZIP 目录；`xtask build --help` 显示新参数。sccache 始终启用；编译器探测
+  曾报权限错误，提权并设置 `CARGO_CACHE_RUSTC_INFO=0` 后构建及参数检查成功。
+- 六份 PKGBUILD 的 Bash 语法和 `.SRCINFO` 全字段一致性检查通过；工作流 YAML 解析、
+  三项 matrix、release 对 build 的依赖及 AUR README 相对链接检查通过。
+  本机无 makepkg，未使用 `makepkg --printsrcinfo` 重新生成比对。
+- 本地夹具实际执行六份配方的 package()/prepare()，验证各包只安装对应程序，
+  -bin 重新封装前后程序逐字节一致；错误摘要、错误归档名称均在提取前拒绝。
+  夹具使用本机二进制、Zstd tar 归档及 GNU 文件操作参数的 macOS 适配，不生成 pacman
+  元数据，不代表 Linux ELF、依赖闭包或安装验收。
+- 发布脚本夹具验证：缺少 dnc 或 dnc 摘要损坏时，不调用任何 gh 命令；三包齐全时生成
+  三项 SHA256SUMS 并进入上传流程。git/gh 使用替身，没有访问或修改远程 Release。
+  临时验证脚本及归档位于 `/private/tmp/dnr-aur-validation/`。
+
+本轮未重建完整 runtime，未运行真实 Arch 容器/makepkg、GUI 或 GitHub Actions；没有
+推送或重建已有标签。版本仍为 0.1.0；新发行前需同步版本、六份配方和发行说明。
+
+提交前从暂存区导出独立源码快照，排除其他未提交功能。该快照的
+`cargo test --locked --offline --workspace`：33 项通过、15 项忽略；Clippy、格式和 Bash
+语法检查通过。运行时配方保留已有 runtime/runtime_native 测试，不依赖未提交的
+`runtime_groups` 测试。上述 47 项是混合工作区结果，不能作为本次独立提交的测试数。

@@ -1,5 +1,5 @@
 pkgbase = dnr
-	pkgdesc = Shared Deno runtime and lightweight application packager (system CEF)
+	pkgdesc = Shared Deno runtime (system CEF)
 	pkgver = 0.1.0
 	pkgrel = 1
 	url = https://github.com/fansion314/dnr
@@ -24,7 +24,6 @@ pkgbase = dnr
 	depends = cef
 	optdepends = libayatana-appindicator: system tray support
 	optdepends = libnotify: desktop notifications via notify-send
-	optdepends = base-devel: build Arch application packages with dnc
 	conflicts = dnr-webview
 	options = !lto
 	options = !debug

@@ -1,0 +1,39 @@
+# Maintainer: Peilin Fan <peilin.fan@foxmail.com>
+pkgname=dnc
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Lightweight application packager for the shared dnr runtime'
+arch=('x86_64')
+url='https://github.com/fansion314/dnr'
+license=('MIT')
+depends=('glibc' 'gcc-libs')
+makedepends=('git' 'rust')
+optdepends=('base-devel: build Arch application packages with dnc')
+# Cargo handles Rust LTO; avoid distro C/C++ LTO and debug packages.
+options=('!lto' '!debug')
+source=("dnr::git+https://github.com/fansion314/dnr.git#tag=v${pkgver}")
+sha256sums=('SKIP')
+
+prepare() {
+    cd "$srcdir/dnr"
+    cargo fetch --locked --target x86_64-unknown-linux-gnu
+}
+
+build() {
+    cd "$srcdir/dnr"
+    CARGO_TARGET_DIR=target cargo build --locked --release -p dnc
+}
+
+check() {
+    cd "$srcdir/dnr"
+    CARGO_TARGET_DIR=target cargo test --locked -p dnc -p dnr-package
+    target/release/dnc --version
+}
+
+package() {
+    cd "$srcdir/dnr"
+    install -Dm755 target/release/dnc "$pkgdir/usr/bin/dnc"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 README.md README.zh.md -t "$pkgdir/usr/share/doc/$pkgname"
+    install -Dm644 docs/*.md -t "$pkgdir/usr/share/doc/$pkgname/docs"
+}

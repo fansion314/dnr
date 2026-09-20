@@ -14,7 +14,7 @@ if [[ -z $remote_commit ]]; then
 fi
 [[ $remote_commit == "$GITHUB_SHA" ]]
 
-for variant in dnr dnr-webview; do
+for variant in dnr dnr-webview dnc; do
     source "packaging/aur/$variant/PKGBUILD"
     [[ $pkgver == "$version" ]]
     package_file="$variant-$pkgver-$pkgrel-x86_64.pkg.tar.zst"

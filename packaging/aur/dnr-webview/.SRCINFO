@@ -1,5 +1,5 @@
 pkgbase = dnr-webview
-	pkgdesc = Shared Deno runtime and lightweight application packager (WebView)
+	pkgdesc = Shared Deno runtime (WebView)
 	pkgver = 0.1.0
 	pkgrel = 1
 	url = https://github.com/fansion314/dnr
@@ -23,7 +23,6 @@ pkgbase = dnr-webview
 	depends = libsoup3
 	optdepends = libayatana-appindicator: system tray support
 	optdepends = libnotify: desktop notifications via notify-send
-	optdepends = base-devel: build Arch application packages with dnc
 	provides = dnr=0.1.0
 	conflicts = dnr
 	options = !lto
