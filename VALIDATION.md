@@ -873,3 +873,43 @@ GTK 3.24.52、WebKitGTK 2.52.6、CEF 152.0.6-1（API 14900）。
 
 本轮没有修改 runtime/VFS 实现，没有替换系统已安装的 dnr/dnc，也没有重新安装用户应用。
 macOS 证据沿用上文 2026-09-20 的记录；未执行 X11、其他 GPU/发行版或其他架构验收。
+
+### GitHub v0.2.0 实际发布与下载复验（2026-09-21）
+
+- 发行标签 `v0.2.0` 指向 `dccefac`。GitHub Actions
+  [35520347358](https://github.com/fansion314/dnr/actions/runs/35520347358) 的三个构建任务和
+  发布任务均成功；[Release](https://github.com/fansion314/dnr/releases/tag/v0.2.0)
+  已公开包含 system-CEF、WebView、独立 dnc 三个包、单包及统一摘要、构建环境记录。
+- 实际下载三个公开附件，单包 SHA-256 与 `SHA256SUMS` 全部通过；核对包内程序隔离、
+  0.2.0 版本和 CEF API 14900。发行附件来自 Arch 容器，不是上表的本机验证二进制。
+- 两份下载 runtime 分别再次通过 10 项 runtime、4 项原生库、2 项原生组测试。
+  各执行一轮四种 KWin 原生关闭模式并启动新版 Songjian v2 包，全部正常退出并清理进程组。
+- 三份 `-bin` 配方用真实下载附件完成 makepkg 重新封装，程序逐字节一致，错误摘要和
+  错误归档名称均在提取前拒绝。证据在 `github-downloads/`、`downloaded-bin/` 及
+  `github-*-runtime.log`、`github-*-close.log`。
+
+| 公开发行附件 | SHA-256 |
+| --- | --- |
+| dnc-0.2.0-1-x86_64.pkg.tar.zst | `9f6e9e2d84d9bcb95748c3187330a15689fe2f4e8251ee69f0a4636835c1f295` |
+| dnr-0.2.0-1-x86_64.pkg.tar.zst | `6df0c8b25d7c0adb04904074560b1c98720a77469fe18c3ff8bdb40af54a589a` |
+| dnr-webview-0.2.0-1-x86_64.pkg.tar.zst | `8db66ede2a96f1ddc992d27058e6603ecf0e55caefc1c79be2ac4d717557315c` |
+
+### pi 与 Songjian 的 v2 接入
+
+- pi `0d05e8d4c` / `5eba3bc64` 将默认包改为 Linux x64 glibc + macOS ARM64 两个原生变体，
+  显式声明 Node-API 分组和示例脚本组；规范 WASM/许可证的数据权限，保留原有示例内容。
+  本轮双平台 DNP 约 6.54 MB，Linux 原生运行通过；macOS 载荷仅检查内容与平台元数据，
+  不能据此声称本轮完成 Mac 原生验收。
+- pi AUR 只用独立 dnc 及常规小型构建依赖；runtime 仍为最终安装的运行依赖。
+  构建期用 Node/libarchive 验证 v2 索引与原生文件并生成旁置组，真实 makepkg 产物布局为
+  `/usr/lib/pi/pi.dnp`、`/usr/lib/pi/pi.dnp.unpacked/...`、`/usr/bin/pi` 相对符号链接。
+  二进制配方保留文件与模式，错误摘要拒绝。没有把预解压目录放进 bin，也没有安装系统包。
+- pi 的完整 `npm run check`、结构测试、两份本机 runtime 的冷/暖/旁置离线烟雾均通过。
+  真正从 pacman 归档解出的现有 sidecar 再测通过；下载的正式 CEF runtime 也通过相同测试。
+  覆盖真实 Node-API、TS 扩展、Photon、faux 模型/bash、会话和 HTML 导出；没有付费 API 请求。
+- Songjian `035dd35` 保持本地打包，加入 dnc/dnr v2 最低版本检查；生成 46,681 字节 DNP
+  和 `songjian-1.1.0-2-x86_64.pkg.tar.zst`。前端检查、31 项测试和 4 项 Deno 测试通过，
+  10 项旧安装布局测试条件跳过。实际新版包在本机与正式下载 runtime 上原生关闭成功。
+- pi 提交已推送 origin 的 `codex/deepseek-responses` 与 GitHub `main`；Songjian 已推送
+  origin `main`。pi 源码配方固定到 v2 实现提交，下一次预编译包使用独立打包标签
+  `pi-dnr-v0.86.0-2`；本轮仅推送其分支，没有移动旧标签或发布新的 pi Release。
