@@ -10,7 +10,7 @@
 pkg-config --modversion gtk+-3.0 webkit2gtk-4.1
 cargo run -p xtask -- prepare --deno /path/to/deno --laufey /path/to/laufey
 cargo run -p xtask -- build
-DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime -- --ignored
+DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime --test runtime_native --test runtime_groups -- --ignored
 dist/dnr examples/desktop/smoke.ts
 ```
 
@@ -26,7 +26,7 @@ dist/dnr examples/desktop/smoke.ts
 cargo run -p xtask -- build --backend system-cef
 dist/dnr --check-system-cef
 ldd dist/dnr
-DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime -- --ignored
+DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime --test runtime_native --test runtime_groups -- --ignored
 dist/dnr examples/desktop/smoke.ts
 ```
 

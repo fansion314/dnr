@@ -1,6 +1,6 @@
 # Maintainer: Peilin Fan <peilin.fan@foxmail.com>
 pkgname=dnr-bin
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Shared Deno runtime (system CEF, prebuilt)'
 arch=('x86_64')

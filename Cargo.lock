@@ -196,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "dnc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -208,7 +208,7 @@ dependencies = [
 
 [[package]]
 name = "dnr-package"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "globset",
@@ -568,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",

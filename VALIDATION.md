@@ -798,3 +798,78 @@ makepkg 流程；此前 Linux v1 记录不能替代 v2 验收。Windows/Linux AR
 
 基准方法和细表见 `docs/PERFORMANCE.md`，输入、优化前二进制、原始样本及日志在
 `dist/validation-native-performance/`。这些结果限定本机和上述负载，区分包层与完整运行时耗时。
+
+## v0.2.0 Linux 原生复验与发行（2026-09-20）
+
+从 origin 快进到 `eccedd1`，验证 v2 原生组、持久缓存和独立 dnc 配方；同步版本为
+0.2.0，并把 `runtime_groups` 加入两个 runtime 发行配方的 `check()`。
+本机为 CachyOS x86_64 / Linux 7.2.6-1-cachyos-bore-lto、KDE KWin 6.7.5 Wayland、
+NVIDIA RTX 3080 / 615.71.09；Rust 1.98.1、GCC 16.2.1、CMake 4.4.3、
+GTK 3.24.52、WebKitGTK 2.52.6、CEF 152.0.6-1（API 14900）。
+
+### 准备与工作区
+
+- 保留旧准备树，从固定 mirror 提交重新运行 `cargo run --locked -p xtask -- prepare`，
+  两份补丁干净应用，构建后反向 `git apply --check` 通过，mirror 没有修改。
+- 全程保留 sccache，设置 `CARGO_CACHE_RUSTC_INFO=0`；未设置 native CPU 构建参数。
+  首次构建因宿主缺少 libclang 失败，在项目内解压匹配发行版的 Clang 22.1.8 构建库，
+  用 `LIBCLANG_PATH` 和 `BINDGEN_EXTRA_CLANG_ARGS=-resource-dir=...` 指定库和标准头文件。
+  首次仅指定库时缺少标准头文件，日志保留。期间宿主 Clang 也已可用。
+- 格式检查、Clippy（workspace/all-targets、拒绝警告）通过；工作区 47 项测试通过，
+  17 项宿主测试按设计忽略。另显式运行 `cargo test --locked -p dnc --test cli
+  arch_package_metadata_and_payload -- --ignored`，真实 makepkg 桌面包测试通过。
+  最初误写为不存在的 `--test desktop`，更正后的命令退出 0，初次日志保留。
+- 六份 PKGBUILD 的 Bash 语法及 `makepkg --printsrcinfo` 全字段比对通过。
+  独立 dnc 配方在隔离的准备目录执行真实 `makepkg --noextract --force --nodeps`，
+  build/check/package 均通过；只包含 `usr/bin/dnc`，运行依赖为 glibc、gcc-libs。
+  此本机流程复用准备目录并跳过依赖检查，不等同于干净 Arch 容器验收。
+
+### WebView release
+
+- `xtask build` 成功；产物单独保留在 `dist/webview/`。ELF x86-64，无缺失动态库，
+  不依赖随附 libdenort 或 Laufey 动态库。
+- `DNR_BIN=... cargo test --locked -p dnr-package --test runtime --test runtime_native
+  --test runtime_groups -- --ignored`：10 项 runtime、4 项原生库、2 项原生组全部通过。
+  包含 v1 兼容、真实 Node-API/FFI、相邻共享库、Deno/Node 同步和异步子进程、资源路径、
+  普通读取不落盘、缓存复用、四进程冷启动竞争和旁置安装。
+- 真实 GUI 磁盘与 v2 ZIP 烟雾测试均输出 `DNR_GUI_OK` 并退出 0；ZIP 还从 `/tmp`
+  经 shell 启动头直接执行成功。hello 包保留空参数、含空格参数及 `/tmp` 调用者 cwd。
+- 托盘保活、Deno/Node/异常退出（7/9/1）通过；独立 appId 的两个并行应用验证存储隔离，
+  再次启动读取各自持久值通过。GUI 测试检查各自进程组退出，无遗留原生子进程。
+- `scripts/test-linux-close.py --repeat 2`：两轮、每轮四种真实 KWin 关闭模式均通过，
+  正常退出不发送 SIGINT/SIGKILL，完整进程组清理成功。
+- 真实 esbuild 0.28.2 在隔离目录以 `--ignore-scripts` 准备，检查 scan 配置后打包；
+  同步和异步 transform 在冷启动、缓存命中、旁置安装均输出 `ESBUILD_DNP_OK`。
+  缓存命中前后 payload 的 inode、mtime 和大小不变；旁置运行没有创建用户缓存。
+- Linux 最终实现性能测量确认索引查询不随组数线性增长；1,000 小文件组冷准备
+  1450.049 ms、持久命中 5.978 ms；32 MiB 组分别为 211.391 / 116.314 ms。
+  这不是 Linux 优化前后对照，也不是通用应用启动加速比；完整数据见 `docs/PERFORMANCE.md`。
+
+本轮日志、性能原始样本、测试脚本及本地包位于 `dist/validation-v0.2.0/`。
+
+### system-CEF release 与发行包
+
+- `xtask build --runtime-only --backend system-cef` 成功；产物在 `dist/system-cef/`，
+  `dist/dnr` 最终为此版本。首次重试时此前临时 libclang 目录已移除导致失败，
+  在本轮验证目录重新准备构建库后成功；没有绕过 CEF ABI 检查。
+- `--check-system-cef` 通过，`libcef.so` 来自 `/usr/lib/cef`，ELF x86-64 无缺失依赖。
+  同样的 10 项 runtime、4 项原生库、2 项原生组测试全部通过。
+- 与 WebView 相同的磁盘/v2 ZIP GUI、shell 直接启动、托盘、7/9/1 退出、多应用存储隔离、
+  esbuild 冷/暖/旁置运行均通过；缓存 payload 未重写，旁置运行未创建用户缓存。
+  `test-linux-close.py --repeat 2` 的八次 KWin 原生关闭全部通过，CEF 子进程清理成功。
+- 用两份已验证 runtime 和 dnc，分别执行真实 `makepkg --repackage --force --nodeps`。
+  三包的 pacman 元数据和版本正确；两个 runtime 包只包含 `usr/bin/dnr`，dnc 包只包含
+  `usr/bin/dnc`。runtime 归档中的二进制与对应验证产物逐字节一致；dnc 按配方正常 strip。
+  此处是本机 package() 验证；正式发行由 tag 的 Arch 容器工作流重新构建、测试和发布，
+  远端状态以 Actions 和 Release 为准，不上传本机二进制冒充容器产物。
+- 六份配方与 `.SRCINFO`、workspace/锁文件和 runtime 版本均更新至 0.2.0；
+  发行说明明确 v2 最低 runtime 要求和 dnc 独立安装的变化。
+
+| 本机验证产物 | SHA-256 |
+| --- | --- |
+| WebView dnr | `9b24d191c43f09c97d1a5fa6992fa844c349df8daa46f2beaeb9fb2d34d235d4` |
+| system-CEF dnr | `dbae348b929e11e601475afe9c0c867cf36bcb5310f7cde6853525bcbed91f45` |
+| dnc（makepkg strip 前） | `53c1f34baf0f6a42e4be9c17707beeba45c9b08fd33ce10544e2be4093df0df0` |
+
+本轮没有修改 runtime/VFS 实现，没有替换系统已安装的 dnr/dnc，也没有重新安装用户应用。
+macOS 证据沿用上文 2026-09-20 的记录；未执行 X11、其他 GPU/发行版或其他架构验收。

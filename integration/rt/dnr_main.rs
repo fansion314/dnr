@@ -2,7 +2,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|s| s == "--version" || s == "-V") {
         println!(
-            "dnr 0.1.0 (Deno 2.9.7; Laufey 0.7.0; formats 1,2; backend {})",
+            "dnr 0.2.0 (Deno 2.9.7; Laufey 0.7.0; formats 1,2; backend {})",
             env!("DNR_BACKEND")
         );
         return;

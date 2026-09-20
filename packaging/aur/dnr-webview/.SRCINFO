@@ -1,6 +1,6 @@
 pkgbase = dnr-webview
 	pkgdesc = Shared Deno runtime (WebView)
-	pkgver = 0.1.0
+	pkgver = 0.2.0
 	pkgrel = 1
 	url = https://github.com/fansion314/dnr
 	arch = x86_64
@@ -23,11 +23,11 @@ pkgbase = dnr-webview
 	depends = libsoup3
 	optdepends = libayatana-appindicator: system tray support
 	optdepends = libnotify: desktop notifications via notify-send
-	provides = dnr=0.1.0
+	provides = dnr=0.2.0
 	conflicts = dnr
 	options = !lto
 	options = !debug
-	source = dnr::git+https://github.com/fansion314/dnr.git#tag=v0.1.0
+	source = dnr::git+https://github.com/fansion314/dnr.git#tag=v0.2.0
 	source = deno::git+https://github.com/denoland/deno.git#commit=abd22074e47c6a5cd14e9e4e84743f084aa5a575
 	source = laufey::git+https://github.com/littledivy/laufey.git#commit=1fe87874288e8359fa3de04d18cc14f56957b000
 	sha256sums = SKIP

@@ -1,6 +1,6 @@
 # Maintainer: Peilin Fan <peilin.fan@foxmail.com>
 pkgname=dnr-webview
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Shared Deno runtime (WebView)'
 arch=('x86_64')
@@ -36,7 +36,7 @@ check() {
     cd "$srcdir/dnr"
     cargo test --locked -p dnr-package -p xtask
     DNR_BIN="$srcdir/dnr/dist/dnr" cargo test --locked -p dnr-package \
-        --test runtime --test runtime_native -- --ignored
+        --test runtime --test runtime_native --test runtime_groups -- --ignored
 }
 
 package() {

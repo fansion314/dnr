@@ -12,13 +12,13 @@ Six release-pinned recipes are provided for native x86_64 systems:
 | `dnc-bin` | GitHub Release packager binary | Same as `dnc` |
 
 The four runtime recipes install only `/usr/bin/dnr`, licenses and documentation.
-They conflict with each other; the alternative packages provide `dnr=0.1.0` so applications
+They conflict with each other; the alternative packages provide `dnr=0.2.0` so applications
 can depend on either runtime. The two packager recipes install only `/usr/bin/dnc`
 plus their own licenses and documentation. Choose `dnc` or `dnc-bin` independently
-of the runtime; they conflict only with each other, and `dnc-bin` provides `dnc=0.1.0`.
+of the runtime; they conflict only with each other, and `dnc-bin` provides `dnc=0.2.0`.
 The packager does not depend on an installed runtime. Applications requiring CEF
 must still check the backend.
-The source URL is `https://github.com/fansion314/dnr.git`, pinned to `v0.1.0`.
+The source URL is `https://github.com/fansion314/dnr.git`, pinned to `v0.2.0`.
 For runtime builds, Deno and Laufey are downloaded separately at the full commits used by xtask.
 These are release packages, not moving `-git` packages.
 
