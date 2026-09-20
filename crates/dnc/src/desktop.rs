@@ -1,7 +1,7 @@
 use crate::Args;
 use anyhow::{Context, Result, bail, ensure};
 use clap::ValueEnum;
-use dnr_package::{Include, PackOptions, pack};
+use dnr_package::{Include, PackOptions, PackageConfig, pack_with_config};
 use serde::Deserialize;
 use std::{
     fs,
@@ -212,7 +212,13 @@ pub fn build(args: &Args, path: &Path, target: Target) -> Result<()> {
         app_id: Some(m.app_id.clone()),
         force: false,
     };
-    let report = pack(&options)?;
+    let config = args
+        .package_config
+        .as_deref()
+        .map(PackageConfig::load)
+        .transpose()?
+        .unwrap_or_default();
+    let report = pack_with_config(&options, &config)?;
     let base = path.parent().unwrap_or(Path::new("."));
     // The final staging directory is a sibling, allowing same-filesystem rename.
     let stage = tempfile::Builder::new()

@@ -1,4 +1,6 @@
-# DNR application format v1
+# DNR application formats v1 / v2
+
+新 dnc 默认输出 v2，dnr 保持 v1 读取兼容。下文先描述共同封装和 v1 行为；v2 原生分组扩展见文末。
 
 `.dnp` 是可执行的 POSIX shell 启动头与 ZIP 区域拼接而成的文件。扩展名不参与运行时识别。
 
@@ -35,3 +37,31 @@ exit 127
 桌面 manifest 是 dnc 的构建配置，不是上述 ZIP manifest 的扩展。macOS `.app` 和
 Arch/CachyOS `.pkg.tar.zst` 将未改变格式的 `.dnp` 作为应用内容封装，并在外层添加
 桌面身份、图标、启动器与平台元数据；参见 [桌面打包](DESKTOP-PACKAGING.md)。
+
+
+## v2：分组、平台视图和完整性索引
+
+封装仍是同一个 shell 启动头和 ZIP 区域，`DNRZIP1` 标记表示封装方式，不表示 manifest 版本。
+v2 manifest 的 `formatVersion` 为 2，增加 `targets`、`groups` 和 `integrity`：后者指向
+`.dnr/index.json` 并记录其 SHA-256。运行时拒绝不认识的格式版本。
+
+索引逐项保存逻辑路径 `path`、ZIP 路径 `source`、`kind`、`size`、`mode`、文件或链接内容
+`sha256`、可选 `link`、`group`、`target`、`native` 和 `napi`。普通 ZIP 条目必须被索引覆盖，
+文件来源不能重复。公共目录和平台目录可合并；同平台的逻辑文件不能覆盖。
+manifest 仍限制为 64 KiB，完整文件索引单独存储并限制为 64 MiB。
+
+允许的保留条目扩展为 `.dnr/manifest.json`、`.dnr/index.json` 与 `.dnr/payloads/` 中的
+已索引变体。它们不直接出现在应用 VFS；`tree` 和 `extract` 仍按原始 ZIP 展示和导出所有平台。
+运行时只建立当前平台的逻辑视图，其他平台的已声明路径不会作为同名磁盘回退入口。
+
+普通文件读取仍懒解压并检查 CRC；v2 还检查索引中的 SHA-256。包内容身份是 manifest
+原始字节的 SHA-256，通过索引哈希覆盖全部文件内容及映射规则，不需要每次启动哈希整个 ZIP。
+内容身份用于版本隔离，不提供发行者认证。
+
+v2 原生加载和执行只接受 manifest 索引中声明的对应入口。首次调用准备整个 group：
+优先复用完整且匹配的 `<package>.unpacked` 副本，再检查用户缓存，否则校验并解压该组的
+公共文件及当前平台变体。原生扩展不再在退出时删除。普通读取和元数据查询不触发组落盘。
+组中 JS 模块的路径映射到其稳定的物理组位置，尚未落盘的内容仍由 VFS 提供。
+组内相对资源与原生依赖需要形成完整集合；没有 OS 挂载或任意 shell 字符串重写。
+
+作者配置、安装、清理命令和兼容性边界见 [原生打包](NATIVE-PACKAGING.md)。

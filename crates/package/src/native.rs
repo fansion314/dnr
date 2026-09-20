@@ -18,6 +18,9 @@ impl Package {
     /// Resolve a packaged native library into a private temporary directory.
     /// None means the archive has no such entry; ordinary disk loading applies.
     pub fn native_library_path(&self, name: &str) -> Result<Option<PathBuf>> {
+        if self.v2.is_some() {
+            return self.native_path(name, crate::NativeUse::Library);
+        }
         let name = self.resolve(name)?;
         let Some(entry) = self.entries.get(&name) else {
             return Ok(None);
@@ -66,6 +69,7 @@ impl Package {
     /// Only call when the host is exiting and will no longer load libraries.
     /// The runtime holds Package in a static, so it cannot rely on Drop at exit.
     pub fn cleanup_native_libraries(&self) {
+        self.release_native_groups();
         let mut native = self.native.lock().unwrap_or_else(|e| e.into_inner());
         native.temporary.take();
         native.paths.clear();

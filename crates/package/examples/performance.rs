@@ -29,6 +29,9 @@ fn fixture(path: &Path, nested: bool) -> Result<()> {
     zip.start_file(MANIFEST, options)?;
     zip.write_all(&serde_json::to_vec(&Manifest {
         format_version: 1,
+        targets: Default::default(),
+        groups: Default::default(),
+        integrity: None,
         entry: "main.js".into(),
         app_id: "dnr.performance".into(),
     })?)?;

@@ -129,11 +129,11 @@ A `.dnp` is a shell launcher followed by a ZIP archive, with ordinary files comp
 - **Packaged files are read-only.** The package's virtual filesystem is mapped to the package's real directory. ZIP entries take priority; only missing entries fall back to disk. Directory listings merge both layers.
 - **External programs need real files.** This is not an OS filesystem mount. Subprocesses cannot read the in-memory VFS, and `chdir` requires a real disk directory.
 - **Decompressed data is cached per process.** The default content budget is 256 MiB; this is not a limit on total application memory. Open file handles retain their data even after cache eviction.
-- **Node-API and FFI libraries can be packaged.** On first load, requested native libraries are verified and extracted to a private system temporary directory, reused within the process, and cleaned up on normal or host-handled exit. Forced termination or a crash can leave temporary files.
+- **Native libraries and executables use declared groups.** New format-v2 packages prepare the whole group on the first native load or execution, reusing a verified adjacent installation or persistent user cache. Ordinary file reads remain in the ZIP. Format-v1 packages retain their temporary-library behavior.
 
-Native libraries must match the platform, architecture, and runtime ABI. Their OS-level shared-library dependencies are not collected or extracted automatically. Libraries outside the ZIP load from disk as usual. Pure JS/TS packages can be reused across supported platforms when their code and dependencies are portable.
+Native libraries must match the platform, architecture, and runtime ABI. Declare their shared-library dependencies and resources in the same group; they are not collected automatically. Libraries outside the ZIP load from disk as usual. Pure JS/TS packages can be reused across supported platforms when their code and dependencies are portable.
 
-See the [package format](docs/FORMAT.md) for precise filesystem and integrity rules.
+Use `dnc scan prepared --output dnr.package.json` to generate a configuration proposal, review it, then pass `--package-config dnr.package.json` when packaging. `dnr install app.dnp` prewarms the user cache; adding a destination directory creates a copy with adjacent extracted groups. `dnr cache info` and `dnr cache clean --all` inspect and clean the cache. See [native packaging](docs/NATIVE-PACKAGING.md) for groups, platform variants, path compatibility, and installation, and the [package format](docs/FORMAT.md) for integrity rules.
 
 ## Arch Linux / CachyOS packages
 
@@ -195,7 +195,7 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 
 # Requires a built runtime and C compiler; runs the ignored runtime/native tests.
-DNR_BIN="$PWD/dist/dnr" cargo test --locked -p dnr-package --test runtime --test runtime_native -- --ignored
+DNR_BIN="$PWD/dist/dnr" cargo test --locked -p dnr-package --test runtime --test runtime_native --test runtime_groups -- --ignored
 
 # Requires a graphical session; opens a window and exits after the binding check.
 dist/dnr examples/desktop/smoke.ts
@@ -206,6 +206,7 @@ Ordinary workspace tests do not run the native runtime tests. Desktop-packaging 
 | Document | Contents |
 | --- | --- |
 | [Desktop packaging](docs/DESKTOP-PACKAGING.md) | Manifest, icons, platform tools, installation, and packaging tests |
+| [Native packaging](docs/NATIVE-PACKAGING.md) | Native groups, cross-platform payloads, install, and persistent cache |
 | [Package format](docs/FORMAT.md) | Archive layout, validation, and VFS semantics |
 | [Linux guide](docs/LINUX.md) | Native builds, WebView/CEF, and Wayland checks |
 | [Performance](docs/PERFORMANCE.md) | Benchmarks and measurement boundaries |

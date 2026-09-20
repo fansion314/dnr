@@ -2,14 +2,14 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|s| s == "--version" || s == "-V") {
         println!(
-            "dnr 0.1.0 (Deno 2.9.7; Laufey 0.7.0; format 1; backend {})",
+            "dnr 0.1.0 (Deno 2.9.7; Laufey 0.7.0; formats 1,2; backend {})",
             env!("DNR_BACKEND")
         );
         return;
     }
     if args.is_empty() || args.first().is_some_and(|s| s == "--help" || s == "-h") {
         println!(
-            "dnr <script.ts|application.dnp> [args...]\ndnr tree <application.dnp>\ndnr extract <application.dnp> <directory>\n\nShared Deno runtime. Local modules and prepared node_modules only.\nDesktop activates on GUI API use. Applications run with full permissions.\nTree includes ZIP metadata; extract requires a new or empty directory.\nUse ./tree or ./extract to run scripts with those names."
+            "dnr <script.ts|application.dnp> [args...]\ndnr tree <application.dnp>\ndnr extract <application.dnp> <directory>\ndnr install <application.dnp> [directory] [--force]\ndnr cache <list|info|clean> [options]\n\nShared Deno runtime. Local modules and prepared node_modules only.\nDesktop activates on GUI API use. Applications run with full permissions.\nTree includes ZIP metadata; extract requires a new or empty directory.\nNative groups: dnc scan and --package-config; see docs/NATIVE-PACKAGING.md.\nUse explicit paths (./tree, ./install, ./cache) for scripts with command names."
         );
         return;
     }
@@ -19,6 +19,14 @@ fn main() {
             std::process::exit(1);
         }
         return;
+    }
+    match dnr_package::commands::run(&args) {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("dnr: {error:#}");
+            std::process::exit(1);
+        }
     }
     denort::dnr_desktop::main(args);
 }

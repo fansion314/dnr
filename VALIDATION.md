@@ -688,6 +688,50 @@ fork/exec 时，子进程可能短暂继承另一个测试的可写脚本句柄�
 - 此次发行二进制来自 tag `v0.1.0` 的 `e4d7eb8`；后续发布脚本修复不改变运行时源码。
   本地下载复验证据位于 `dist/validation-github-bin/`。
 
+
+## v2 原生分组、持久缓存与跨平台元数据（2026-09-20）
+
+环境：本机 macOS ARM64（Darwin arm64），Rust 1.98.1；固定 Deno `abd22074e4`、
+Laufey `1fe8787`，WebView 后端。sccache 保持默认启用。
+
+- `cargo test --workspace --offline`：43 项通过，17 项宿主测试按设计忽略。
+- `cargo clippy --workspace --all-targets --offline -- -D warnings`、格式与 Git 空白检查通过。
+- 在独立临时项目和固定 mirror 的干净源码上运行真实 `xtask prepare`，最终补丁应用通过；
+  当前准备树的反向补丁检查也通过。Deno/Laufey mirror 的 Git 状态均干净。
+- debug 构建和最终 `xtask build` release 均通过。`dist/dnr` 与 `dist/dnc` 为 ARM64
+  Mach-O；dnr 经精简、ad-hoc 签名和 `codesign --verify --verbose` 验证。
+- 最终 release 上显式运行 `runtime`（10）、`runtime_native`（4）、`runtime_groups`（2），
+  共 16 项通过。覆盖 v1 兼容、真实 Node-API/FFI、相邻依赖动态库、组内资源路径、
+  Deno/Node 同步与异步子进程、四进程冷启动竞争、重复启动复用、旁置安装、
+  VFS 可执行权限和映射路径的同步/异步磁盘回退；缺失文件的普通写入落到包旁而非缓存。
+- 新增包测试覆盖平台变体的逻辑路径选择、整组落盘、符号链接闭包、严格原生用途声明、
+  缓存损坏修复、内容更新身份隔离、清理跳过使用中组、其他平台专属组不参与本机安装。
+  重建 ZIP 使 CRC 正确但文件内容与索引不符时，普通读取、原生解压和完整导出均拒绝。
+- 使用 `dnc` 将 `examples/desktop/smoke.ts` 打成 v2 包，从 `/private/tmp` 用最终 release
+  运行。真实 WebView 自动检查页面标题、JS binding、页面按钮调用和关窗后异步收尾，
+  输出 `DNR_GUI_OK`，退出码 0；不是仅检查 HTTP 监听。
+- 独立临时目录安装 esbuild 0.28.2（不执行安装脚本），扫描并检查生成的分组配置后打包。
+  最终 release 的同步和异步 transform 均输出 `ESBUILD_DNP_OK`。直接运行仅准备实际使用的
+  `@esbuild/darwin-arm64` 组；旁置安装运行不创建用户缓存。
+
+真实 esbuild 包性能观察（同机最终 release，仅用于本轮对照，不代表跨机器基准）：
+
+| 场景 | 观察 |
+| --- | --- |
+| 空原生缓存首次运行，1 次 | 555.25 ms |
+| 缓存命中，5 次中位数 | 155.74 ms |
+| 复制包并预热全部当前平台组 | 112.29 ms |
+| 运行旁置安装，1 次 | 374.94 ms |
+
+五次缓存命中前后，所有原生缓存文件的 inode、mtime 和大小完全一致，确认没有重写。
+校验仍会读取组文件，运行时启动及 esbuild 自身工作也计入上面的耗时。原始数据与日志在
+`dist/validation-v2/`，不纳入源码提交。
+
+边界：本轮未执行 Linux x86_64 的原生构建/GUI、system-CEF、macOS 薄应用安装器或 Arch
+makepkg 流程；此前 Linux v1 记录不能替代 v2 验收。Windows/Linux ARM64 只有可扩展的
+平台元数据，不是新增运行时移植。任意 shell 字符串及脱离宿主管理的外部进程不在透明
+路径改写或租约保护范围。系统安装的 dnr/dnc 未替换；使用 v2 包需要新版运行时。
+
 ## AUR 独立 dnc 与三产物发布流程（2026-09-20）
 
 本轮在 macOS ARM64 修改并验证打包入口，不是 Arch 原生构建验收。
@@ -721,3 +765,36 @@ fork/exec 时，子进程可能短暂继承另一个测试的可写脚本句柄�
 `cargo test --locked --offline --workspace`：33 项通过、15 项忽略；Clippy、格式和 Bash
 语法检查通过。运行时配方保留已有 runtime/runtime_native 测试，不依赖未提交的
 `runtime_groups` 测试。上述 47 项是混合工作区结果，不能作为本次独立提交的测试数。
+
+
+## v2 原生机制性能优化复验（2026-09-20）
+
+同一 macOS ARM64 / Rust 1.98.1 环境，sccache 保持启用。本轮不改变 v2 格式或 SHA-256
+身份算法，优化归组索引、别名解析、按组准备锁和缓存校验；ARM64 启用 sha2 的带能力
+检测的加速后端，保留软件回退。没有设置 native CPU 构建参数。
+
+- 使用优化前源码快照、相同 `native_performance.rs`、release 配置及确定性输入对照。
+  1,000 组的 10,000 次反向路径映射：3138.109 → 8.819 ms；相同组数下普通文件的
+  100,000 次归组查询：29.456 → 1.658 ms。
+- 32 MiB 组持久缓存完整校验：73.920 → 17.165 ms；旁置完整校验：146.968 → 16.488 ms。
+  优化后直接解压为 90.123 ms。1,000 小文件组直接解压约 2971.954 ms，持久/旁置命中
+  为 20.234 / 22.050 ms。首次命中仍校验完整内容，没有用 mtime 或标记文件替代哈希。
+- 真实运行时交替顺序测量，预热后每场景取 5 次中位数。1,000 个已绑定组下 20,000 次
+  普通文件 stat：16753.773 → 74.906 ms；最终 release 独立复核为 70.985 ms。
+  无组 v1/v2 在最终 release 上分别为 51.742 / 51.210 ms。
+- 仍有一次性索引成本：10,000 文件样例的无组 v2 总进程约 103 ms，v1 约 87 ms。
+  稳态查找不再扫描全部组，但没有据此声称 v2 完全没有初始化开销或对所有磁盘提供耗时上界。
+- 工作区 47 项测试通过，17 项宿主测试按设计忽略；Clippy、格式、Git 空白和文档路径检查通过。
+  新增确定性计数断言：普通查询零探测、缺失旁置版本根只探测一次、持久/旁置只完整校验一次、
+  就绪命中不增加 I/O/哈希计数。覆盖租约提前固定路径，以及缺失、多余文件、目录链接替换。
+  另修复并验证其他平台的显式目录不遮蔽当前平台隐式目录的边界。
+- 最终 release 构建、精简和 ad-hoc 签名验证通过；最终二进制运行 10 项 runtime、4 项原生库、
+  2 项原生分组测试，全部通过。首次 Cargo 测试入口复用了沙箱中的 sccache 版本探测失败，
+  设置 `CARGO_CACHE_RUSTC_INFO=0` 重新探测后通过，未关闭 wrapper。
+- 真实 WebView 的 v2 包再次输出 `DNR_GUI_OK`，退出码 0；真实 esbuild 0.28.2 同步/异步
+  transform 再次输出 `ESBUILD_DNP_OK`，继续复用先前生成的缓存。
+- 在独立干净上游源码副本上复跑 prepare，最终补丁可应用；当前准备树反向补丁检查通过。
+  mirror 未修改。本轮没有新增 Linux 原生或 system-CEF 验收证据。
+
+基准方法和细表见 `docs/PERFORMANCE.md`，输入、优化前二进制、原始样本及日志在
+`dist/validation-native-performance/`。这些结果限定本机和上述负载，区分包层与完整运行时耗时。

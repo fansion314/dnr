@@ -11,11 +11,18 @@ use std::{
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 mod cache;
+pub mod commands;
+pub mod config;
 mod contents;
+mod materialize;
 mod native;
 mod reader;
+mod v2;
+pub use config::PackageConfig;
+pub use materialize::{NativeCacheStats, NativeUse, cache_directory};
+pub use v2::Integrity;
 
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 pub const MARKER: &str = "# DNRZIP1\n";
 pub const MANIFEST: &str = ".dnr/manifest.json";
 pub const DEFAULT_CACHE_BYTES: usize = 256 * 1024 * 1024;
@@ -27,9 +34,18 @@ pub struct Manifest {
     pub format_version: u32,
     pub entry: String,
     pub app_id: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub targets: BTreeMap<String, config::Target>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integrity: Option<v2::Integrity>,
 }
 
 pub fn normalized_name(name: &str) -> Result<String> {
+    if is_normalized_name(name) {
+        return Ok(name.to_owned());
+    }
     ensure!(
         !name.is_empty() && !name.contains(['\0', '\n', '\r', '\\']),
         "invalid archive path: {name:?}"
@@ -44,6 +60,17 @@ pub fn normalized_name(name: &str) -> Result<String> {
     }
     ensure!(!parts.is_empty(), "empty archive path");
     Ok(parts.join("/"))
+}
+
+pub(crate) fn is_normalized_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains(['\0', '\n', '\r', '\\'])
+        && name
+            .split('/')
+            .all(|p| !p.is_empty() && !matches!(p, "." | ".."))
+        && Path::new(name)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_)))
 }
 
 pub fn resolve_link(name: &str, target: &str) -> Result<String> {
@@ -205,7 +232,17 @@ fn identity(options: &PackOptions) -> String {
         .unwrap_or_else(|| "application".into())
 }
 
+/// Legacy v1 writer. New packages should use `pack_with_config` (an empty config is valid).
 pub fn pack(options: &PackOptions) -> Result<PackReport> {
+    pack_internal(options, None)
+}
+
+/// Build format v2. Configuration has already been reviewed by the packager.
+pub fn pack_with_config(options: &PackOptions, config: &PackageConfig) -> Result<PackReport> {
+    pack_internal(options, Some(config))
+}
+
+fn pack_internal(options: &PackOptions, config: Option<&PackageConfig>) -> Result<PackReport> {
     ensure!(options.directory.is_dir(), "input must be a directory");
     let entry = normalized_name(&options.entry)?;
     ensure!(!entry.starts_with(".dnr/"), "reserved entrypoint");
@@ -242,6 +279,9 @@ pub fn pack(options: &PackOptions) -> Result<PackReport> {
             &output,
         )?;
     }
+    let prepared = config
+        .map(|c| v2::prepare(c, &mut entries, &excludes, &output))
+        .transpose()?;
     let entry_path = entries
         .get(&entry)
         .context("entrypoint is missing or excluded")?;
@@ -252,9 +292,14 @@ pub fn pack(options: &PackOptions) -> Result<PackReport> {
         "invalid app id"
     );
     let manifest = Manifest {
-        format_version: FORMAT_VERSION,
+        format_version: if config.is_some() { FORMAT_VERSION } else { 1 },
         entry: entry.clone(),
         app_id,
+        targets: config.map(|c| c.targets.clone()).unwrap_or_default(),
+        groups: config
+            .map(|c| c.groups.iter().map(|g| g.id.clone()).collect())
+            .unwrap_or_default(),
+        integrity: prepared.as_ref().map(|p| p.integrity()),
     };
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     let quoted_entry = entry.replace('\'', "'\\''");
@@ -271,6 +316,10 @@ pub fn pack(options: &PackOptions) -> Result<PackReport> {
         .unix_permissions(0o644);
     zip.start_file(MANIFEST, file_options)?;
     zip.write_all(&serde_json::to_vec(&manifest)?)?;
+    if let Some(p) = &prepared {
+        zip.start_file(v2::INDEX, file_options)?;
+        zip.write_all(&p.bytes)?;
+    }
     let mut source_bytes = 0;
     for (name, source) in &entries {
         let meta = fs::symlink_metadata(source)?;
@@ -298,8 +347,13 @@ pub fn pack(options: &PackOptions) -> Result<PackReport> {
             };
             #[cfg(not(unix))]
             let mode = 0o644;
+            let mode = prepared.as_ref().and_then(|p| p.mode(name)).unwrap_or(mode);
             zip.start_file(name, file_options.unix_permissions(mode))?;
-            source_bytes += io::copy(&mut File::open(source)?, &mut zip)?;
+            source_bytes += v2::copy_checked(
+                source,
+                &mut zip,
+                prepared.as_ref().and_then(|p| p.hash(name)),
+            )?;
         }
     }
     zip.finish()?;
@@ -415,6 +469,9 @@ pub struct Package {
     archive: ZipArchive<reader::PackageReader>,
     cache: cache::Cache,
     native: std::sync::Mutex<native::NativeLibraries>,
+    v2: Option<v2::State>,
+    materialized: materialize::Groups,
+    raw_entries: BTreeMap<String, Entry>,
 }
 impl std::fmt::Debug for Package {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -426,19 +483,24 @@ impl std::fmt::Debug for Package {
 }
 impl Package {
     pub fn open(path: &Path, budget: usize) -> Result<Self> {
+        Self::open_for_target(path, budget, None)
+    }
+
+    pub fn open_for_target(path: &Path, budget: usize, target: Option<&str>) -> Result<Self> {
         let path = path.canonicalize()?;
         let mut file = File::open(&path)?;
         let offset = zip_offset(&mut file)?;
         let mut archive = ZipArchive::new(reader::PackageReader::new(file, offset)?)?;
-        let manifest: Manifest = {
+        let manifest_bytes = {
             let mut source = archive.by_name(MANIFEST)?;
             ensure!(source.size() <= 65536, "oversized manifest");
             let mut bytes = Vec::new();
             source.read_to_end(&mut bytes)?;
-            serde_json::from_slice(&bytes)?
+            bytes
         };
+        let manifest: Manifest = serde_json::from_slice(&manifest_bytes)?;
         ensure!(
-            manifest.format_version == FORMAT_VERSION,
+            matches!(manifest.format_version, 1 | 2),
             "unsupported DNR format: {}",
             manifest.format_version
         );
@@ -454,15 +516,22 @@ impl Package {
         let mut entries = BTreeMap::new();
         let mut seen = std::collections::HashSet::new();
         let mut sizes = Vec::with_capacity(archive.len());
+        let mut modes = Vec::with_capacity(archive.len());
         for index in 0..archive.len() {
             let mut file = archive.by_index(index)?;
             sizes.push(file.size());
+            modes.push(file.unix_mode().unwrap_or(0o644) & 0o777);
             let name = normalized_name(file.name().trim_end_matches('/'))?;
             ensure!(seen.insert(name.clone()), "duplicate archive path: {name}");
             if name == MANIFEST {
                 continue;
             }
-            ensure!(!name.starts_with(".dnr/"), "unknown reserved entry: {name}");
+            ensure!(
+                !name.starts_with(".dnr/")
+                    || (manifest.format_version == 2
+                        && (name == v2::INDEX || name.starts_with(".dnr/payloads/"))),
+                "unknown reserved entry: {name}"
+            );
             let kind = if file.is_dir() {
                 EntryKind::Directory
             } else if file.unix_mode().is_some_and(|m| m & 0o170000 == 0o120000) {
@@ -484,34 +553,61 @@ impl Package {
                 },
             );
         }
-        // ZIP directory entries are optional. Synthesize them without reading file bodies.
-        for name in entries.keys().cloned().collect::<Vec<_>>() {
-            let mut path = Path::new(&name).parent();
-            while let Some(parent) = path.filter(|p| !p.as_os_str().is_empty()) {
-                let name = parent.to_str().unwrap().to_owned();
-                if let Some(e) = entries.get(&name) {
+        let (v2, mut entries, raw_entries) = if manifest.format_version == 2 {
+            let (state, view) = v2::State::open(
+                &manifest,
+                &manifest_bytes,
+                &mut archive,
+                &entries,
+                &modes,
+                target,
+            )?;
+            (Some(state), view, entries)
+        } else {
+            ensure!(
+                manifest.integrity.is_none()
+                    && manifest.groups.is_empty()
+                    && manifest.targets.is_empty(),
+                "v1 cannot contain v2 metadata"
+            );
+            (None, entries, BTreeMap::new())
+        };
+        // Check each distinct parent once, not once per child. Borrow validated
+        // slash-delimited names; allocate only directories missing from the ZIP.
+        let missing = {
+            let parents: std::collections::HashSet<_> = entries
+                .keys()
+                .flat_map(|name| name.match_indices('/').map(|(n, _)| &name[..n]))
+                .collect();
+            let mut missing = Vec::new();
+            for parent in parents {
+                if let Some(entry) = entries.get(parent) {
                     ensure!(
-                        e.kind == EntryKind::Directory,
-                        "file/directory conflict: {name}"
+                        entry.kind == EntryKind::Directory,
+                        "file/directory conflict: {parent}"
                     );
                 } else {
-                    entries.insert(
-                        name.clone(),
-                        Entry {
-                            name,
-                            size: 0,
-                            index: usize::MAX,
-                            kind: EntryKind::Directory,
-                        },
-                    );
+                    missing.push(parent.to_owned());
                 }
-                path = parent.parent();
             }
+            missing
+        };
+        for name in missing {
+            entries.insert(
+                name.clone(),
+                Entry {
+                    name,
+                    size: 0,
+                    index: usize::MAX,
+                    kind: EntryKind::Directory,
+                },
+            );
         }
         ensure!(
             entries.contains_key(&manifest.entry),
             "entrypoint missing from ZIP"
         );
+        let materialized = materialize::Groups::new(&manifest, v2.as_ref(), &path);
         Ok(Self {
             manifest,
             entries,
@@ -519,6 +615,9 @@ impl Package {
             archive,
             cache: cache::Cache::new(sizes, budget),
             native: Default::default(),
+            v2,
+            materialized,
+            raw_entries,
         })
     }
 
@@ -555,6 +654,10 @@ impl Package {
 
     pub fn read(&self, name: &str) -> Result<Option<Arc<[u8]>>> {
         let resolved = self.resolve(name)?;
+        ensure!(
+            !self.is_unavailable(&resolved),
+            "file is not available for the selected platform: {name}"
+        );
         let Some(entry) = self.entries.get(&resolved) else {
             return Ok(None);
         };
@@ -578,6 +681,9 @@ impl Package {
             ensure!(bytes.len() == size, "ZIP size mismatch");
             // Read once beyond declared size so the decoder validates EOF/CRC.
             ensure!(source.read(&mut [0u8; 1])? == 0, "ZIP size mismatch");
+            if let Some(v2) = &self.v2 {
+                v2.verify(index, &bytes)?;
+            }
             Ok(bytes.into())
         })
     }

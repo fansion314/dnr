@@ -35,17 +35,6 @@
  async-trait.workspace = true
  bincode.workspace = true
  deno_ast = { workspace = true, features = ["cjs"] }
---- a/cli/rt/lib.rs
-+++ b/cli/rt/lib.rs
-@@ -1,5 +1,8 @@
- // Copyright 2018-2026 the Deno authors. MIT license.
- 
-+extern crate self as denort;
-+pub mod dnr;
-+pub mod dnr_desktop;
- use std::borrow::Cow;
- use std::env;
- use std::sync::Arc;
 --- a/cli/rt/binary.rs
 +++ b/cli/rt/binary.rs
 @@ -601,6 +601,12 @@
@@ -95,18 +84,25 @@
      let Some(json) =
 --- a/cli/rt/file_system.rs
 +++ b/cli/rt/file_system.rs
-@@ -73,7 +73,10 @@
+@@ -73,7 +73,17 @@
      }
    }
  
 +  pub fn is_dnr_overlay(&self) -> bool { self.vfs.dnr_overlay }
++
++  fn dnr_checked_path(&self, path: CheckedPathBuf) -> CheckedPathBuf {
++    match self.vfs.dnr_path(&path) {
++      Cow::Borrowed(_) => path,
++      Cow::Owned(path) => CheckedPathBuf::unsafe_new(path),
++    }
++  }
 +
    pub fn maybe_native_addon_loader(&self) -> Option<DenoRtNativeAddonLoaderRc> {
 +    if self.vfs.dnr_overlay { return Some(Arc::new(DnrNativeLoader(self.vfs.clone()))); }
      if self.self_extracting {
        // native addons are already on disk, no need for VFS extraction
        None
-@@ -144,6 +147,12 @@
+@@ -144,6 +154,12 @@
    }
  
    fn chdir(&self, path: &CheckedPath) -> FsResult<()> {
@@ -119,25 +115,451 @@
      if self.is_vfs_path(path) {
        // The process working directory can't actually be changed to a path
        // inside the embedded virtual file system, but applications (e.g.
-@@ -174,6 +183,7 @@
+@@ -173,7 +189,10 @@
+     path: &CheckedPath,
      options: OpenOptions,
    ) -> FsResult<Rc<dyn DenoFile>> {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
      if self.is_vfs_path(path) {
 +      if options.write || options.append || options.truncate || options.create || options.create_new { return Err(FsError::NotSupported); }
        Ok(Rc::new(self.vfs.open_file(path)?))
      } else {
        RealFs.open_sync(path, options)
-@@ -185,6 +195,7 @@
+@@ -184,7 +203,9 @@
+     path: CheckedPathBuf,
      options: OpenOptions,
    ) -> FsResult<Rc<dyn DenoFile>> {
++    let path = self.dnr_checked_path(path);
      if self.is_vfs_path(&path) {
 +      if options.write || options.append || options.truncate || options.create || options.create_new { return Err(FsError::NotSupported); }
        Ok(Rc::new(self.vfs.open_file(&path)?))
      } else {
        RealFs.open_async(path, options).await
-@@ -774,10 +785,23 @@
+@@ -197,6 +218,8 @@
+     recursive: bool,
+     mode: Option<u32>,
+   ) -> FsResult<()> {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
+     self.error_if_in_vfs(path)?;
+     RealFs.mkdir_sync(path, recursive, mode)
+   }
+@@ -206,28 +229,35 @@
+     recursive: bool,
+     mode: Option<u32>,
+   ) -> FsResult<()> {
++    let path = self.dnr_checked_path(path);
+     self.error_if_in_vfs(&path)?;
+     RealFs.mkdir_async(path, recursive, mode).await
+   }
+ 
+   #[cfg(unix)]
+   fn chmod_sync(&self, path: &CheckedPath, mode: u32) -> FsResult<()> {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
+     self.error_if_in_vfs(path)?;
+     RealFs.chmod_sync(path, mode)
+   }
+   #[cfg(not(unix))]
+   fn chmod_sync(&self, path: &CheckedPath, mode: i32) -> FsResult<()> {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
+     self.error_if_in_vfs(path)?;
+     RealFs.chmod_sync(path, mode)
+   }
+ 
+   #[cfg(unix)]
+   async fn chmod_async(&self, path: CheckedPathBuf, mode: u32) -> FsResult<()> {
++    let path = self.dnr_checked_path(path);
+     self.error_if_in_vfs(&path)?;
+     RealFs.chmod_async(path, mode).await
+   }
+   #[cfg(not(unix))]
+   async fn chmod_async(&self, path: CheckedPathBuf, mode: i32) -> FsResult<()> {
++    let path = self.dnr_checked_path(path);
+     self.error_if_in_vfs(&path)?;
+     RealFs.chmod_async(path, mode).await
+   }
+@@ -238,6 +268,8 @@
+     uid: Option<u32>,
+     gid: Option<u32>,
+   ) -> FsResult<()> {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
+     self.error_if_in_vfs(path)?;
+     RealFs.chown_sync(path, uid, gid)
+   }
+@@ -247,11 +279,14 @@
+     uid: Option<u32>,
+     gid: Option<u32>,
+   ) -> FsResult<()> {
++    let path = self.dnr_checked_path(path);
+     self.error_if_in_vfs(&path)?;
+     RealFs.chown_async(path, uid, gid).await
+   }
+ 
+   fn exists_sync(&self, path: &CheckedPath) -> bool {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
+     if self.is_vfs_path(path) {
+       self.vfs.exists(path)
+     } else {
+@@ -259,6 +294,7 @@
+     }
+   }
+   async fn exists_async(&self, path: CheckedPathBuf) -> FsResult<bool> {
++    let path = self.dnr_checked_path(path);
+     if self.is_vfs_path(&path) {
+       Ok(self.vfs.exists(&path))
+     } else {
+@@ -267,6 +303,8 @@
+   }
+ 
+   fn lchmod_sync(&self, path: &CheckedPath, mode: u32) -> FsResult<()> {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
+     self.error_if_in_vfs(path)?;
+     RealFs.lchmod_sync(path, mode)
+   }
+@@ -276,6 +314,7 @@
+     path: CheckedPathBuf,
+     mode: u32,
+   ) -> FsResult<()> {
++    let path = self.dnr_checked_path(path);
+     self.error_if_in_vfs(&path)?;
+     RealFs.lchmod_async(path, mode).await
+   }
+@@ -286,6 +325,8 @@
+     uid: Option<u32>,
+     gid: Option<u32>,
+   ) -> FsResult<()> {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
+     self.error_if_in_vfs(path)?;
+     RealFs.lchown_sync(path, uid, gid)
+   }
+@@ -296,11 +337,14 @@
+     uid: Option<u32>,
+     gid: Option<u32>,
+   ) -> FsResult<()> {
++    let path = self.dnr_checked_path(path);
+     self.error_if_in_vfs(&path)?;
+     RealFs.lchown_async(path, uid, gid).await
+   }
+ 
+   fn remove_sync(&self, path: &CheckedPath, recursive: bool) -> FsResult<()> {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
+     self.error_if_in_vfs(path)?;
+     RealFs.remove_sync(path, recursive)
+   }
+@@ -309,15 +353,19 @@
+     path: CheckedPathBuf,
+     recursive: bool,
+   ) -> FsResult<()> {
++    let path = self.dnr_checked_path(path);
+     self.error_if_in_vfs(&path)?;
+     RealFs.remove_async(path, recursive).await
+   }
+ 
+   fn rmdir_sync(&self, path: &CheckedPath) -> FsResult<()> {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
+     self.error_if_in_vfs(path)?;
+     RealFs.rmdir_sync(path)
+   }
+   async fn rmdir_async(&self, path: CheckedPathBuf) -> FsResult<()> {
++    let path = self.dnr_checked_path(path);
+     self.error_if_in_vfs(&path)?;
+     RealFs.rmdir_async(path).await
+   }
+@@ -327,6 +375,10 @@
+     oldpath: &CheckedPath,
+     newpath: &CheckedPath,
+   ) -> FsResult<()> {
++    let dnr_oldpath = CheckedPath::unsafe_new(self.vfs.dnr_path(oldpath));
++    let oldpath = &dnr_oldpath;
++    let dnr_newpath = CheckedPath::unsafe_new(self.vfs.dnr_path(newpath));
++    let newpath = &dnr_newpath;
+     self.error_if_in_vfs(newpath)?;
+     if self.is_vfs_path(oldpath) {
+       self
+@@ -342,6 +394,8 @@
+     oldpath: CheckedPathBuf,
+     newpath: CheckedPathBuf,
+   ) -> FsResult<()> {
++    let oldpath = self.dnr_checked_path(oldpath);
++    let newpath = self.dnr_checked_path(newpath);
+     self.error_if_in_vfs(&newpath)?;
+     if self.is_vfs_path(&oldpath) {
+       let fs = self.clone();
+@@ -360,6 +414,10 @@
+   }
+ 
+   fn cp_sync(&self, from: &CheckedPath, to: &CheckedPath) -> FsResult<()> {
++    let dnr_from = CheckedPath::unsafe_new(self.vfs.dnr_path(from));
++    let from = &dnr_from;
++    let dnr_to = CheckedPath::unsafe_new(self.vfs.dnr_path(to));
++    let to = &dnr_to;
+     self.error_if_in_vfs(to)?;
+ 
+     RealFs.cp_sync(from, to)
+@@ -369,12 +427,16 @@
+     from: CheckedPathBuf,
+     to: CheckedPathBuf,
+   ) -> FsResult<()> {
++    let from = self.dnr_checked_path(from);
++    let to = self.dnr_checked_path(to);
+     self.error_if_in_vfs(&to)?;
+ 
+     RealFs.cp_async(from, to).await
+   }
+ 
+   fn stat_sync(&self, path: &CheckedPath) -> FsResult<FsStat> {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
+     if self.is_vfs_path(path) {
+       Ok(self.vfs.stat(path)?.as_fs_stat())
+     } else {
+@@ -382,6 +444,7 @@
+     }
+   }
+   async fn stat_async(&self, path: CheckedPathBuf) -> FsResult<FsStat> {
++    let path = self.dnr_checked_path(path);
+     if self.is_vfs_path(&path) {
+       Ok(self.vfs.stat(&path)?.as_fs_stat())
+     } else {
+@@ -390,6 +453,8 @@
+   }
+ 
+   fn lstat_sync(&self, path: &CheckedPath) -> FsResult<FsStat> {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
+     if self.is_vfs_path(path) {
+       Ok(self.vfs.lstat(path)?.as_fs_stat())
+     } else {
+@@ -397,6 +462,7 @@
+     }
+   }
+   async fn lstat_async(&self, path: CheckedPathBuf) -> FsResult<FsStat> {
++    let path = self.dnr_checked_path(path);
+     if self.is_vfs_path(&path) {
+       Ok(self.vfs.lstat(&path)?.as_fs_stat())
+     } else {
+@@ -409,6 +475,8 @@
+     path: &CheckedPath,
+     bigint: bool,
+   ) -> FsResult<FsStatFs> {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
+     if self.is_vfs_path(path) {
+       // the entry must exist within the embedded read-only file system
+       self.vfs.stat(path)?;
+@@ -422,6 +490,7 @@
+     path: CheckedPathBuf,
+     bigint: bool,
+   ) -> FsResult<FsStatFs> {
++    let path = self.dnr_checked_path(path);
+     if self.is_vfs_path(&path) {
+       // the entry must exist within the embedded read-only file system
+       self.vfs.stat(&path)?;
+@@ -432,6 +501,8 @@
+   }
+ 
+   fn realpath_sync(&self, path: &CheckedPath) -> FsResult<PathBuf> {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
+     if self.is_vfs_path(path) {
+       Ok(self.vfs.canonicalize(path)?)
+     } else {
+@@ -439,6 +510,7 @@
+     }
+   }
+   async fn realpath_async(&self, path: CheckedPathBuf) -> FsResult<PathBuf> {
++    let path = self.dnr_checked_path(path);
+     if self.is_vfs_path(&path) {
+       Ok(self.vfs.canonicalize(&path)?)
+     } else {
+@@ -447,6 +519,8 @@
+   }
+ 
+   fn read_dir_sync(&self, path: &CheckedPath) -> FsResult<Vec<FsDirEntry>> {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
+     if self.is_vfs_path(path) {
+       Ok(self.vfs.read_dir(path)?)
+     } else {
+@@ -457,6 +531,7 @@
+     &self,
+     path: CheckedPathBuf,
+   ) -> FsResult<FsReadDirRc> {
++    let path = self.dnr_checked_path(path);
+     if self.is_vfs_path(&path) {
+       Ok(new_rc(VfsReadDir(Mutex::new(
+         self.vfs.read_dir(&path)?.into_iter(),
+@@ -471,6 +546,10 @@
+     oldpath: &CheckedPath,
+     newpath: &CheckedPath,
+   ) -> FsResult<()> {
++    let dnr_oldpath = CheckedPath::unsafe_new(self.vfs.dnr_path(oldpath));
++    let oldpath = &dnr_oldpath;
++    let dnr_newpath = CheckedPath::unsafe_new(self.vfs.dnr_path(newpath));
++    let newpath = &dnr_newpath;
+     self.error_if_in_vfs(oldpath)?;
+     self.error_if_in_vfs(newpath)?;
+     RealFs.rename_sync(oldpath, newpath)
+@@ -480,6 +559,8 @@
+     oldpath: CheckedPathBuf,
+     newpath: CheckedPathBuf,
+   ) -> FsResult<()> {
++    let oldpath = self.dnr_checked_path(oldpath);
++    let newpath = self.dnr_checked_path(newpath);
+     self.error_if_in_vfs(&oldpath)?;
+     self.error_if_in_vfs(&newpath)?;
+     RealFs.rename_async(oldpath, newpath).await
+@@ -490,6 +571,10 @@
+     oldpath: &CheckedPath,
+     newpath: &CheckedPath,
+   ) -> FsResult<()> {
++    let dnr_oldpath = CheckedPath::unsafe_new(self.vfs.dnr_path(oldpath));
++    let oldpath = &dnr_oldpath;
++    let dnr_newpath = CheckedPath::unsafe_new(self.vfs.dnr_path(newpath));
++    let newpath = &dnr_newpath;
+     self.error_if_in_vfs(oldpath)?;
+     self.error_if_in_vfs(newpath)?;
+     RealFs.link_sync(oldpath, newpath)
+@@ -499,6 +584,8 @@
+     oldpath: CheckedPathBuf,
+     newpath: CheckedPathBuf,
+   ) -> FsResult<()> {
++    let oldpath = self.dnr_checked_path(oldpath);
++    let newpath = self.dnr_checked_path(newpath);
+     self.error_if_in_vfs(&oldpath)?;
+     self.error_if_in_vfs(&newpath)?;
+     RealFs.link_async(oldpath, newpath).await
+@@ -510,6 +597,10 @@
+     newpath: &CheckedPath,
+     file_type: Option<FsFileType>,
+   ) -> FsResult<()> {
++    let dnr_oldpath = CheckedPath::unsafe_new(self.vfs.dnr_path(oldpath));
++    let oldpath = &dnr_oldpath;
++    let dnr_newpath = CheckedPath::unsafe_new(self.vfs.dnr_path(newpath));
++    let newpath = &dnr_newpath;
+     self.error_if_in_vfs(oldpath)?;
+     self.error_if_in_vfs(newpath)?;
+     RealFs.symlink_sync(oldpath, newpath, file_type)
+@@ -520,12 +611,16 @@
+     newpath: CheckedPathBuf,
+     file_type: Option<FsFileType>,
+   ) -> FsResult<()> {
++    let oldpath = self.dnr_checked_path(oldpath);
++    let newpath = self.dnr_checked_path(newpath);
+     self.error_if_in_vfs(&oldpath)?;
+     self.error_if_in_vfs(&newpath)?;
+     RealFs.symlink_async(oldpath, newpath, file_type).await
+   }
+ 
+   fn read_link_sync(&self, path: &CheckedPath) -> FsResult<PathBuf> {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
+     if self.is_vfs_path(path) {
+       Ok(self.vfs.read_link(path)?)
+     } else {
+@@ -533,6 +628,7 @@
+     }
+   }
+   async fn read_link_async(&self, path: CheckedPathBuf) -> FsResult<PathBuf> {
++    let path = self.dnr_checked_path(path);
+     if self.is_vfs_path(&path) {
+       Ok(self.vfs.read_link(&path)?)
+     } else {
+@@ -541,6 +637,8 @@
+   }
+ 
+   fn truncate_sync(&self, path: &CheckedPath, len: u64) -> FsResult<()> {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
+     self.error_if_in_vfs(path)?;
+     RealFs.truncate_sync(path, len)
+   }
+@@ -549,6 +647,7 @@
+     path: CheckedPathBuf,
+     len: u64,
+   ) -> FsResult<()> {
++    let path = self.dnr_checked_path(path);
+     self.error_if_in_vfs(&path)?;
+     RealFs.truncate_async(path, len).await
+   }
+@@ -561,6 +660,8 @@
+     mtime_secs: i64,
+     mtime_nanos: u32,
+   ) -> FsResult<()> {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
+     self.error_if_in_vfs(path)?;
+     RealFs.utime_sync(path, atime_secs, atime_nanos, mtime_secs, mtime_nanos)
+   }
+@@ -572,6 +673,7 @@
+     mtime_secs: i64,
+     mtime_nanos: u32,
+   ) -> FsResult<()> {
++    let path = self.dnr_checked_path(path);
+     self.error_if_in_vfs(&path)?;
+     RealFs
+       .utime_async(path, atime_secs, atime_nanos, mtime_secs, mtime_nanos)
+@@ -586,6 +688,8 @@
+     mtime_secs: i64,
+     mtime_nanos: u32,
+   ) -> FsResult<()> {
++    let dnr_path = CheckedPath::unsafe_new(self.vfs.dnr_path(path));
++    let path = &dnr_path;
+     self.error_if_in_vfs(path)?;
+     RealFs.lutime_sync(path, atime_secs, atime_nanos, mtime_secs, mtime_nanos)
+   }
+@@ -597,6 +701,7 @@
+     mtime_secs: i64,
+     mtime_nanos: u32,
+   ) -> FsResult<()> {
++    let path = self.dnr_checked_path(path);
+     self.error_if_in_vfs(&path)?;
+     RealFs
+       .lutime_async(path, atime_secs, atime_nanos, mtime_secs, mtime_nanos)
+@@ -617,6 +722,10 @@
+ impl sys_traits::BaseFsHardLink for DenoRtSys {
+   #[inline]
+   fn base_fs_hard_link(&self, src: &Path, dst: &Path) -> std::io::Result<()> {
++    let dnr_src = self.vfs.dnr_path(src);
++    let src = dnr_src.as_ref();
++    let dnr_dst = self.vfs.dnr_path(dst);
++    let dst = dnr_dst.as_ref();
+     self
+       .link_sync(
+         // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
+@@ -632,6 +741,8 @@
+ impl sys_traits::BaseFsRead for DenoRtSys {
+   #[inline]
+   fn base_fs_read(&self, path: &Path) -> std::io::Result<Cow<'static, [u8]>> {
++    let dnr_path = self.vfs.dnr_path(path);
++    let path = dnr_path.as_ref();
+     self
+       .read_file_sync(
+         // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
+@@ -678,7 +789,7 @@
+   }
+ 
+   fn mode(&self) -> std::io::Result<u32> {
+-    Ok(0)
++    Ok(self.as_fs_stat().mode)
+   }
+ 
+   fn nlink(&self) -> std::io::Result<u64> {
+@@ -773,11 +884,26 @@
+   ) -> std::io::Result<
      Box<dyn Iterator<Item = std::io::Result<Self::ReadDirEntry>>>,
    > {
++    let dnr_path = self.vfs.dnr_path(path);
++    let path = dnr_path.as_ref();
      if self.is_vfs_path(path) {
 -      let entries = self.vfs.read_dir_with_metadata(path)?;
 -      Ok(Box::new(
@@ -163,7 +585,113 @@
      } else {
        #[allow(
          clippy::disallowed_methods,
-@@ -1318,11 +1342,40 @@
+@@ -791,6 +917,8 @@
+ impl sys_traits::BaseFsCanonicalize for DenoRtSys {
+   #[inline]
+   fn base_fs_canonicalize(&self, path: &Path) -> std::io::Result<PathBuf> {
++    let dnr_path = self.vfs.dnr_path(path);
++    let path = dnr_path.as_ref();
+     self
+       .realpath_sync(
+         // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
+@@ -807,6 +935,8 @@
+ 
+   #[inline]
+   fn base_fs_metadata(&self, path: &Path) -> std::io::Result<Self::Metadata> {
++    let dnr_path = self.vfs.dnr_path(path);
++    let path = dnr_path.as_ref();
+     if self.is_vfs_path(path) {
+       Ok(BoxedFsMetadataValue::new(self.vfs.stat(path)?))
+     } else {
+@@ -823,6 +953,8 @@
+     &self,
+     path: &Path,
+   ) -> std::io::Result<Self::Metadata> {
++    let dnr_path = self.vfs.dnr_path(path);
++    let path = dnr_path.as_ref();
+     if self.is_vfs_path(path) {
+       Ok(BoxedFsMetadataValue::new(self.vfs.lstat(path)?))
+     } else {
+@@ -838,6 +970,10 @@
+ impl sys_traits::BaseFsCopy for DenoRtSys {
+   #[inline]
+   fn base_fs_copy(&self, from: &Path, to: &Path) -> std::io::Result<u64> {
++    let dnr_from = self.vfs.dnr_path(from);
++    let from = dnr_from.as_ref();
++    let dnr_to = self.vfs.dnr_path(to);
++    let to = dnr_to.as_ref();
+     self
+       .error_if_in_vfs(to)
+       .map_err(|err| err.into_io_error())?;
+@@ -865,6 +1001,10 @@
+     _from: &Path,
+     _to: &Path,
+   ) -> std::io::Result<()> {
++    let dnr_from = self.vfs.dnr_path(_from);
++    let _from = dnr_from.as_ref();
++    let dnr_to = self.vfs.dnr_path(_to);
++    let _to = dnr_to.as_ref();
+     // will cause a fallback in the code that uses this
+     Err(not_supported("cloning files"))
+   }
+@@ -877,6 +1017,8 @@
+     path: &Path,
+     options: &sys_traits::CreateDirOptions,
+   ) -> std::io::Result<()> {
++    let dnr_path = self.vfs.dnr_path(path);
++    let path = dnr_path.as_ref();
+     self
+       .mkdir_sync(
+         // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
+@@ -893,6 +1035,8 @@
+ impl sys_traits::BaseFsRemoveFile for DenoRtSys {
+   #[inline]
+   fn base_fs_remove_file(&self, path: &Path) -> std::io::Result<()> {
++    let dnr_path = self.vfs.dnr_path(path);
++    let path = dnr_path.as_ref();
+     self
+       .remove_sync(
+         // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
+@@ -908,6 +1052,10 @@
+ impl sys_traits::BaseFsRename for DenoRtSys {
+   #[inline]
+   fn base_fs_rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
++    let dnr_from = self.vfs.dnr_path(from);
++    let from = dnr_from.as_ref();
++    let dnr_to = self.vfs.dnr_path(to);
++    let to = dnr_to.as_ref();
+     self
+       .rename_sync(
+         // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
+@@ -955,6 +1103,7 @@
+         name: file.file.name.clone(),
+         len: file.file.offset.len,
+         mtime: file.file.mtime,
++        executable: file.file.executable,
+       })),
+     }
+   }
+@@ -1094,6 +1243,8 @@
+     path: &Path,
+     options: &sys_traits::OpenOptions,
+   ) -> std::io::Result<Self::File> {
++    let dnr_path = self.vfs.dnr_path(path);
++    let path = dnr_path.as_ref();
+     if self.is_vfs_path(path) {
+       Ok(FsFileAdapter::Vfs(self.vfs.open_file(path)?))
+     } else {
+@@ -1110,6 +1261,10 @@
+ 
+ impl sys_traits::BaseFsSymlinkDir for DenoRtSys {
+   fn base_fs_symlink_dir(&self, src: &Path, dst: &Path) -> std::io::Result<()> {
++    let dnr_src = self.vfs.dnr_path(src);
++    let src = dnr_src.as_ref();
++    let dnr_dst = self.vfs.dnr_path(dst);
++    let dst = dnr_dst.as_ref();
+     self
+       .symlink_sync(
+         // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
+@@ -1318,11 +1473,40 @@
  pub struct FileBackedVfsFile {
    file: VirtualFile,
    pos: RefCell<u64>,
@@ -204,7 +732,7 @@
      match pos {
        SeekFrom::Start(pos) => {
          *self.pos.borrow_mut() = pos;
-@@ -1363,14 +1416,10 @@
+@@ -1363,14 +1547,10 @@
    }
  
    pub fn read_to_buf(&self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -223,7 +751,15 @@
    }
  
    fn metadata(&self) -> FileBackedVfsMetadata {
-@@ -1396,6 +1445,9 @@
+@@ -1379,6 +1559,7 @@
+       file_type: sys_traits::FileType::File,
+       len: self.file.offset.len,
+       mtime: self.file.mtime,
++      executable: self.file.executable,
+     }
+   }
+ 
+@@ -1396,6 +1577,9 @@
      if read_pos > self.file.offset.len {
        return Ok(Cow::Borrowed(&[]));
      }
@@ -233,7 +769,7 @@
      if read_pos == 0 {
        Ok(self.vfs.read_file_all(&self.file)?)
      } else {
-@@ -1560,8 +1612,7 @@
+@@ -1560,8 +1744,7 @@
      position: u64,
    ) -> FsResult<usize> {
      self
@@ -243,7 +779,7 @@
        .map_err(FsError::Io)
    }
    async fn read_at_async(
-@@ -1570,8 +1621,7 @@
+@@ -1570,8 +1753,7 @@
      position: u64,
    ) -> FsResult<(usize, BufMutView)> {
      let nread = self
@@ -253,7 +789,30 @@
        .map_err(FsError::Io)?;
      Ok((nread, buf))
    }
-@@ -1674,6 +1724,8 @@
+@@ -1602,11 +1784,13 @@
+   pub file_type: sys_traits::FileType,
+   pub len: u64,
+   pub mtime: Option<u128>,
++  pub executable: bool,
+ }
+ 
+ impl FileBackedVfsMetadata {
+   pub fn from_vfs_entry_ref(vfs_entry: VfsEntryRef) -> Self {
+     FileBackedVfsMetadata {
++      executable: matches!(vfs_entry, VfsEntryRef::File(file) if file.executable),
+       file_type: match vfs_entry {
+         VfsEntryRef::Dir(_) => sys_traits::FileType::Dir,
+         VfsEntryRef::File(_) => sys_traits::FileType::File,
+@@ -1632,7 +1816,7 @@
+     // VFS files are always readable. Directories also get execute (traverse).
+     // Symlinks get 0o777 per Unix convention (target permissions matter).
+     // This ensures node:fs access() checks succeed for embedded files.
+-    let mode = if self.file_type == sys_traits::FileType::Dir {
++    let mode = if self.file_type == sys_traits::FileType::Dir || self.executable {
+       0o555 // r-xr-xr-x
+     } else if self.file_type == sys_traits::FileType::Symlink {
+       0o777 // rwxrwxrwx (conventional for symlinks)
+@@ -1674,6 +1858,8 @@
  
  #[derive(Debug)]
  pub struct FileBackedVfs {
@@ -262,7 +821,7 @@
    vfs_data: Cow<'static, [u8]>,
    fs_root: VfsRoot,
    case_sensitivity: FileSystemCaseSensitivity,
-@@ -1686,6 +1738,8 @@
+@@ -1686,6 +1872,8 @@
      case_sensitivity: FileSystemCaseSensitivity,
    ) -> Self {
      Self {
@@ -271,11 +830,24 @@
        vfs_data: data,
        fs_root,
        case_sensitivity,
-@@ -1701,6 +1755,21 @@
+@@ -1700,11 +1888,40 @@
+     &self.fs_root.dir
    }
  
++  fn dnr_path<'a>(&self, path: &'a Path) -> Cow<'a, Path> {
++    match &self.dnr_package {
++      Some(package) => package.virtual_path_cow(path),
++      None => Cow::Borrowed(path),
++    }
++  }
++
    pub fn is_path_within(&self, path: &Path) -> bool {
++    let normalized = self.dnr_path(path);
++    let path = normalized.as_ref();
 +    if self.dnr_overlay {
++      if self.dnr_package.as_ref().is_some_and(|package| package.is_unavailable_path(path)) {
++        return true;
++      }
 +      if path == self.root() { return self.dnr_package.is_some(); }
 +      let mut current = Some(path);
 +      while let Some(p) = current {
@@ -293,7 +865,13 @@
      path.starts_with(&self.fs_root.root_path)
    }
  
-@@ -1717,11 +1786,31 @@
+   pub fn exists(&self, path: &Path) -> bool {
++    let normalized = self.dnr_path(path);
++    let path = normalized.as_ref();
+     self.fs_root.find_entry(path, self.case_sensitivity).is_ok()
+   }
+ 
+@@ -1717,11 +1934,31 @@
        file: file.clone(),
        vfs: self.clone(),
        pos: Default::default(),
@@ -325,7 +903,47 @@
      Ok(
        dir
          .entries
-@@ -1797,6 +1886,10 @@
+@@ -1756,6 +1993,8 @@
+   }
+ 
+   pub fn read_link(&self, path: &Path) -> std::io::Result<PathBuf> {
++    let normalized = self.dnr_path(path);
++    let path = normalized.as_ref();
+     let (_, entry) = self
+       .fs_root
+       .find_entry_no_follow(path, self.case_sensitivity)?;
+@@ -1770,6 +2009,8 @@
+   }
+ 
+   pub fn lstat(&self, path: &Path) -> std::io::Result<FileBackedVfsMetadata> {
++    let normalized = self.dnr_path(path);
++    let path = normalized.as_ref();
+     let (_, entry) = self
+       .fs_root
+       .find_entry_no_follow(path, self.case_sensitivity)?;
+@@ -1777,12 +2018,21 @@
+   }
+ 
+   pub fn stat(&self, path: &Path) -> std::io::Result<FileBackedVfsMetadata> {
++    let normalized = self.dnr_path(path);
++    let path = normalized.as_ref();
+     let (_, entry) = self.fs_root.find_entry(path, self.case_sensitivity)?;
+     Ok(FileBackedVfsMetadata::from_vfs_entry_ref(entry))
+   }
+ 
+   pub fn canonicalize(&self, path: &Path) -> std::io::Result<PathBuf> {
++    let normalized = self.dnr_path(path);
++    let path = normalized.as_ref();
+     let (path, _) = self.fs_root.find_entry(path, self.case_sensitivity)?;
++    if let Some(package) = &self.dnr_package {
++      if let Some(name) = package.logical_path(&path) {
++        if let Some(actual) = package.module_path(&name).map_err(std::io::Error::other)? { return Ok(actual); }
++      }
++    }
+     Ok(path)
+   }
+ 
+@@ -1797,6 +2047,10 @@
      &self,
      offset_with_len: OffsetWithLength,
    ) -> std::io::Result<Cow<'static, [u8]>> {
@@ -336,7 +954,7 @@
      let read_range =
        self.get_read_range(offset_with_len, 0, offset_with_len.len)?;
      match &self.vfs_data {
-@@ -1811,6 +1904,14 @@
+@@ -1811,6 +2065,14 @@
      pos: u64,
      buf: &mut [u8],
    ) -> std::io::Result<usize> {
@@ -351,7 +969,24 @@
      let read_range = self.get_read_range(file.offset, pos, buf.len() as u64)?;
      let read_len = read_range.len();
      buf[..read_len].copy_from_slice(&self.vfs_data[read_range]);
-@@ -1852,6 +1953,23 @@
+@@ -1837,6 +2099,8 @@
+   }
+ 
+   pub fn dir_entry(&self, path: &Path) -> std::io::Result<&VirtualDirectory> {
++    let normalized = self.dnr_path(path);
++    let path = normalized.as_ref();
+     let (_, entry) = self.fs_root.find_entry(path, self.case_sensitivity)?;
+     match entry {
+       VfsEntryRef::Dir(dir) => Ok(dir),
+@@ -1846,12 +2110,32 @@
+   }
+ 
+   pub fn file_entry(&self, path: &Path) -> std::io::Result<&VirtualFile> {
++    let normalized = self.dnr_path(path);
++    let path = normalized.as_ref();
+     let (_, entry) = self.fs_root.find_entry(path, self.case_sensitivity)?;
+     match entry {
+       VfsEntryRef::Dir(_) => Err(std::io::Error::other("path is a directory")),
        VfsEntryRef::Symlink(_) => unreachable!(),
        VfsEntryRef::File(file) => Ok(file),
      }
@@ -363,67 +998,30 @@
 +  fn load_if_in_vfs(&self, _: &Path) -> Option<Cow<'static, [u8]>> { None }
 +  fn load_and_resolve_path<'a>(&self, path: &'a Path) -> Result<Cow<'a, Path>, denort_helper::LoadError> {
 +    if let Some(package) = &self.0.dnr_package {
-+      if let Ok(relative) = path.strip_prefix(&package.root) {
-+        if !relative.as_os_str().is_empty() {
-+          let resolved = package.native_library_path(&relative.to_string_lossy())
-+            .map_err(|e| denort_helper::LoadError::Io(std::io::Error::other(format!("{e:#}"))))?;
-+          if let Some(resolved) = resolved { return Ok(Cow::Owned(resolved)); }
++      if let Some(relative) = package.logical_path(path) {
++        if package.required_napi(&relative).is_some_and(|version| version > 10) {
++          return Err(denort_helper::LoadError::Io(std::io::Error::other("package requires a newer Node-API version than this runtime (10)")));
 +        }
++        let resolved = package.native_library_path(&relative)
++          .map_err(|e| denort_helper::LoadError::Io(std::io::Error::other(format!("{e:#}"))))?;
++        if let Some(resolved) = resolved { return Ok(Cow::Owned(resolved)); }
 +      }
 +    }
 +    Ok(Cow::Borrowed(path))
    }
  }
  
---- a/cli/rt/run.rs
-+++ b/cli/rt/run.rs
-@@ -1122,6 +1122,12 @@
-             file_entry.transpiled_offset.unwrap_or(file_entry.offset),
-           )
-           .map_err(JsErrorBox::from_err)?;
-+        if self.shared.vfs.dnr_overlay {
-+          let specifier = deno_path_util::url_from_file_path(path).map_err(JsErrorBox::from_err)?;
-+          let media_type = MediaType::from_specifier(&specifier);
-+          let text = String::from_utf8_lossy(&file_bytes).into_owned();
-+          return Ok(transpile_runtime_module(&specifier, media_type, text)?.into());
-+        }
-         Ok(match from_utf8_lossy_cow(file_bytes) {
-           Cow::Borrowed(s) => FastString::from_static(s),
-           Cow::Owned(s) => s.into(),
-@@ -1362,6 +1368,7 @@
-   data: StandaloneData,
-   options: RunOptions,
- ) -> Result<i32, AnyError> {
-+  let is_dnr_host = sys.is_dnr_overlay();
-   let hmr_watch_dir = options.hmr_watch_dir;
-   let hmr_on_reload = options.hmr_on_reload;
-   let op_state_init = options.op_state_init;
-@@ -1868,6 +1875,7 @@
-       .js_runtime()
-       .execute_script("ext:deno_desktop/init", crate::desktop::DESKTOP_JS)?;
+--- a/cli/rt/lib.rs
++++ b/cli/rt/lib.rs
+@@ -1,5 +1,8 @@
+ // Copyright 2018-2026 the Deno authors. MIT license.
  
-+    if !is_dnr_host {
-     // Initialize auto-update JS (DesktopUpdater cppgc object is already
-     // registered via the desktop extension's objects).
-     let js = crate::desktop::desktop_auto_update_js(
-@@ -1898,6 +1906,7 @@
-     worker
-       .js_runtime()
-       .execute_script("ext:deno_desktop/error_reporting", js)?;
-+    }
-   }
- 
-   if let Some(watch_dir) = hmr_watch_dir {
-@@ -1942,6 +1951,9 @@
-     worker.dispatch_process_exit_event()?;
-     Ok(worker.exit_code())
-   } else if has_desktop {
-+    if is_dnr_host {
-+      return crate::dnr_desktop::run_worker(&mut worker).await;
-+    }
-     // Same as `LibMainWorker::run()`, but tag any failure from the load phase
-     // (main module still loading or first evaluating) as a
-     // `DesktopStartupError` (see its docs for why these otherwise vanish). The
++extern crate self as denort;
++pub mod dnr;
++pub mod dnr_desktop;
+ use std::borrow::Cow;
+ use std::env;
+ use std::sync::Arc;
 --- a/cli/rt/node.rs
 +++ b/cli/rt/node.rs
 @@ -113,7 +113,7 @@
@@ -447,6 +1045,94 @@
    let is_cjs = cjs_tracker
      .is_cjs_with_known_is_script(specifier, media_type, is_script)
      .map_err(JsErrorBox::from_err)?;
+--- a/cli/rt/run.rs
++++ b/cli/rt/run.rs
+@@ -203,6 +203,38 @@
+ 
+ impl EmbeddedModuleLoader {
+   fn resolve_inner(
++    &self,
++    raw_specifier: &str,
++    referrer: &str,
++    kind: ResolutionKind,
++  ) -> Result<Url, ModuleLoaderError> {
++    let logical_url = |value: &str| -> Option<Url> {
++      let package = self.shared.vfs.dnr_package.as_ref()?;
++      let url = Url::parse(value).ok()?;
++      let path = url.to_file_path().ok()?;
++      match package.virtual_path_cow(&path) {
++        std::borrow::Cow::Borrowed(_) => None,
++        std::borrow::Cow::Owned(path) => Url::from_file_path(path).ok(),
++      }
++    };
++    let logical_referrer = logical_url(referrer);
++    let logical_specifier = logical_url(raw_specifier);
++    let resolved = self.resolve_unmapped(
++      logical_specifier.as_ref().map(|u| u.as_str()).unwrap_or(raw_specifier),
++      logical_referrer.as_ref().map(|u| u.as_str()).unwrap_or(referrer), kind)?;
++    if let Some(package) = &self.shared.vfs.dnr_package {
++      if let Ok(path) = resolved.to_file_path() {
++        if let Some(name) = package.logical_path(&path) {
++          if let Some(actual) = package.module_path(&name).map_err(|e| JsErrorBox::generic(format!("{e:#}")))? {
++            return deno_path_util::url_from_file_path(&actual).map_err(JsErrorBox::from_err);
++          }
++        }
++      }
++    }
++    Ok(resolved)
++  }
++
++  fn resolve_unmapped(
+     &self,
+     raw_specifier: &str,
+     referrer: &str,
+@@ -1122,6 +1154,12 @@
+             file_entry.transpiled_offset.unwrap_or(file_entry.offset),
+           )
+           .map_err(JsErrorBox::from_err)?;
++        if self.shared.vfs.dnr_overlay {
++          let specifier = deno_path_util::url_from_file_path(path).map_err(JsErrorBox::from_err)?;
++          let media_type = MediaType::from_specifier(&specifier);
++          let text = String::from_utf8_lossy(&file_bytes).into_owned();
++          return Ok(transpile_runtime_module(&specifier, media_type, text)?.into());
++        }
+         Ok(match from_utf8_lossy_cow(file_bytes) {
+           Cow::Borrowed(s) => FastString::from_static(s),
+           Cow::Owned(s) => s.into(),
+@@ -1362,6 +1400,7 @@
+   data: StandaloneData,
+   options: RunOptions,
+ ) -> Result<i32, AnyError> {
++  let is_dnr_host = sys.is_dnr_overlay();
+   let hmr_watch_dir = options.hmr_watch_dir;
+   let hmr_on_reload = options.hmr_on_reload;
+   let op_state_init = options.op_state_init;
+@@ -1868,6 +1907,7 @@
+       .js_runtime()
+       .execute_script("ext:deno_desktop/init", crate::desktop::DESKTOP_JS)?;
+ 
++    if !is_dnr_host {
+     // Initialize auto-update JS (DesktopUpdater cppgc object is already
+     // registered via the desktop extension's objects).
+     let js = crate::desktop::desktop_auto_update_js(
+@@ -1898,6 +1938,7 @@
+     worker
+       .js_runtime()
+       .execute_script("ext:deno_desktop/error_reporting", js)?;
++    }
+   }
+ 
+   if let Some(watch_dir) = hmr_watch_dir {
+@@ -1942,6 +1983,9 @@
+     worker.dispatch_process_exit_event()?;
+     Ok(worker.exit_code())
+   } else if has_desktop {
++    if is_dnr_host {
++      return crate::dnr_desktop::run_worker(&mut worker).await;
++    }
+     // Same as `LibMainWorker::run()`, but tag any failure from the load phase
+     // (main module still loading or first evaluating) as a
+     // `DesktopStartupError` (see its docs for why these otherwise vanish). The
 --- a/cli/tsc/dts/lib.deno.desktop.d.ts
 +++ b/cli/tsc/dts/lib.deno.desktop.d.ts
 @@ -720,8 +720,8 @@
@@ -484,3 +1170,36 @@
  }
  
  #[op2(stack_trace)]
+--- a/ext/process/lib.rs
++++ b/ext/process/lib.rs
+@@ -341,6 +341,16 @@
+ 
+ #[derive(Debug)]
+ pub struct EmptyNpmProcessStateProvider;
++
++/// Optional host bridge for archive-backed executable paths. Ordinary Deno
++/// never installs one. Shared by the main worker and Web Workers.
++pub trait NativeCommandResolver: Send + Sync {
++  fn resolve(&self, command: &str, cwd: &Path, path: Option<&std::ffi::OsStr>) -> std::io::Result<Option<PathBuf>>;
++}
++static NATIVE_COMMAND_RESOLVER: std::sync::OnceLock<std::sync::Arc<dyn NativeCommandResolver>> = std::sync::OnceLock::new();
++pub fn set_native_command_resolver(resolver: std::sync::Arc<dyn NativeCommandResolver>) {
++  let _ = NATIVE_COMMAND_RESOLVER.set(resolver);
++}
+ 
+ impl NpmProcessStateProvider for EmptyNpmProcessStateProvider {}
+ 
+@@ -1326,8 +1336,12 @@
+         command: arg_cmd.to_string(),
+         error: Box::new(e),
+       })?;
++  let native_cmd = if let Some(resolver) = NATIVE_COMMAND_RESOLVER.get() {
++    let path = run_env.envs.get(&EnvVarKey::from_str("PATH"));
++    resolver.resolve(arg_cmd, &run_env.cwd, path.map(|p| p.as_os_str()))?
++  } else { None };
+   let cmd =
+-    resolve_cmd(arg_cmd, &run_env).map_err(|e| ProcessError::SpawnFailed {
++    native_cmd.map(Ok).unwrap_or_else(|| resolve_cmd(arg_cmd, &run_env)).map_err(|e| ProcessError::SpawnFailed {
+       command: arg_cmd.to_string(),
+       error: Box::new(e),
+     })?;

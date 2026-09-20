@@ -24,6 +24,45 @@ use std::{
 
 static PACKAGE: OnceLock<Arc<Package>> = OnceLock::new();
 
+struct PackageCommands(Arc<Package>);
+impl deno_runtime::deno_process::NativeCommandResolver for PackageCommands {
+    fn resolve(
+        &self,
+        command: &str,
+        cwd: &Path,
+        path: Option<&std::ffi::OsStr>,
+    ) -> std::io::Result<Option<PathBuf>> {
+        let candidates = if command.contains('/') {
+            vec![cwd.join(command)]
+        } else {
+            path.map(|p| {
+                std::env::split_paths(p)
+                    .map(|p| cwd.join(p).join(command))
+                    .collect()
+            })
+            .unwrap_or_default()
+        };
+        for candidate in candidates {
+            if let Some(name) = self.0.logical_path(&candidate) {
+                if let Some(real) = self
+                    .0
+                    .native_path(&name, dnr_package::NativeUse::Executable)
+                    .map_err(|e| std::io::Error::other(format!("{e:#}")))?
+                {
+                    return Ok(Some(real));
+                }
+            }
+            if !command.contains('/') && candidate.is_file() {
+                use std::os::unix::fs::PermissionsExt;
+                if candidate.metadata()?.permissions().mode() & 0o111 != 0 {
+                    return Ok(Some(candidate));
+                }
+            }
+        }
+        Ok(None)
+    }
+}
+
 pub fn cleanup_native_libraries() {
     if let Some(package) = PACKAGE.get() {
         package.cleanup_native_libraries();
@@ -32,13 +71,9 @@ pub fn cleanup_native_libraries() {
 
 pub fn read_text(path: &Path) -> std::io::Result<String> {
     if let Some(package) = PACKAGE.get()
-        && let Ok(relative) = path.strip_prefix(&package.root)
-        && !relative.as_os_str().is_empty()
+        && let Some(relative) = package.logical_path(path)
     {
-        if let Some(bytes) = package
-            .read(&relative.to_string_lossy())
-            .map_err(std::io::Error::other)?
-        {
+        if let Some(bytes) = package.read(&relative).map_err(std::io::Error::other)? {
             return String::from_utf8(bytes.to_vec()).map_err(std::io::Error::other);
         }
     }
@@ -82,7 +117,7 @@ fn directory(package: &Package) -> Result<VirtualDirectory, AnyError> {
                 cjs_export_analysis_offset: None,
                 source_map_offset: None,
                 mtime: None,
-                executable: false,
+                executable: package.is_executable(name),
             }),
         };
         children.entry(parent).or_default().push(node);
@@ -122,6 +157,10 @@ pub fn application(mut args: Vec<String>) -> Result<StandaloneData, AnyError> {
     };
     let (root, entry, app_id, mut vfs) = if is_package {
         let package = Arc::new(Package::open(&input, DEFAULT_CACHE_BYTES)?);
+        package.check_platform()?;
+        deno_runtime::deno_process::set_native_command_resolver(Arc::new(PackageCommands(
+            package.clone(),
+        )));
         if let Some(expected) = expected_entry {
             if expected != package.manifest.entry {
                 bail!("header entry does not match manifest");

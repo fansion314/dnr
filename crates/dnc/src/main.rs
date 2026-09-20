@@ -1,7 +1,7 @@
 mod desktop;
 
 use clap::Parser;
-use dnr_package::{Include, PackOptions, pack};
+use dnr_package::{Include, PackOptions, PackageConfig, pack_with_config};
 use std::path::PathBuf;
 
 /// Package a prepared JS/TS application as .dnp or a thin desktop app.
@@ -26,6 +26,9 @@ struct Args {
     app_id: Option<String>,
     #[arg(long)]
     force: bool,
+    /// Reviewed native groups and platform mappings (JSON).
+    #[arg(long)]
+    package_config: Option<PathBuf>,
     /// JSON desktop manifest. Relative icon paths are resolved beside this file.
     #[arg(long, requires = "target")]
     desktop_manifest: Option<PathBuf>,
@@ -35,10 +38,47 @@ struct Args {
 }
 
 fn main() -> anyhow::Result<()> {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.first().is_some_and(|a| a == "scan") {
+        #[derive(Parser)]
+        struct Scan {
+            directory: PathBuf,
+            #[arg(short, long)]
+            output: PathBuf,
+            #[arg(long)]
+            force: bool,
+        }
+        let scan =
+            Scan::parse_from(std::iter::once("dnc scan".to_owned()).chain(raw.into_iter().skip(1)));
+        let (config, notes) = dnr_package::config::scan(&scan.directory)?;
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(scan.force)
+            .create_new(!scan.force)
+            .open(&scan.output)?;
+        use std::io::Write;
+        output.write_all(&serde_json::to_vec_pretty(&config)?)?;
+        output.write_all(b"\n")?;
+        for note in notes {
+            eprintln!("{note}");
+        }
+        eprintln!(
+            "Review {} before passing it to --package-config.",
+            scan.output.display()
+        );
+        return Ok(());
+    }
     let args = Args::parse();
     if let Some(manifest) = &args.desktop_manifest {
         return desktop::build(&args, manifest, args.target.unwrap());
     }
+    let config = args
+        .package_config
+        .as_deref()
+        .map(PackageConfig::load)
+        .transpose()?
+        .unwrap_or_default();
     let options = PackOptions {
         directory: args.directory,
         entry: args.entry.unwrap(),
@@ -52,7 +92,7 @@ fn main() -> anyhow::Result<()> {
         app_id: args.app_id,
         force: args.force,
     };
-    let report = pack(&options)?;
+    let report = pack_with_config(&options, &config)?;
     eprintln!(
         "{}: {} files, {} bytes → {} bytes",
         options.output.display(),

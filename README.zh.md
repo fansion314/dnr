@@ -129,11 +129,16 @@ macOS `.app` 使用原生启动器，并进行本地 ad-hoc 签名；Linux 软�
 - **包内文件只读。** 虚拟文件系统映射在应用包的真实所在目录，优先读取 ZIP，仅当条目不存在时回退磁盘；目录枚举合并两层内容。
 - **外部程序需要真实文件。** 这不是操作系统文件系统挂载，子进程无法直接读取内存 VFS，`chdir` 也只能进入真实磁盘目录。
 - **解压内容按进程缓存。** 默认内容预算为 256 MiB，并非应用总内存上限；打开的文件句柄在缓存淘汰后仍保留数据。
-- **可以打包 Node-API 和 FFI 原生库。** 首次加载时，运行时校验所请求的库并释放到私有系统临时目录，进程内复用；正常结束或宿主处理退出时清理。强制终止或崩溃可能留下临时文件。
+- **原生库和程序按声明的 group 准备。** 新 v2 包在首次原生加载或执行时准备整个组，优先复用包旁安装内容，其次复用用户持久缓存；普通读取仍走 ZIP。v1 包保持原有临时解压行为。
 
-原生库必须匹配目标平台、架构与运行时 ABI。它们依赖的操作系统级共享库不会被自动收集或解压。ZIP 外的原生库继续从磁盘加载。纯 JS/TS 应用在代码与依赖均可移植时，可以跨支持的平台使用同一个包。
+原生库必须匹配目标平台、架构与运行时 ABI。配套动态库和资源应放进同一 group，不会被自动收集。ZIP 外的原生库继续从磁盘加载。纯 JS/TS 应用在代码与依赖均可移植时，可以跨支持的平台使用同一个包。
 
 完整文件系统语义与校验规则见[包格式文档](docs/FORMAT.md)。
+
+使用 `dnc scan prepared --output dnr.package.json` 生成建议配置，检查后通过
+`--package-config dnr.package.json` 打包。`dnr install app.dnp` 预热用户缓存，附加目标目录
+则复制包并准备旁置文件。使用 `dnr cache info` 查看、`dnr cache clean --all` 清理。
+跨平台变体、路径兼容性及完整配置见[原生打包](docs/NATIVE-PACKAGING.md)。
 
 ## Arch Linux / CachyOS 软件包
 
@@ -195,7 +200,7 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 
 # 需要已构建的运行时和 C 编译器，显式执行默认忽略的运行时/原生测试。
-DNR_BIN="$PWD/dist/dnr" cargo test --locked -p dnr-package --test runtime --test runtime_native -- --ignored
+DNR_BIN="$PWD/dist/dnr" cargo test --locked -p dnr-package --test runtime --test runtime_native --test runtime_groups -- --ignored
 
 # 需要图形会话，打开窗口并在绑定检查完成后退出。
 dist/dnr examples/desktop/smoke.ts

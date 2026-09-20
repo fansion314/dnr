@@ -6,7 +6,26 @@ use std::{collections::BTreeMap, fs, io, path::Path};
 impl Package {
     // The runtime index intentionally hides metadata; archive tools include it.
     fn contents(&self) -> Result<BTreeMap<String, Entry>> {
-        let mut entries = self.entries.clone();
+        let mut entries = if self.v2.is_some() {
+            self.raw_entries.clone()
+        } else {
+            self.entries.clone()
+        };
+        for name in entries.keys().cloned().collect::<Vec<_>>() {
+            for parent in Path::new(&name)
+                .ancestors()
+                .skip(1)
+                .filter(|p| !p.as_os_str().is_empty())
+            {
+                let parent = parent.to_str().unwrap();
+                entries.entry(parent.into()).or_insert(Entry {
+                    name: parent.into(),
+                    kind: EntryKind::Directory,
+                    index: usize::MAX,
+                    size: 0,
+                });
+            }
+        }
         ensure!(
             entries
                 .get(".dnr")
@@ -34,7 +53,7 @@ impl Package {
             },
         );
         for entry in entries.values() {
-            if matches!(entry.kind, EntryKind::Symlink(_)) {
+            if self.v2.is_none() && matches!(entry.kind, EntryKind::Symlink(_)) {
                 self.resolve(&entry.name)?;
             }
         }
@@ -141,6 +160,9 @@ impl Package {
                         "ZIP size mismatch: {}",
                         entry.name
                     );
+                    if let Some(v2) = &self.v2 {
+                        v2.verify_file(entry.index, &path)?;
+                    }
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
