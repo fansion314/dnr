@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Matched-content, interleaved v2/v3 startup benchmark. No application rebuilds."""
+"""Interleaved cache A/B benchmark using one v3 package. No application rebuilds."""
 import argparse
 import hashlib
 import json
@@ -14,7 +14,6 @@ import time
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--dnr", required=True, type=Path)
 parser.add_argument("--dnc", required=True, type=Path)
-parser.add_argument("--v2", required=True, type=Path)
 parser.add_argument("--v3", required=True, type=Path)
 parser.add_argument("--output", required=True, type=Path)
 parser.add_argument("--runs", type=int, default=30)
@@ -23,27 +22,16 @@ args = parser.parse_args()
 assert args.runs >= 2 and args.warmup >= 0
 args.dnr = args.dnr.resolve()
 args.dnc = args.dnc.resolve()
-args.v2 = args.v2.resolve()
 args.v3 = args.v3.resolve()
-assert args.v2.parent == args.v3.parent, "keep module URLs comparable"
 output = args.output.resolve()
 output.mkdir(parents=True, exist_ok=False)
 
 def inspect(path):
     return json.loads(subprocess.check_output([args.dnc, "inspect", path, "--json"]))
 
-def logical(data):
-    return sorted(json.dumps({k: v for k, v in r.items() if k != "source"}, sort_keys=True) for r in data["records"])
-
-v2, v3 = inspect(args.v2), inspect(args.v3)
-assert v2["manifest"]["formatVersion"] == 2 and v3["manifest"]["formatVersion"] == 3
-assert logical(v2) == logical(v3), "application content differs"
-assert sorted(v2["manifest"]["groups"]) == sorted(v3["manifest"]["groups"])
-for field in ("entry", "appId", "targets"):
-    assert v2["manifest"][field] == v3["manifest"][field], field
+assert inspect(args.v3)["manifest"]["formatVersion"] == 3
 
 groups = {
-    "v2-off": (args.v2, []),
     "v3-off": (args.v3, ["--no-code-cache", "--no-transpile-cache"]),
     "v3-emit": (args.v3, ["--no-code-cache"]),
     "v3-warm": (args.v3, []),
@@ -106,5 +94,5 @@ for path in (output / "v3-warm").rglob("*"):
         if (stat.st_dev, stat.st_ino) not in inodes:
             allocated += stat.st_blocks * 512
             inodes.add((stat.st_dev, stat.st_ino))
-report = {"platform": platform.platform(), "cwd": str(Path.cwd()), "runtime": str(args.dnr), "runtimeSha256": digest(args.dnr), "v2Sha256": digest(args.v2), "v3Sha256": digest(args.v3), "v2Bytes": args.v2.stat().st_size, "v3Bytes": args.v3.stat().st_size, "warmup": args.warmup, "runs": args.runs, "seed": 20260925, "stdoutSha256": hashlib.sha256(golden).hexdigest(), "stdoutBytes": len(golden), "summary": summary, "samples": samples, "diagnostics": diagnostics, "warmCacheLogicalBytes": logical_bytes, "warmCacheAllocatedBytes": allocated}
+report = {"platform": platform.platform(), "cwd": str(Path.cwd()), "runtime": str(args.dnr), "runtimeSha256": digest(args.dnr), "v3Sha256": digest(args.v3), "v3Bytes": args.v3.stat().st_size, "warmup": args.warmup, "runs": args.runs, "seed": 20260925, "stdoutSha256": hashlib.sha256(golden).hexdigest(), "stdoutBytes": len(golden), "summary": summary, "samples": samples, "diagnostics": diagnostics, "warmCacheLogicalBytes": logical_bytes, "warmCacheAllocatedBytes": allocated}
 (output / "results.json").write_text(json.dumps(report, indent=2) + "\n")

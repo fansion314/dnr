@@ -48,7 +48,7 @@ fn package_tree_and_extract_commands() {
     );
     assert_eq!(
         String::from_utf8(tree.stdout).unwrap(),
-        ".\n├── .dnr/\n│   └── manifest.json\n├── asset.txt\n├── empty/\n└── main.ts\n"
+        ".\n├── .dnr/\n│   └── meta.bin\n├── asset.txt\n├── empty/\n└── main.ts\n"
     );
     assert!(tree.stderr.is_empty());
     let destination = temp.path().join("extracted app");
@@ -67,7 +67,7 @@ fn package_tree_and_extract_commands() {
         fs::read(destination.join("asset.txt")).unwrap(),
         b"asset bytes"
     );
-    assert!(destination.join(".dnr/manifest.json").is_file());
+    assert!(destination.join(".dnr/meta.bin").is_file());
     assert!(destination.join("empty").is_dir());
     let repeated = run(&[
         "extract".as_ref(),
@@ -396,8 +396,17 @@ fn native_addon_disk_and_package() {
         app_id: Some("test.addon".into()),
         force: false,
     };
-    pack(&opts).unwrap();
-    let embedded = Command::new(&binary).arg(&package).output().unwrap();
+    let host = dnr_package::config::Target::host();
+    let config = serde_json::from_value(serde_json::json!({
+        "schemaVersion":1, "targets":{host.id():host},
+        "groups":[{"id":"addon","files":["addon.node"],"native":{"addons":[{"path":"addon.node","napi":8}]}}]
+    })).unwrap();
+    dnr_package::pack_with_config(&opts, &config).unwrap();
+    let embedded = Command::new(&binary)
+        .arg(&package)
+        .env("DNR_CACHE_DIR", temp.path().join("cache"))
+        .output()
+        .unwrap();
     assert!(embedded.status.success());
     assert_eq!(String::from_utf8_lossy(&embedded.stdout).trim(), "42");
     assert!(!temp.path().join("addon.node").exists());

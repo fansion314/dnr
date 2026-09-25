@@ -21,6 +21,7 @@ fn main() {
         "integration/deno.patch",
         "integration/deno.Cargo.lock",
         "integration/rt/dnr_cache.rs",
+        "integration/rt/dnr_vfs.rs",
         "integration/rt/dnr.rs",
     ] {
         let path = root.join(file);

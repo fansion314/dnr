@@ -181,7 +181,7 @@ pub fn application(mut args: Vec<String>) -> Result<StandaloneData, AnyError> {
     let (root, entry, app_id, mut vfs) = if is_package {
         let package = Arc::new(Package::open(&input, DEFAULT_CACHE_BYTES)?);
         package.check_platform()?;
-        if package.manifest.format_version == 3 && (code_cache || transpile_cache) {
+        if code_cache || transpile_cache {
             if let Ok(generation) = package.cache_generation() {
                 crate::dnr_cache::init(generation, code_cache, transpile_cache);
             }

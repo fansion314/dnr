@@ -1,6 +1,6 @@
 # 原生组件、分组解压和跨平台包
 
-新 dnc 默认输出 format v3，`--format-version 2` 保留 v2 输出。dnr 读取 v1/v2/v3；v1 保持单库临时解压。v3 编译缓存与两种安装模式见 [缓存与安装](CACHE.md)，本页分组声明同时适用于 v2/v3。
+新 dnc 和 dnr 仅支持 format v3；v1/v2 包必须重新打包。原生组件统一按声明组准备，不再提供单库临时解压。编译缓存与两种安装模式见 [缓存与安装](CACHE.md)。
 
 ## 工作流
 
@@ -61,7 +61,6 @@ dnc 不下载 npm 包、不执行 install/postinstall、不编译、不修改动
 - ABI、最低系统版本、CPU 指令要求和系统依赖仍需要作者验证。
 
 v3 将变体保存在短物理路径 `.dnr/p/<编号>-<文件名>`，运行时按元数据还原逻辑路径。
-v2 的物理路径仍是 `.dnr/payloads/<group>_<target>/<logical-path>`。
 第三方原有 `prebuilds/<platform>-<arch>` 等布局也可以保留。
 
 桌面打包可同时传 `--desktop-manifest` 与 `--package-config`。前者描述图标、启动器和
@@ -113,12 +112,10 @@ dnr cache clean --all --directory ./installed
 普通缓存位于 macOS `~/Library/Caches/dnr` 或 Linux `${XDG_CACHE_HOME:-$HOME/.cache}/dnr`。
 `DNR_CACHE_DIR` 可指定绝对路径，不可执行或不可写的目录会使相应操作失败，不回退到 tmp。
 
-以下为 v2 布局；v3 布局及自动编译缓存见 [CACHE.md](CACHE.md)。
-
-v2 用户缓存和旁置目录均使用 `v2/<id前两位>/<完整id>/<target>/<group>/root/<logical-path>`。
-ID 是 manifest 原始字节的 SHA-256；manifest 引用全部文件哈希索引的 SHA-256，形成完整
-内容身份。它不是整个 shell+ZIP 文件的字节校验码，压缩方式或 ZIP 时间戳不同但逻辑
-内容与 manifest 完全相同的包可以复用。它也不是发行者签名。
+用户原生缓存为 `v3/<pathHash>/generations/<contentHash>/native/<target>/<group>/root/...`；
+旁置为 `<package>.unpacked/v3/<contentHash>/<target>/<group>/root/...`。
+contentHash 是规范化二进制元数据的 SHA-256，覆盖文件摘要、路径与分组语义；
+不包含 shell、ZIP 压缩布局和时间戳，也不是发行者签名。完整布局见 [CACHE.md](CACHE.md)。
 
 首次解压先写暂存目录，验证大小、CRC、SHA-256 和链接后原子发布；进程间锁协调准备，
 运行实例持有共享租约，退出时释放租约并保留文件。每个 Package 实例对一个组的首次复用会完整校验，并持有租约；同实例后续命中不重复探测或校验。首次校验仍有磁盘读取成本，

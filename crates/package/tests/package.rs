@@ -1,4 +1,5 @@
 use dnr_package::*;
+mod support;
 use std::{fs, sync::Arc};
 
 // Concurrent fork/exec can inherit another test's writable script descriptor
@@ -153,21 +154,12 @@ fn cache_budget_and_data_survive_hits_evictions_and_oversized_files() {
 
 #[test]
 fn corrupted_payload_is_lazy_and_never_cached() {
-    use std::io::Write;
-    use zip::{ZipWriter, write::SimpleFileOptions};
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("corrupt.dnp");
-    let header = format!("#!/bin/sh\nexit 127\n{MARKER}");
-    let mut file = fs::File::create(&path).unwrap();
-    file.write_all(header.as_bytes()).unwrap();
-    let mut zip = ZipWriter::new(Region::new(file, header.len() as u64).unwrap());
-    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-    zip.start_file(MANIFEST, options).unwrap();
-    zip.write_all(br#"{"formatVersion":1,"entry":"main.js","appId":"crc-test"}"#)
-        .unwrap();
-    zip.start_file("main.js", options).unwrap();
-    zip.write_all(b"unique payload for CRC testing").unwrap();
-    zip.finish().unwrap();
+    support::archive(
+        &path,
+        &[("main.js", "unique payload for CRC testing", false)],
+    );
     let mut bytes = fs::read(&path).unwrap();
     let start = bytes
         .windows(14)
@@ -296,6 +288,46 @@ fn malformed_package_fails() {
     bytes.truncate(bytes.len() - 30);
     fs::write(&opts.output, bytes).unwrap();
     assert!(Package::open(&opts.output, 0).is_err());
+}
+
+#[test]
+fn legacy_packages_are_rejected_with_repack_guidance() {
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    use zip::{ZipWriter, write::SimpleFileOptions};
+    let temp = tempfile::tempdir().unwrap();
+    for version in [1, 2] {
+        let path = temp.path().join(format!("v{version}.dnp"));
+        let mut file = fs::File::create(&path).unwrap();
+        let header = format!("#!/bin/sh\nexit 127\n{MARKER}");
+        file.write_all(header.as_bytes()).unwrap();
+        let mut zip = ZipWriter::new(Region::new(file, header.len() as u64).unwrap());
+        let opts = SimpleFileOptions::default().unix_permissions(0o644);
+        let records = serde_json::to_vec(&serde_json::json!([{
+            "path":"main.js", "source":"main.js", "kind":"file", "size":0,
+            "mode":420, "sha256": format!("{:x}", Sha256::digest([]))
+        }]))
+        .unwrap();
+        let mut manifest =
+            serde_json::json!({"formatVersion":version,"entry":"main.js","appId":"legacy"});
+        if version == 2 {
+            manifest["integrity"] = serde_json::json!({"path":".dnr/index.json","sha256":format!("{:x}", Sha256::digest(&records))});
+        }
+        zip.start_file(".dnr/manifest.json", opts).unwrap();
+        zip.write_all(&serde_json::to_vec(&manifest).unwrap())
+            .unwrap();
+        if version == 2 {
+            zip.start_file(".dnr/index.json", opts).unwrap();
+            zip.write_all(&records).unwrap();
+        }
+        zip.start_file("main.js", opts).unwrap();
+        zip.finish().unwrap();
+        let error = Package::open(&path, 0).unwrap_err().to_string();
+        assert!(
+            error.contains("only v3") && error.contains("repack"),
+            "{error}"
+        );
+    }
 }
 
 #[test]

@@ -1,5 +1,5 @@
 //! Real native loading tests; run with DNR_BIN and --ignored after xtask build.
-use dnr_package::{PackOptions, pack};
+use dnr_package::{PackOptions, PackReport, PackageConfig, pack_with_config};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -7,6 +7,16 @@ use std::{
 };
 
 const ADDON: &str = "node_modules/test-addon/build/Release/addon.node";
+
+fn pack(options: &PackOptions) -> anyhow::Result<PackReport> {
+    let host = dnr_package::config::Target::host();
+    let config: PackageConfig = serde_json::from_value(serde_json::json!({
+        "schemaVersion":1, "targets":{host.id():host},
+        "groups":[{"id":"addon", "files":["node_modules/test-addon/**", "addon.so"],
+            "native":{"addons":[{"path":ADDON,"napi":8}],"libraries":["addon.so"]}}]
+    }))?;
+    pack_with_config(options, &config)
+}
 
 fn binary() -> PathBuf {
     PathBuf::from(std::env::var_os("DNR_BIN").expect("set DNR_BIN"))
@@ -64,7 +74,7 @@ const require = createRequire(import.meta.url);
 const value = require('test-addon');
 if (value !== require('test-addon')) throw Error('repeat load changed');
 const extractedRoot = value.split('|')[1].slice(0, -'node_modules/test-addon/build/Release/addon.node'.length);
-if ((Deno.statSync(extractedRoot).mode & 0o777) !== 0o700) throw Error('native tmp directory is not private');
+if ((Deno.statSync(extractedRoot).mode & 0o222) !== 0) throw Error('native group is writable');
 if (Deno.args[0] === 'workers') {
   const values = await Promise.all(Array.from({ length: 8 }, () => new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./worker.ts', import.meta.url).href, { type: 'module' });
@@ -134,7 +144,7 @@ fn result(output: Output, value: i32) -> PathBuf {
 
 #[test]
 #[ignore = "requires native dnr and C compiler; set DNR_BIN and pass --ignored"]
-fn native_addon_parallel_processes_use_isolated_tmp() {
+fn native_addon_parallel_processes_share_verified_cache() {
     let (temp, package) = fixture();
     let bin = binary();
     let tmp = temp.path().join("private-tmp");
@@ -143,7 +153,7 @@ fn native_addon_parallel_processes_use_isolated_tmp() {
         .map(|_| {
             Command::new(&bin)
                 .arg(&package)
-                .env("TMPDIR", &tmp)
+                .env("DNR_CACHE_DIR", &tmp)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -155,27 +165,28 @@ fn native_addon_parallel_processes_use_isolated_tmp() {
         let path = result(child.wait_with_output().unwrap(), 42);
         assert!(path.starts_with(tmp.canonicalize().unwrap()));
         assert!(path.ends_with(ADDON));
-        assert!(!path.exists());
-        assert!(paths.insert(path));
+        assert!(path.exists());
+        paths.insert(path);
     }
+    assert_eq!(paths.len(), 1);
     assert!(!package.parent().unwrap().join("node_modules").exists());
     // A different library beside the package must not override packaged bytes.
     compile(&package.parent().unwrap().join(ADDON), 73);
     let path = result(
         Command::new(&bin)
             .arg(&package)
-            .env("TMPDIR", &tmp)
+            .env("DNR_CACHE_DIR", &tmp)
             .output()
             .unwrap(),
         42,
     );
     assert!(path.starts_with(tmp.canonicalize().unwrap()));
-    assert_eq!(fs::read_dir(&tmp).unwrap().count(), 0);
+    assert!(path.exists());
 }
 
 #[test]
 #[ignore = "requires native dnr and C compiler; set DNR_BIN and pass --ignored"]
-fn native_workers_and_exit_paths_clean_up() {
+fn native_workers_and_exit_paths_release_cache_leases() {
     let (temp, package) = fixture();
     let bin = binary();
     let tmp = temp.path().join("private-tmp");
@@ -184,7 +195,7 @@ fn native_workers_and_exit_paths_clean_up() {
         let output = Command::new(&bin)
             .arg(&package)
             .arg(mode)
-            .env("TMPDIR", &tmp)
+            .env("DNR_CACHE_DIR", &tmp)
             .output()
             .unwrap();
         assert_eq!(
@@ -197,29 +208,36 @@ fn native_workers_and_exit_paths_clean_up() {
         let (value, path) = stdout.trim().split_once('|').unwrap();
         assert_eq!(value, "42");
         assert!(Path::new(path).starts_with(tmp.canonicalize().unwrap()));
-        assert!(!Path::new(path).exists());
-        assert_eq!(fs::read_dir(&tmp).unwrap().count(), 0);
+        assert!(Path::new(path).exists());
+        let clean = Command::new(&bin)
+            .args(["cache", "clean", "--all"])
+            .env("DNR_CACHE_DIR", &tmp)
+            .output()
+            .unwrap();
+        assert!(
+            clean.status.success(),
+            "{}",
+            String::from_utf8_lossy(&clean.stderr)
+        );
+        assert!(!Path::new(path).exists(), "exit must release cache leases");
     }
-    // A broken temp location is an error, never a reason to load a disk override.
+    // A broken cache location is an error, never a reason to load a disk override.
     compile(&package.parent().unwrap().join(ADDON), 73);
     let blocked = temp.path().join("not-a-directory");
     fs::write(&blocked, "block").unwrap();
     let output = Command::new(&bin)
         .arg(&package)
-        .env("TMPDIR", blocked)
+        .env("DNR_CACHE_DIR", blocked)
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("creating temporary native library directory")
-    );
+    assert!(!output.stdout.starts_with(b"73|"));
 }
 
 #[test]
 #[cfg(unix)]
 #[ignore = "requires native dnr, non-root user and C compiler; set DNR_BIN and pass --ignored"]
-fn native_addon_readonly_directory_and_cleanup() {
+fn native_addon_readonly_package_directory() {
     use std::os::unix::fs::PermissionsExt;
     let (temp, package) = fixture();
     let bin = binary();
@@ -241,7 +259,7 @@ fn native_addon_readonly_directory_and_cleanup() {
     let path = result(
         Command::new(&bin)
             .arg(&package)
-            .env("TMPDIR", &tmp)
+            .env("DNR_CACHE_DIR", &tmp)
             .output()
             .unwrap(),
         42,
@@ -250,10 +268,9 @@ fn native_addon_readonly_directory_and_cleanup() {
     assert!(path.ends_with(ADDON));
     assert!(!root.join("node_modules").exists());
     assert!(
-        !path.exists(),
-        "temporary libraries are cleaned on normal host exit"
+        path.exists(),
+        "verified groups persist after normal host exit"
     );
-    assert_eq!(fs::read_dir(&tmp).unwrap().count(), 0);
 
     fs::set_permissions(root, fs::Permissions::from_mode(0o755)).unwrap();
     compile(&root.join(ADDON), 73);
@@ -261,14 +278,13 @@ fn native_addon_readonly_directory_and_cleanup() {
     let path = result(
         Command::new(&bin)
             .arg(&package)
-            .env("TMPDIR", &tmp)
+            .env("DNR_CACHE_DIR", &tmp)
             .output()
             .unwrap(),
         42,
     );
     assert!(path.starts_with(tmp.canonicalize().unwrap()));
-    assert!(!path.exists());
-    assert_eq!(fs::read_dir(&tmp).unwrap().count(), 0);
+    assert!(path.exists());
 }
 
 #[test]
@@ -285,7 +301,11 @@ fn packaged_ffi_library_is_extracted() {
         force: true,
     })
     .unwrap();
-    let output = Command::new(binary()).arg(&package).output().unwrap();
+    let output = Command::new(binary())
+        .arg(&package)
+        .env("DNR_CACHE_DIR", temp.path().join("cache"))
+        .output()
+        .unwrap();
     assert!(
         output.status.success(),
         "{}",

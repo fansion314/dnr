@@ -1,5 +1,5 @@
 //! Portable, bounded v3 metadata. All integers are little endian; no native struct layout.
-use crate::{Manifest, config::Target, v2::Record};
+use crate::{Manifest, config::Target, index::Record};
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -238,7 +238,6 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Metadata> {
             app_id,
             targets,
             groups,
-            integrity: None,
         },
         records,
         content_hash,

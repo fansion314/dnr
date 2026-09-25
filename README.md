@@ -94,7 +94,7 @@ Use `dnr tree --help`, `dnr extract --help`, or `dnc --help` for command help. T
 ## Caching and installation (v0.3.0)
 
 New packages use format v3: one uncompressed binary metadata entry and short native payload paths.
-Use `dnc --format-version 2` for older runtimes; dnr still reads v1/v2 packages.
+Both tools support only v3. Repack v1/v2 applications from their prepared source directories with the new dnc; old packages are rejected with migration guidance.
 V3 applications and their extensions automatically cache V8 compilation and TS/JSX output in the
 user cache. Updating the same package path replaces its cache generation while active older
 processes retain their leases. Source code and normal initialization are still required.
@@ -150,7 +150,7 @@ A `.dnp` is a shell launcher followed by a ZIP archive, with ordinary files comp
 - **Packaged files are read-only.** The package's virtual filesystem is mapped to the package's real directory. ZIP entries take priority; only missing entries fall back to disk. Directory listings merge both layers.
 - **External programs need real files.** This is not an OS filesystem mount. Subprocesses cannot read the in-memory VFS, and `chdir` requires a real disk directory.
 - **Decompressed data is cached per process.** The default content budget is 256 MiB; this is not a limit on total application memory. Open file handles retain their data even after cache eviction.
-- **Native libraries and executables use declared groups.** New format-v2 packages prepare the whole group on the first native load or execution, reusing a verified adjacent installation or persistent user cache. Ordinary file reads remain in the ZIP. Format-v1 packages retain their temporary-library behavior.
+- **Native libraries and executables use declared groups.** Packages prepare the whole group on the first native load or execution, reusing a verified adjacent installation or persistent user cache. Ordinary file reads remain in the ZIP.
 
 Native libraries must match the platform, architecture, and runtime ABI. Declare their shared-library dependencies and resources in the same group; they are not collected automatically. Libraries outside the ZIP load from disk as usual. Pure JS/TS packages can be reused across supported platforms when their code and dependencies are portable.
 

@@ -48,13 +48,16 @@ fn lazy_group_is_complete_readonly_and_reused_between_instances() {
     pack_with_config(&options, &config).unwrap();
     let cache = temp.path().join("cache");
     let package = open(&options, &cache);
-    assert_eq!(package.manifest.format_version, 2);
+    assert_eq!(package.manifest.format_version, 3);
     assert_eq!(
         &*package.read("plugin/data/a").unwrap().unwrap(),
         b"resource"
     );
     let module = package.module_path("plugin/wrapper.js").unwrap().unwrap();
-    assert!(!cache.exists());
+    assert!(
+        !module.exists(),
+        "reserving a group URL must not extract files"
+    );
     assert_eq!(package.logical_path(&module).unwrap(), "plugin/wrapper.js");
     let native = package
         .native_library_path("plugin/addon.node")
@@ -144,7 +147,7 @@ fn cache_corruption_is_repaired_and_content_changes_identity() {
     pack_with_config(&options, &config).unwrap();
     let cache = temp.path().join("cache");
     let first = open(&options, &cache);
-    let id = first.package_id().unwrap().to_owned();
+    let id = first.package_id().to_owned();
     let native = first
         .native_library_path("plugin/addon.node")
         .unwrap()
@@ -169,7 +172,7 @@ fn cache_corruption_is_repaired_and_content_changes_identity() {
     options.force = true;
     pack_with_config(&options, &config).unwrap();
     let new = open(&options, &cache);
-    assert_ne!(new.package_id().unwrap(), id);
+    assert_ne!(new.package_id(), id);
     assert_ne!(
         new.native_library_path("plugin/addon.node")
             .unwrap()
@@ -211,8 +214,8 @@ fn platform_variants_share_logical_paths_but_only_selected_files_materialize() {
     let mut tree = Vec::new();
     package.write_tree(&mut tree).unwrap();
     let text = String::from_utf8(tree).unwrap();
-    assert!(text.contains("plugin_darwin_arm64"));
-    assert!(text.contains("plugin_linux_x64_glibc"));
+    assert!(!text.contains("payloads"));
+    assert_eq!(text.matches("addon.node").count(), 2);
     package.extract_to(&temp.path().join("raw")).unwrap();
 }
 
@@ -277,7 +280,11 @@ fn valid_zip_crc_does_not_replace_the_content_checksum() {
         let name = source.name().to_owned();
         let mode = source.unix_mode().unwrap_or(0o644);
         let opt = SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Zstd)
+            .compression_method(if name == dnr_package::v3::META {
+                zip::CompressionMethod::Stored
+            } else {
+                zip::CompressionMethod::Zstd
+            })
             .unix_permissions(mode & 0o777);
         let mut bytes = Vec::new();
         source.read_to_end(&mut bytes).unwrap();
@@ -399,7 +406,10 @@ fn lookups_do_not_probe_per_file_and_warm_groups_validate_once() {
             Some(&a)
         );
     }
-    assert!(!cache.exists());
+    assert!(
+        !a.exists() && !b.exists(),
+        "URL reservation must not extract payloads"
+    );
     let plain = package.root.join("main.ts");
     assert!(matches!(
         package.virtual_path_cow(&plain),

@@ -1,4 +1,4 @@
-//! dnr-only cache adapter. Ordinary scripts and legacy packages never install a context.
+//! Host cache adapter. Ordinary disk scripts never install a persistent context.
 use deno_core::{ModuleSpecifier, v8};
 use deno_runtime::code_cache::{CodeCache, CodeCacheType};
 use dnr_package::persistent::{CompileCache, Generation, hash};
@@ -50,6 +50,49 @@ fn stable(specifier: &ModuleSpecifier) -> bool {
     matches!(specifier.scheme(), "file" | "ext" | "node")
 }
 pub struct DnrCodeCache;
+
+/// Keep dnr's continuously writable cache outside Deno's standalone strategy.
+/// The unmodified upstream implementation still owns standalone cache behavior.
+pub enum RuntimeCodeCache {
+    Dnr(DnrCodeCache),
+    Standalone(crate::code_cache::DenoCompileCodeCache),
+}
+impl RuntimeCodeCache {
+    pub fn for_dnr() -> Self {
+        Self::Dnr(DnrCodeCache)
+    }
+    pub fn new(path: std::path::PathBuf, key: u64) -> Self {
+        Self::Standalone(crate::code_cache::DenoCompileCodeCache::new(path, key))
+    }
+    pub fn enabled(&self) -> bool {
+        match self {
+            Self::Dnr(_) => true,
+            Self::Standalone(cache) => cache.enabled(),
+        }
+    }
+    pub fn for_deno_core(self: Arc<Self>) -> Arc<dyn CodeCache> {
+        self
+    }
+}
+impl CodeCache for RuntimeCodeCache {
+    fn get_sync(
+        &self,
+        specifier: &ModuleSpecifier,
+        kind: CodeCacheType,
+        hash: u64,
+    ) -> Option<Vec<u8>> {
+        match self {
+            Self::Dnr(cache) => cache.get_sync(specifier, kind, hash),
+            Self::Standalone(cache) => cache.get_sync(specifier, kind, hash),
+        }
+    }
+    fn set_sync(&self, specifier: ModuleSpecifier, kind: CodeCacheType, hash: u64, bytes: &[u8]) {
+        match self {
+            Self::Dnr(cache) => cache.set_sync(specifier, kind, hash, bytes),
+            Self::Standalone(cache) => cache.set_sync(specifier, kind, hash, bytes),
+        }
+    }
+}
 impl CodeCache for DnrCodeCache {
     fn get_sync(
         &self,

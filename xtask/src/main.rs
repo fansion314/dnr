@@ -210,7 +210,13 @@ fn sync_integration(root: &Path) -> Result<()> {
         fs::write(destination, lock)?;
     }
     let rt = root.join(".upstream/deno/cli/rt");
-    for file in ["dnr.rs", "dnr_cache.rs", "dnr_main.rs", "build.rs"] {
+    for file in [
+        "dnr.rs",
+        "dnr_cache.rs",
+        "dnr_vfs.rs",
+        "dnr_main.rs",
+        "build.rs",
+    ] {
         let source = fs::read(root.join("integration/rt").join(file))?;
         if fs::read(rt.join(file)).ok().as_deref() != Some(&source) {
             fs::write(rt.join(file), source)?;

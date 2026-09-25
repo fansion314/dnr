@@ -123,69 +123,26 @@
        return fallback;
      };
      let Some(json) =
---- a/cli/rt/code_cache.rs
-+++ b/cli/rt/code_cache.rs
-@@ -20,6 +20,7 @@
- use url::Url;
- 
- enum CodeCacheStrategy {
-+  Dnr(crate::dnr_cache::DnrCodeCache),
-   FirstRun(FirstRunCodeCacheStrategy),
-   SubsequentRun(SubsequentRunCodeCacheStrategy),
- }
-@@ -35,6 +36,7 @@
- }
- 
- impl DenoCompileCodeCache {
-+  pub fn for_dnr() -> Self { Self { strategy: CodeCacheStrategy::Dnr(crate::dnr_cache::DnrCodeCache) } }
-   pub fn new(file_path: PathBuf, cache_key: u64) -> Self {
-     // attempt to deserialize the cache data
-     match deserialize(&file_path, cache_key) {
-@@ -80,6 +82,7 @@
- 
-   pub fn enabled(&self) -> bool {
-     match &self.strategy {
-+      CodeCacheStrategy::Dnr(_) => true,
-       CodeCacheStrategy::FirstRun(strategy) => {
-         !strategy.is_finished.is_raised()
-       }
-@@ -98,6 +101,7 @@
-     source_hash: u64,
-   ) -> Option<Vec<u8>> {
-     match &self.strategy {
-+      CodeCacheStrategy::Dnr(cache) => cache.get_sync(specifier, code_cache_type, source_hash),
-       CodeCacheStrategy::FirstRun(strategy) => {
-         if !strategy.is_finished.is_raised() {
-           // we keep track of how many times the cache is requested
-@@ -124,6 +128,7 @@
-     bytes: &[u8],
-   ) {
-     match &self.strategy {
-+      CodeCacheStrategy::Dnr(cache) => cache.set_sync(specifier, code_cache_type, source_hash, bytes),
-       CodeCacheStrategy::FirstRun(strategy) => {
-         if strategy.is_finished.is_raised() {
-           return;
 --- a/cli/rt/file_system.rs
 +++ b/cli/rt/file_system.rs
-@@ -73,7 +73,17 @@
-     }
+@@ -1,4 +1,8 @@
+ // Copyright 2018-2026 the Deno authors. MIT license.
++
++#[path = "dnr_vfs.rs"]
++mod dnr_vfs;
++use dnr_vfs::DnrNativeLoader;
+ 
+ use std::borrow::Cow;
+ use std::cell::RefCell;
+@@ -74,6 +78,7 @@
    }
  
-+  pub fn is_dnr_overlay(&self) -> bool { self.vfs.dnr_overlay }
-+
-+  fn dnr_checked_path(&self, path: CheckedPathBuf) -> CheckedPathBuf {
-+    match self.vfs.dnr_path(&path) {
-+      Cow::Borrowed(_) => path,
-+      Cow::Owned(path) => CheckedPathBuf::unsafe_new(path),
-+    }
-+  }
-+
    pub fn maybe_native_addon_loader(&self) -> Option<DenoRtNativeAddonLoaderRc> {
 +    if self.vfs.dnr_overlay { return Some(Arc::new(DnrNativeLoader(self.vfs.clone()))); }
      if self.self_extracting {
        // native addons are already on disk, no need for VFS extraction
        None
-@@ -144,6 +154,12 @@
+@@ -144,6 +149,12 @@
    }
  
    fn chdir(&self, path: &CheckedPath) -> FsResult<()> {
@@ -198,7 +155,7 @@
      if self.is_vfs_path(path) {
        // The process working directory can't actually be changed to a path
        // inside the embedded virtual file system, but applications (e.g.
-@@ -173,7 +189,10 @@
+@@ -173,7 +184,10 @@
      path: &CheckedPath,
      options: OpenOptions,
    ) -> FsResult<Rc<dyn DenoFile>> {
@@ -209,7 +166,7 @@
        Ok(Rc::new(self.vfs.open_file(path)?))
      } else {
        RealFs.open_sync(path, options)
-@@ -184,7 +203,9 @@
+@@ -184,7 +198,9 @@
      path: CheckedPathBuf,
      options: OpenOptions,
    ) -> FsResult<Rc<dyn DenoFile>> {
@@ -219,7 +176,7 @@
        Ok(Rc::new(self.vfs.open_file(&path)?))
      } else {
        RealFs.open_async(path, options).await
-@@ -197,6 +218,8 @@
+@@ -197,6 +213,8 @@
      recursive: bool,
      mode: Option<u32>,
    ) -> FsResult<()> {
@@ -228,7 +185,7 @@
      self.error_if_in_vfs(path)?;
      RealFs.mkdir_sync(path, recursive, mode)
    }
-@@ -206,28 +229,35 @@
+@@ -206,28 +224,35 @@
      recursive: bool,
      mode: Option<u32>,
    ) -> FsResult<()> {
@@ -264,7 +221,7 @@
      self.error_if_in_vfs(&path)?;
      RealFs.chmod_async(path, mode).await
    }
-@@ -238,6 +268,8 @@
+@@ -238,6 +263,8 @@
      uid: Option<u32>,
      gid: Option<u32>,
    ) -> FsResult<()> {
@@ -273,7 +230,7 @@
      self.error_if_in_vfs(path)?;
      RealFs.chown_sync(path, uid, gid)
    }
-@@ -247,11 +279,14 @@
+@@ -247,11 +274,14 @@
      uid: Option<u32>,
      gid: Option<u32>,
    ) -> FsResult<()> {
@@ -288,7 +245,7 @@
      if self.is_vfs_path(path) {
        self.vfs.exists(path)
      } else {
-@@ -259,6 +294,7 @@
+@@ -259,6 +289,7 @@
      }
    }
    async fn exists_async(&self, path: CheckedPathBuf) -> FsResult<bool> {
@@ -296,7 +253,7 @@
      if self.is_vfs_path(&path) {
        Ok(self.vfs.exists(&path))
      } else {
-@@ -267,6 +303,8 @@
+@@ -267,6 +298,8 @@
    }
  
    fn lchmod_sync(&self, path: &CheckedPath, mode: u32) -> FsResult<()> {
@@ -305,7 +262,7 @@
      self.error_if_in_vfs(path)?;
      RealFs.lchmod_sync(path, mode)
    }
-@@ -276,6 +314,7 @@
+@@ -276,6 +309,7 @@
      path: CheckedPathBuf,
      mode: u32,
    ) -> FsResult<()> {
@@ -313,7 +270,7 @@
      self.error_if_in_vfs(&path)?;
      RealFs.lchmod_async(path, mode).await
    }
-@@ -286,6 +325,8 @@
+@@ -286,6 +320,8 @@
      uid: Option<u32>,
      gid: Option<u32>,
    ) -> FsResult<()> {
@@ -322,7 +279,7 @@
      self.error_if_in_vfs(path)?;
      RealFs.lchown_sync(path, uid, gid)
    }
-@@ -296,11 +337,14 @@
+@@ -296,11 +332,14 @@
      uid: Option<u32>,
      gid: Option<u32>,
    ) -> FsResult<()> {
@@ -337,7 +294,7 @@
      self.error_if_in_vfs(path)?;
      RealFs.remove_sync(path, recursive)
    }
-@@ -309,15 +353,19 @@
+@@ -309,15 +348,19 @@
      path: CheckedPathBuf,
      recursive: bool,
    ) -> FsResult<()> {
@@ -357,7 +314,7 @@
      self.error_if_in_vfs(&path)?;
      RealFs.rmdir_async(path).await
    }
-@@ -327,6 +375,10 @@
+@@ -327,6 +370,10 @@
      oldpath: &CheckedPath,
      newpath: &CheckedPath,
    ) -> FsResult<()> {
@@ -368,7 +325,7 @@
      self.error_if_in_vfs(newpath)?;
      if self.is_vfs_path(oldpath) {
        self
-@@ -342,6 +394,8 @@
+@@ -342,6 +389,8 @@
      oldpath: CheckedPathBuf,
      newpath: CheckedPathBuf,
    ) -> FsResult<()> {
@@ -377,7 +334,7 @@
      self.error_if_in_vfs(&newpath)?;
      if self.is_vfs_path(&oldpath) {
        let fs = self.clone();
-@@ -360,6 +414,10 @@
+@@ -360,6 +409,10 @@
    }
  
    fn cp_sync(&self, from: &CheckedPath, to: &CheckedPath) -> FsResult<()> {
@@ -388,7 +345,7 @@
      self.error_if_in_vfs(to)?;
  
      RealFs.cp_sync(from, to)
-@@ -369,12 +427,16 @@
+@@ -369,12 +422,16 @@
      from: CheckedPathBuf,
      to: CheckedPathBuf,
    ) -> FsResult<()> {
@@ -405,7 +362,7 @@
      if self.is_vfs_path(path) {
        Ok(self.vfs.stat(path)?.as_fs_stat())
      } else {
-@@ -382,6 +444,7 @@
+@@ -382,6 +439,7 @@
      }
    }
    async fn stat_async(&self, path: CheckedPathBuf) -> FsResult<FsStat> {
@@ -413,7 +370,7 @@
      if self.is_vfs_path(&path) {
        Ok(self.vfs.stat(&path)?.as_fs_stat())
      } else {
-@@ -390,6 +453,8 @@
+@@ -390,6 +448,8 @@
    }
  
    fn lstat_sync(&self, path: &CheckedPath) -> FsResult<FsStat> {
@@ -422,7 +379,7 @@
      if self.is_vfs_path(path) {
        Ok(self.vfs.lstat(path)?.as_fs_stat())
      } else {
-@@ -397,6 +462,7 @@
+@@ -397,6 +457,7 @@
      }
    }
    async fn lstat_async(&self, path: CheckedPathBuf) -> FsResult<FsStat> {
@@ -430,7 +387,7 @@
      if self.is_vfs_path(&path) {
        Ok(self.vfs.lstat(&path)?.as_fs_stat())
      } else {
-@@ -409,6 +475,8 @@
+@@ -409,6 +470,8 @@
      path: &CheckedPath,
      bigint: bool,
    ) -> FsResult<FsStatFs> {
@@ -439,7 +396,7 @@
      if self.is_vfs_path(path) {
        // the entry must exist within the embedded read-only file system
        self.vfs.stat(path)?;
-@@ -422,6 +490,7 @@
+@@ -422,6 +485,7 @@
      path: CheckedPathBuf,
      bigint: bool,
    ) -> FsResult<FsStatFs> {
@@ -447,7 +404,7 @@
      if self.is_vfs_path(&path) {
        // the entry must exist within the embedded read-only file system
        self.vfs.stat(&path)?;
-@@ -432,6 +501,8 @@
+@@ -432,6 +496,8 @@
    }
  
    fn realpath_sync(&self, path: &CheckedPath) -> FsResult<PathBuf> {
@@ -456,7 +413,7 @@
      if self.is_vfs_path(path) {
        Ok(self.vfs.canonicalize(path)?)
      } else {
-@@ -439,6 +510,7 @@
+@@ -439,6 +505,7 @@
      }
    }
    async fn realpath_async(&self, path: CheckedPathBuf) -> FsResult<PathBuf> {
@@ -464,7 +421,7 @@
      if self.is_vfs_path(&path) {
        Ok(self.vfs.canonicalize(&path)?)
      } else {
-@@ -447,6 +519,8 @@
+@@ -447,6 +514,8 @@
    }
  
    fn read_dir_sync(&self, path: &CheckedPath) -> FsResult<Vec<FsDirEntry>> {
@@ -473,7 +430,7 @@
      if self.is_vfs_path(path) {
        Ok(self.vfs.read_dir(path)?)
      } else {
-@@ -457,6 +531,7 @@
+@@ -457,6 +526,7 @@
      &self,
      path: CheckedPathBuf,
    ) -> FsResult<FsReadDirRc> {
@@ -481,7 +438,7 @@
      if self.is_vfs_path(&path) {
        Ok(new_rc(VfsReadDir(Mutex::new(
          self.vfs.read_dir(&path)?.into_iter(),
-@@ -471,6 +546,10 @@
+@@ -471,6 +541,10 @@
      oldpath: &CheckedPath,
      newpath: &CheckedPath,
    ) -> FsResult<()> {
@@ -492,7 +449,7 @@
      self.error_if_in_vfs(oldpath)?;
      self.error_if_in_vfs(newpath)?;
      RealFs.rename_sync(oldpath, newpath)
-@@ -480,6 +559,8 @@
+@@ -480,6 +554,8 @@
      oldpath: CheckedPathBuf,
      newpath: CheckedPathBuf,
    ) -> FsResult<()> {
@@ -501,7 +458,7 @@
      self.error_if_in_vfs(&oldpath)?;
      self.error_if_in_vfs(&newpath)?;
      RealFs.rename_async(oldpath, newpath).await
-@@ -490,6 +571,10 @@
+@@ -490,6 +566,10 @@
      oldpath: &CheckedPath,
      newpath: &CheckedPath,
    ) -> FsResult<()> {
@@ -512,7 +469,7 @@
      self.error_if_in_vfs(oldpath)?;
      self.error_if_in_vfs(newpath)?;
      RealFs.link_sync(oldpath, newpath)
-@@ -499,6 +584,8 @@
+@@ -499,6 +579,8 @@
      oldpath: CheckedPathBuf,
      newpath: CheckedPathBuf,
    ) -> FsResult<()> {
@@ -521,7 +478,7 @@
      self.error_if_in_vfs(&oldpath)?;
      self.error_if_in_vfs(&newpath)?;
      RealFs.link_async(oldpath, newpath).await
-@@ -510,6 +597,10 @@
+@@ -510,6 +592,10 @@
      newpath: &CheckedPath,
      file_type: Option<FsFileType>,
    ) -> FsResult<()> {
@@ -532,7 +489,7 @@
      self.error_if_in_vfs(oldpath)?;
      self.error_if_in_vfs(newpath)?;
      RealFs.symlink_sync(oldpath, newpath, file_type)
-@@ -520,12 +611,16 @@
+@@ -520,12 +606,16 @@
      newpath: CheckedPathBuf,
      file_type: Option<FsFileType>,
    ) -> FsResult<()> {
@@ -549,7 +506,7 @@
      if self.is_vfs_path(path) {
        Ok(self.vfs.read_link(path)?)
      } else {
-@@ -533,6 +628,7 @@
+@@ -533,6 +623,7 @@
      }
    }
    async fn read_link_async(&self, path: CheckedPathBuf) -> FsResult<PathBuf> {
@@ -557,7 +514,7 @@
      if self.is_vfs_path(&path) {
        Ok(self.vfs.read_link(&path)?)
      } else {
-@@ -541,6 +637,8 @@
+@@ -541,6 +632,8 @@
    }
  
    fn truncate_sync(&self, path: &CheckedPath, len: u64) -> FsResult<()> {
@@ -566,7 +523,7 @@
      self.error_if_in_vfs(path)?;
      RealFs.truncate_sync(path, len)
    }
-@@ -549,6 +647,7 @@
+@@ -549,6 +642,7 @@
      path: CheckedPathBuf,
      len: u64,
    ) -> FsResult<()> {
@@ -574,7 +531,7 @@
      self.error_if_in_vfs(&path)?;
      RealFs.truncate_async(path, len).await
    }
-@@ -561,6 +660,8 @@
+@@ -561,6 +655,8 @@
      mtime_secs: i64,
      mtime_nanos: u32,
    ) -> FsResult<()> {
@@ -583,7 +540,7 @@
      self.error_if_in_vfs(path)?;
      RealFs.utime_sync(path, atime_secs, atime_nanos, mtime_secs, mtime_nanos)
    }
-@@ -572,6 +673,7 @@
+@@ -572,6 +668,7 @@
      mtime_secs: i64,
      mtime_nanos: u32,
    ) -> FsResult<()> {
@@ -591,7 +548,7 @@
      self.error_if_in_vfs(&path)?;
      RealFs
        .utime_async(path, atime_secs, atime_nanos, mtime_secs, mtime_nanos)
-@@ -586,6 +688,8 @@
+@@ -586,6 +683,8 @@
      mtime_secs: i64,
      mtime_nanos: u32,
    ) -> FsResult<()> {
@@ -600,7 +557,7 @@
      self.error_if_in_vfs(path)?;
      RealFs.lutime_sync(path, atime_secs, atime_nanos, mtime_secs, mtime_nanos)
    }
-@@ -597,6 +701,7 @@
+@@ -597,6 +696,7 @@
      mtime_secs: i64,
      mtime_nanos: u32,
    ) -> FsResult<()> {
@@ -608,7 +565,7 @@
      self.error_if_in_vfs(&path)?;
      RealFs
        .lutime_async(path, atime_secs, atime_nanos, mtime_secs, mtime_nanos)
-@@ -617,6 +722,10 @@
+@@ -617,6 +717,10 @@
  impl sys_traits::BaseFsHardLink for DenoRtSys {
    #[inline]
    fn base_fs_hard_link(&self, src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -619,7 +576,7 @@
      self
        .link_sync(
          // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
-@@ -632,6 +741,8 @@
+@@ -632,6 +736,8 @@
  impl sys_traits::BaseFsRead for DenoRtSys {
    #[inline]
    fn base_fs_read(&self, path: &Path) -> std::io::Result<Cow<'static, [u8]>> {
@@ -628,7 +585,7 @@
      self
        .read_file_sync(
          // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
-@@ -678,7 +789,7 @@
+@@ -678,7 +784,7 @@
    }
  
    fn mode(&self) -> std::io::Result<u32> {
@@ -637,7 +594,7 @@
    }
  
    fn nlink(&self) -> std::io::Result<u64> {
-@@ -773,11 +884,26 @@
+@@ -773,11 +879,26 @@
    ) -> std::io::Result<
      Box<dyn Iterator<Item = std::io::Result<Self::ReadDirEntry>>>,
    > {
@@ -668,7 +625,7 @@
      } else {
        #[allow(
          clippy::disallowed_methods,
-@@ -791,6 +917,8 @@
+@@ -791,6 +912,8 @@
  impl sys_traits::BaseFsCanonicalize for DenoRtSys {
    #[inline]
    fn base_fs_canonicalize(&self, path: &Path) -> std::io::Result<PathBuf> {
@@ -677,7 +634,7 @@
      self
        .realpath_sync(
          // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
-@@ -807,6 +935,8 @@
+@@ -807,6 +930,8 @@
  
    #[inline]
    fn base_fs_metadata(&self, path: &Path) -> std::io::Result<Self::Metadata> {
@@ -686,7 +643,7 @@
      if self.is_vfs_path(path) {
        Ok(BoxedFsMetadataValue::new(self.vfs.stat(path)?))
      } else {
-@@ -823,6 +953,8 @@
+@@ -823,6 +948,8 @@
      &self,
      path: &Path,
    ) -> std::io::Result<Self::Metadata> {
@@ -695,7 +652,7 @@
      if self.is_vfs_path(path) {
        Ok(BoxedFsMetadataValue::new(self.vfs.lstat(path)?))
      } else {
-@@ -838,6 +970,10 @@
+@@ -838,6 +965,10 @@
  impl sys_traits::BaseFsCopy for DenoRtSys {
    #[inline]
    fn base_fs_copy(&self, from: &Path, to: &Path) -> std::io::Result<u64> {
@@ -706,7 +663,7 @@
      self
        .error_if_in_vfs(to)
        .map_err(|err| err.into_io_error())?;
-@@ -865,6 +1001,10 @@
+@@ -865,6 +996,10 @@
      _from: &Path,
      _to: &Path,
    ) -> std::io::Result<()> {
@@ -717,7 +674,7 @@
      // will cause a fallback in the code that uses this
      Err(not_supported("cloning files"))
    }
-@@ -877,6 +1017,8 @@
+@@ -877,6 +1012,8 @@
      path: &Path,
      options: &sys_traits::CreateDirOptions,
    ) -> std::io::Result<()> {
@@ -726,7 +683,7 @@
      self
        .mkdir_sync(
          // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
-@@ -893,6 +1035,8 @@
+@@ -893,6 +1030,8 @@
  impl sys_traits::BaseFsRemoveFile for DenoRtSys {
    #[inline]
    fn base_fs_remove_file(&self, path: &Path) -> std::io::Result<()> {
@@ -735,7 +692,7 @@
      self
        .remove_sync(
          // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
-@@ -908,6 +1052,10 @@
+@@ -908,6 +1047,10 @@
  impl sys_traits::BaseFsRename for DenoRtSys {
    #[inline]
    fn base_fs_rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
@@ -746,7 +703,7 @@
      self
        .rename_sync(
          // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
-@@ -955,6 +1103,7 @@
+@@ -955,6 +1098,7 @@
          name: file.file.name.clone(),
          len: file.file.offset.len,
          mtime: file.file.mtime,
@@ -754,7 +711,7 @@
        })),
      }
    }
-@@ -1094,6 +1243,8 @@
+@@ -1094,6 +1238,8 @@
      path: &Path,
      options: &sys_traits::OpenOptions,
    ) -> std::io::Result<Self::File> {
@@ -763,7 +720,7 @@
      if self.is_vfs_path(path) {
        Ok(FsFileAdapter::Vfs(self.vfs.open_file(path)?))
      } else {
-@@ -1110,6 +1261,10 @@
+@@ -1110,6 +1256,10 @@
  
  impl sys_traits::BaseFsSymlinkDir for DenoRtSys {
    fn base_fs_symlink_dir(&self, src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -774,7 +731,7 @@
      self
        .symlink_sync(
          // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
-@@ -1318,11 +1473,40 @@
+@@ -1318,11 +1468,22 @@
  pub struct FileBackedVfsFile {
    file: VirtualFile,
    pos: RefCell<u64>,
@@ -783,24 +740,6 @@
  }
  
  impl FileBackedVfsFile {
-+  fn dnr_bytes(&self) -> std::io::Result<Option<Arc<[u8]>>> {
-+    let Some(package) = &self.vfs.dnr_package else { return Ok(None); };
-+    if let Some(bytes) = self.dnr_bytes.borrow().as_ref() { return Ok(Some(bytes.clone())); }
-+    let bytes = package.read_index(self.file.offset.offset as usize).map_err(std::io::Error::other)?;
-+    *self.dnr_bytes.borrow_mut() = Some(bytes.clone());
-+    Ok(Some(bytes))
-+  }
-+
-+  fn read_position(&self, position: u64, buf: &mut [u8]) -> std::io::Result<usize> {
-+    if let Some(bytes) = self.dnr_bytes()? {
-+      let start = usize::try_from(position).map_err(std::io::Error::other)?.min(bytes.len());
-+      let count = buf.len().min(bytes.len() - start);
-+      buf[..count].copy_from_slice(&bytes[start..start + count]);
-+      return Ok(count);
-+    }
-+    self.vfs.read_file(&self.file, position, buf)
-+  }
-+
    pub fn seek(&self, pos: SeekFrom) -> std::io::Result<u64> {
 +    if self.vfs.dnr_overlay {
 +      let next = match pos {
@@ -815,7 +754,7 @@
      match pos {
        SeekFrom::Start(pos) => {
          *self.pos.borrow_mut() = pos;
-@@ -1363,14 +1547,10 @@
+@@ -1363,14 +1524,10 @@
    }
  
    pub fn read_to_buf(&self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -834,7 +773,7 @@
    }
  
    fn metadata(&self) -> FileBackedVfsMetadata {
-@@ -1379,6 +1559,7 @@
+@@ -1379,6 +1536,7 @@
        file_type: sys_traits::FileType::File,
        len: self.file.offset.len,
        mtime: self.file.mtime,
@@ -842,7 +781,7 @@
      }
    }
  
-@@ -1396,6 +1577,9 @@
+@@ -1396,6 +1554,9 @@
      if read_pos > self.file.offset.len {
        return Ok(Cow::Borrowed(&[]));
      }
@@ -852,7 +791,7 @@
      if read_pos == 0 {
        Ok(self.vfs.read_file_all(&self.file)?)
      } else {
-@@ -1560,8 +1744,7 @@
+@@ -1560,8 +1721,7 @@
      position: u64,
    ) -> FsResult<usize> {
      self
@@ -862,7 +801,7 @@
        .map_err(FsError::Io)
    }
    async fn read_at_async(
-@@ -1570,8 +1753,7 @@
+@@ -1570,8 +1730,7 @@
      position: u64,
    ) -> FsResult<(usize, BufMutView)> {
      let nread = self
@@ -872,7 +811,7 @@
        .map_err(FsError::Io)?;
      Ok((nread, buf))
    }
-@@ -1602,11 +1784,13 @@
+@@ -1602,11 +1761,13 @@
    pub file_type: sys_traits::FileType,
    pub len: u64,
    pub mtime: Option<u128>,
@@ -886,7 +825,7 @@
        file_type: match vfs_entry {
          VfsEntryRef::Dir(_) => sys_traits::FileType::Dir,
          VfsEntryRef::File(_) => sys_traits::FileType::File,
-@@ -1632,7 +1816,7 @@
+@@ -1632,7 +1793,7 @@
      // VFS files are always readable. Directories also get execute (traverse).
      // Symlinks get 0o777 per Unix convention (target permissions matter).
      // This ensures node:fs access() checks succeed for embedded files.
@@ -895,7 +834,7 @@
        0o555 // r-xr-xr-x
      } else if self.file_type == sys_traits::FileType::Symlink {
        0o777 // rwxrwxrwx (conventional for symlinks)
-@@ -1674,6 +1858,8 @@
+@@ -1674,6 +1835,8 @@
  
  #[derive(Debug)]
  pub struct FileBackedVfs {
@@ -904,7 +843,7 @@
    vfs_data: Cow<'static, [u8]>,
    fs_root: VfsRoot,
    case_sensitivity: FileSystemCaseSensitivity,
-@@ -1686,6 +1872,8 @@
+@@ -1686,6 +1849,8 @@
      case_sensitivity: FileSystemCaseSensitivity,
    ) -> Self {
      Self {
@@ -913,37 +852,14 @@
        vfs_data: data,
        fs_root,
        case_sensitivity,
-@@ -1700,11 +1888,40 @@
-     &self.fs_root.dir
+@@ -1701,10 +1866,17 @@
    }
  
-+  fn dnr_path<'a>(&self, path: &'a Path) -> Cow<'a, Path> {
-+    match &self.dnr_package {
-+      Some(package) => package.virtual_path_cow(path),
-+      None => Cow::Borrowed(path),
-+    }
-+  }
-+
    pub fn is_path_within(&self, path: &Path) -> bool {
 +    let normalized = self.dnr_path(path);
 +    let path = normalized.as_ref();
 +    if self.dnr_overlay {
-+      if self.dnr_package.as_ref().is_some_and(|package| package.is_unavailable_path(path)) {
-+        return true;
-+      }
-+      if path == self.root() { return self.dnr_package.is_some(); }
-+      let mut current = Some(path);
-+      while let Some(p) = current {
-+        if !p.starts_with(self.root()) || p == self.root() { break; }
-+        match self.fs_root.find_entry_no_follow(p, self.case_sensitivity) {
-+          Ok((_, VfsEntryRef::Dir(_))) if p != path => {},
-+          Ok(_) => return true,
-+          Err(e) if e.kind() != std::io::ErrorKind::NotFound => return true,
-+          _ => {},
-+        }
-+        current = p.parent();
-+      }
-+      return false;
++      return self.dnr_contains(path);
 +    }
      path.starts_with(&self.fs_root.root_path)
    }
@@ -954,7 +870,7 @@
      self.fs_root.find_entry(path, self.case_sensitivity).is_ok()
    }
  
-@@ -1717,11 +1934,31 @@
+@@ -1717,11 +1889,15 @@
        file: file.clone(),
        vfs: self.clone(),
        pos: Default::default(),
@@ -965,28 +881,12 @@
    pub fn read_dir(&self, path: &Path) -> std::io::Result<Vec<FsDirEntry>> {
      let dir = self.dir_entry(path)?;
 +    if self.dnr_overlay {
-+      let mut entries: Vec<FsDirEntry> = dir.entries.iter().map(|entry| FsDirEntry {
-+        name: entry.name().to_string(), is_file: matches!(entry, VfsEntry::File(_)),
-+        is_directory: matches!(entry, VfsEntry::Dir(_)), is_symlink: matches!(entry, VfsEntry::Symlink(_)),
-+      }).collect();
-+      let mut names = entries.iter().map(|e| e.name.clone()).collect::<std::collections::HashSet<_>>();
-+      match std::fs::read_dir(path) {
-+        Ok(disk) => for child in disk {
-+          let child = child?; let name = child.file_name().to_string_lossy().into_owned();
-+          if !names.insert(name.clone()) { continue; }
-+          let kind = child.file_type()?;
-+          entries.push(FsDirEntry { name, is_file: kind.is_file(), is_directory: kind.is_dir(), is_symlink: kind.is_symlink() });
-+        },
-+        Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => {},
-+        Err(e) => return Err(e),
-+      }
-+      entries.sort_by(|a,b| a.name.cmp(&b.name));
-+      return Ok(entries);
++      return self.dnr_read_dir(path, dir);
 +    }
      Ok(
        dir
          .entries
-@@ -1756,6 +1993,8 @@
+@@ -1756,6 +1932,8 @@
    }
  
    pub fn read_link(&self, path: &Path) -> std::io::Result<PathBuf> {
@@ -995,7 +895,7 @@
      let (_, entry) = self
        .fs_root
        .find_entry_no_follow(path, self.case_sensitivity)?;
-@@ -1770,6 +2009,8 @@
+@@ -1770,6 +1948,8 @@
    }
  
    pub fn lstat(&self, path: &Path) -> std::io::Result<FileBackedVfsMetadata> {
@@ -1004,7 +904,7 @@
      let (_, entry) = self
        .fs_root
        .find_entry_no_follow(path, self.case_sensitivity)?;
-@@ -1777,12 +2018,21 @@
+@@ -1777,12 +1957,21 @@
    }
  
    pub fn stat(&self, path: &Path) -> std::io::Result<FileBackedVfsMetadata> {
@@ -1026,7 +926,7 @@
      Ok(path)
    }
  
-@@ -1797,6 +2047,10 @@
+@@ -1797,6 +1986,10 @@
      &self,
      offset_with_len: OffsetWithLength,
    ) -> std::io::Result<Cow<'static, [u8]>> {
@@ -1037,7 +937,7 @@
      let read_range =
        self.get_read_range(offset_with_len, 0, offset_with_len.len)?;
      match &self.vfs_data {
-@@ -1811,6 +2065,14 @@
+@@ -1811,6 +2004,14 @@
      pos: u64,
      buf: &mut [u8],
    ) -> std::io::Result<usize> {
@@ -1052,7 +952,7 @@
      let read_range = self.get_read_range(file.offset, pos, buf.len() as u64)?;
      let read_len = read_range.len();
      buf[..read_len].copy_from_slice(&self.vfs_data[read_range]);
-@@ -1837,6 +2099,8 @@
+@@ -1837,6 +2038,8 @@
    }
  
    pub fn dir_entry(&self, path: &Path) -> std::io::Result<&VirtualDirectory> {
@@ -1061,7 +961,7 @@
      let (_, entry) = self.fs_root.find_entry(path, self.case_sensitivity)?;
      match entry {
        VfsEntryRef::Dir(dir) => Ok(dir),
-@@ -1846,12 +2110,32 @@
+@@ -1846,6 +2049,8 @@
    }
  
    pub fn file_entry(&self, path: &Path) -> std::io::Result<&VirtualFile> {
@@ -1070,30 +970,6 @@
      let (_, entry) = self.fs_root.find_entry(path, self.case_sensitivity)?;
      match entry {
        VfsEntryRef::Dir(_) => Err(std::io::Error::other("path is a directory")),
-       VfsEntryRef::Symlink(_) => unreachable!(),
-       VfsEntryRef::File(file) => Ok(file),
-     }
-+  }
-+}
-+
-+struct DnrNativeLoader(Arc<FileBackedVfs>);
-+impl DenoRtNativeAddonLoader for DnrNativeLoader {
-+  fn load_if_in_vfs(&self, _: &Path) -> Option<Cow<'static, [u8]>> { None }
-+  fn load_and_resolve_path<'a>(&self, path: &'a Path) -> Result<Cow<'a, Path>, denort_helper::LoadError> {
-+    if let Some(package) = &self.0.dnr_package {
-+      if let Some(relative) = package.logical_path(path) {
-+        if package.required_napi(&relative).is_some_and(|version| version > 10) {
-+          return Err(denort_helper::LoadError::Io(std::io::Error::other("package requires a newer Node-API version than this runtime (10)")));
-+        }
-+        let resolved = package.native_library_path(&relative)
-+          .map_err(|e| denort_helper::LoadError::Io(std::io::Error::other(format!("{e:#}"))))?;
-+        if let Some(resolved) = resolved { return Ok(Cow::Owned(resolved)); }
-+      }
-+    }
-+    Ok(Cow::Borrowed(path))
-   }
- }
- 
 --- a/cli/rt/lib.rs
 +++ b/cli/rt/lib.rs
 @@ -1,5 +1,9 @@
@@ -1131,6 +1007,15 @@
      .map_err(JsErrorBox::from_err)?;
 --- a/cli/rt/run.rs
 +++ b/cli/rt/run.rs
+@@ -100,7 +100,7 @@
+ use crate::binary::StandaloneData;
+ use crate::binary::StandaloneModules;
+ use crate::binary::transpile_runtime_module;
+-use crate::code_cache::DenoCompileCodeCache;
++use crate::dnr_cache::RuntimeCodeCache as DenoCompileCodeCache;
+ use crate::file_system::DenoRtSys;
+ use crate::file_system::FileBackedVfs;
+ use crate::node::CjsCodeAnalyzer;
 @@ -203,6 +203,38 @@
  
  impl EmbeddedModuleLoader {
@@ -1304,122 +1189,8 @@
        command: arg_cmd.to_string(),
        error: Box::new(e),
      })?;
---- a/libs/core/modules/map.rs
-+++ b/libs/core/modules/map.rs
-@@ -862,12 +862,12 @@
-             Some(&origin),
-             v8::CachedData::new(cache),
-           );
--          let maybe_module = v8::script_compiler::compile_module2(
-+          let maybe_module = crate::modules::dnr_profile_compile("esm", || v8::script_compiler::compile_module2(
-             tc_scope,
-             &mut source,
-             v8::script_compiler::CompileOptions::ConsumeCodeCache,
-             v8::script_compiler::NoCacheReason::NoReason,
--          );
-+          ));
-           // Check if the provided code cache is rejected by V8.
-           let rejected = match source.get_cached_data() {
-             Some(cached_data) => cached_data.rejected(),
-@@ -880,7 +880,7 @@
-         let mut source =
-           v8::script_compiler::Source::new(source_str, Some(&origin));
-         (
--          v8::script_compiler::compile_module(tc_scope, &mut source),
-+          crate::modules::dnr_profile_compile("esm", || v8::script_compiler::compile_module(tc_scope, &mut source)),
-           true,
-         )
-       });
-@@ -903,7 +903,7 @@
-     {
-       let unbound_module_script = module.get_unbound_module_script(tc_scope);
-       let code_cache =
--        unbound_module_script.create_code_cache().ok_or_else(|| {
-+        crate::modules::dnr_profile_compile("serialize", || unbound_module_script.create_code_cache()).ok_or_else(|| {
-           ModuleError::Concrete(
-             ModuleConcreteError::UnboundModuleScriptCodeCache,
-           )
---- a/libs/core/modules/map/ext_script.rs
-+++ b/libs/core/modules/map/ext_script.rs
-@@ -674,14 +674,14 @@
-           v8::script_compiler::CompileOptions::NoCompileOptions,
-         ),
-       };
--    let function = match v8::script_compiler::compile_function(
-+    let function = match crate::modules::dnr_profile_compile("function", || v8::script_compiler::compile_function(
-       tc_scope,
-       &mut compile_source,
-       &[bootstrap_param],
-       &[],
-       compile_options,
-       v8::script_compiler::NoCacheReason::NoReason,
--    ) {
-+    )) {
-       Some(f) => f,
-       None => {
-         let exception = tc_scope.exception().unwrap();
-@@ -708,7 +708,7 @@
-     if (!had_data || rejected)
-       && let (Some(spec), Some(info)) =
-         (cache_specifier.as_ref(), code_cache_info.as_ref())
--      && let Some(cache) = function.create_code_cache()
-+      && let Some(cache) = crate::modules::dnr_profile_compile("serialize", || function.create_code_cache())
-     {
-       let fut = self.loader.borrow().code_cache_ready(
-         spec.clone(),
---- a/libs/core/modules/mod.rs
-+++ b/libs/core/modules/mod.rs
-@@ -998,3 +998,15 @@
-     ModuleError::Concrete(value)
-   }
- }
-+
-+// Opt-in validation probe: the timer covers only the V8 API call, not stderr logging.
-+pub(crate) fn dnr_profile_compile<T>(kind: &'static str, f: impl FnOnce() -> T) -> T {
-+  static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-+  if *ENABLED.get_or_init(|| std::env::var_os("DNR_PROFILE").is_some()) {
-+    let start = std::time::Instant::now();
-+    let result = f();
-+    let ns = start.elapsed().as_nanos();
-+    eprintln!("DNR_PROFILE kind={kind} ns={ns}");
-+    result
-+  } else { f() }
-+}
 --- a/libs/core/ops_builtin_v8.rs
 +++ b/libs/core/ops_builtin_v8.rs
-@@ -349,12 +349,12 @@
-           Some(&origin),
-           v8::CachedData::new(code_cache_data),
-         );
--        let script = v8::script_compiler::compile(
-+        let script = crate::modules::dnr_profile_compile("script", || v8::script_compiler::compile(
-           tc_scope,
-           &mut source,
-           v8::script_compiler::CompileOptions::ConsumeCodeCache,
-           v8::script_compiler::NoCacheReason::NoReason,
--        );
-+        ));
-         // Check if the provided code cache is rejected by V8.
-         let rejected = match source.get_cached_data() {
-           Some(cached_data) => cached_data.rejected(),
-@@ -372,7 +372,7 @@
-     })
-     .unwrap_or_else(|| (None, None));
-   let script = maybe_script
--    .unwrap_or_else(|| v8::Script::compile(tc_scope, source, Some(&origin)));
-+    .unwrap_or_else(|| crate::modules::dnr_profile_compile("script", || v8::Script::compile(tc_scope, source, Some(&origin))));
- 
-   let null = v8::null(tc_scope);
-   let script = match script {
-@@ -396,7 +396,7 @@
-     && let Some(cb) = state.eval_context_code_cache_ready_cb.borrow().as_ref()
-   {
-     let unbound_script = script.get_unbound_script(tc_scope);
--    let code_cache = unbound_script.create_code_cache().ok_or_else(|| {
-+    let code_cache = crate::modules::dnr_profile_compile("serialize", || unbound_script.create_code_cache()).ok_or_else(|| {
-       JsErrorBox::type_error(
-         "Unable to get code cache from unbound module script",
-       )
 @@ -474,7 +474,16 @@
      .borrow()
      .as_ref()
@@ -1438,84 +1209,6 @@
        // A cache backend that can't answer must not fail the compile: degrade
        // to an uncached compile and don't arm the write side either.
        let Ok(code_cache) = cb(&specifier, &source_units) else {
-@@ -486,14 +495,14 @@
-           Some(&origin),
-           v8::CachedData::new(code_cache_data),
-         );
--        let function = v8::script_compiler::compile_function(
-+        let function = crate::modules::dnr_profile_compile("function", || v8::script_compiler::compile_function(
-           tc_scope,
-           &mut source,
-           &params,
-           &[],
-           v8::script_compiler::CompileOptions::ConsumeCodeCache,
-           v8::script_compiler::NoCacheReason::NoReason,
--        );
-+        ));
-         // Check if the provided code cache is rejected by V8.
-         let rejected = match source.get_cached_data() {
-           Some(cached_data) => cached_data.rejected(),
-@@ -515,14 +524,14 @@
-     Some(f) => f,
-     None => {
-       let mut source = v8::script_compiler::Source::new(source, Some(&origin));
--      v8::script_compiler::compile_function(
-+      crate::modules::dnr_profile_compile("function", || v8::script_compiler::compile_function(
-         tc_scope,
-         &mut source,
-         &params,
-         &[],
-         v8::script_compiler::CompileOptions::NoCompileOptions,
-         v8::script_compiler::NoCacheReason::NoReason,
--      )
-+      ))
-     }
-   };
- 
-@@ -547,7 +556,7 @@
-   if let Some(code_cache_hash) = maybe_code_cache_hash
-     && let Some(cb) = state.eval_context_code_cache_ready_cb.borrow().as_ref()
-   {
--    let code_cache = function.create_code_cache().ok_or_else(|| {
-+    let code_cache = crate::modules::dnr_profile_compile("serialize", || function.create_code_cache()).ok_or_else(|| {
-       JsErrorBox::type_error("Unable to create code cache from function")
-     })?;
-     cb(specifier, code_cache_hash, &code_cache);
---- a/libs/core/runtime/jsrealm.rs
-+++ b/libs/core/runtime/jsrealm.rs
-@@ -484,7 +484,7 @@
- 
-     v8::tc_scope!(let tc_scope, scope);
- 
--    let script = match v8::Script::compile(tc_scope, source, Some(&origin)) {
-+    let script = match crate::modules::dnr_profile_compile("script", || v8::Script::compile(tc_scope, source, Some(&origin))) {
-       Some(script) => script,
-       None => {
-         let exception = tc_scope.exception().unwrap();
-@@ -539,12 +539,12 @@
-           Some(&origin),
-           v8::CachedData::new(data),
-         );
--        let script = v8::script_compiler::compile(
-+        let script = crate::modules::dnr_profile_compile("script", || v8::script_compiler::compile(
-           tc_scope,
-           &mut source,
-           v8::script_compiler::CompileOptions::ConsumeCodeCache,
-           v8::script_compiler::NoCacheReason::NoReason,
--        );
-+        ));
-         // Check if the provided code cache is rejected by V8.
-         let rejected = match source.get_cached_data() {
-           Some(cached_data) => cached_data.rejected(),
-@@ -561,7 +561,7 @@
-       };
- 
-     let script = maybe_script
--      .unwrap_or_else(|| v8::Script::compile(tc_scope, source, Some(&origin)));
-+      .unwrap_or_else(|| crate::modules::dnr_profile_compile("script", || v8::Script::compile(tc_scope, source, Some(&origin))));
- 
-     let script = match script {
-       Some(script) => script,
 --- a/runtime/code_cache.rs
 +++ b/runtime/code_cache.rs
 @@ -24,3 +24,49 @@

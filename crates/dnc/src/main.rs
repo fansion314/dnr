@@ -1,15 +1,13 @@
 mod desktop;
 
 use clap::Parser;
-use dnr_package::{Include, PackOptions, PackageConfig, pack_with_version};
+use dnr_package::{Include, PackOptions, PackageConfig, pack_with_config};
 use std::path::PathBuf;
 
 /// Package a prepared JS/TS application as .dnp or a thin desktop app.
 #[derive(Parser)]
 #[command(version)]
 struct Args {
-    #[arg(long, default_value_t = 3)]
-    format_version: u32,
     /// Directory containing the prepared application and its dependencies.
     directory: PathBuf,
     /// Entry module, relative to the application directory.
@@ -115,7 +113,7 @@ fn main() -> anyhow::Result<()> {
         app_id: args.app_id,
         force: args.force,
     };
-    let report = pack_with_version(&options, &config, args.format_version)?;
+    let report = pack_with_config(&options, &config)?;
     eprintln!(
         "{}: {} files, {} bytes → {} bytes",
         options.output.display(),

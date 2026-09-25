@@ -1,7 +1,7 @@
 # v3 用户缓存和安装
 
 dnr 0.3.0 默认对 v3 包、包内代码和包外扩展启用 V8 code cache 与 TS/TSX/JSX
-转译缓存。v1/v2 包和普通磁盘脚本维持原行为。缓存减少编译工作，不保存应用运行状态，
+转译缓存。v1/v2 包不再支持；普通磁盘脚本不使用持久编译缓存。缓存减少编译工作，不保存应用运行状态，
 不跳过顶层初始化，也不取代源码。完整解包安装通过 `dnr <安装目录>` 保留同样能力。
 
 ## 身份与目录
@@ -86,17 +86,17 @@ dnr cache info --directory ./installed
 dnr --no-code-cache app.dnp
 dnr --no-code-cache --no-transpile-cache app.dnp
 DNR_CACHE_STATS=1 dnr app.dnp
-DNR_PROFILE=1 dnr app.dnp                    # 独立诊断编译、序列化、转译和写入耗时
+DNR_PROFILE=1 dnr app.dnp                    # 本地转译与缓存写入耗时
 ```
 
 清理跳过占用中的缓存；`--stale` 选择已删除来源或非当前代，`rebuild` 从文件重建
 SQLite。默认 list/info 使用近似索引统计，指定路径时检查该路径的实际状态。
-v2 旧缓存不会自动迁移或删除，仍可用既有缓存命令管理。
+旧格式缓存不迁移、不访问，也不由新版缓存命令管理；确认旧版进程已退出后可另行删除旧 `v2/` 目录。
 独立于 dnr 生命周期的外部进程不继承租约，清理前应停止这类程序。
 
 运行测试见 `VALIDATION.md`；同内容启动对照工具为 `scripts/bench-startup-cache.py`，
-独立包打开对照为 `cargo run --release -p dnr-package --example open_performance -- <v2> <v3>`。
+独立包打开对照为 `cargo run --release -p dnr-package --example open_performance -- <v3包A> <v3包B>`。
 
-`DNR_PROFILE` 默认关闭；打开时计时边界为相应 V8 API、AST 转译或缓存写入调用，
-日志输出不计入这些计时。它不覆盖 V8 内部全部惰性编译，不能把其总和当作整个启动耗时。
+`DNR_PROFILE` 默认关闭；打开时只计时本地 AST 转译和缓存写入调用，
+日志输出不计入这些计时。上游 V8 core 编译探针已移除，以减少升级冲突；历史测量保留在验证记录中。
 正式端到端基准必须关闭探针。

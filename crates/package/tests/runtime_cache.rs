@@ -1,5 +1,5 @@
 //! Native cache regression suite; run with DNR_BIN and --ignored.
-use dnr_package::{PackOptions, PackageConfig, pack_with_version};
+use dnr_package::{PackOptions, PackageConfig, pack_with_config};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -23,8 +23,8 @@ fn binary() -> PathBuf {
         .canonicalize()
         .unwrap()
 }
-fn build(src: &Path, dest: &Path, version: u32) {
-    pack_with_version(
+fn build(src: &Path, dest: &Path) {
+    pack_with_config(
         &PackOptions {
             directory: src.into(),
             output: dest.into(),
@@ -35,7 +35,6 @@ fn build(src: &Path, dest: &Path, version: u32) {
             force: true,
         },
         &PackageConfig::default(),
-        version,
     )
     .unwrap();
 }
@@ -90,7 +89,7 @@ console.log('identity', Deno.mainModule);
     )
     .unwrap();
     let package = root.join("app.dnp");
-    build(&src, &package, 3);
+    build(&src, &package);
     let binary = binary();
     let cache = root.join("cache");
     let cold = run(&binary, &package, &cache, &[]);
@@ -142,10 +141,14 @@ console.log('identity', Deno.mainModule);
     assert!(run(&binary, &full, &cache, &[]).1.contains("code_misses=0"));
     fs::write(full.join("late.ts"), "export const value: number = 48;").unwrap();
     assert!(run(&binary, &full, &cache, &[]).0.contains("late 48"));
-    let legacy = root.join("legacy.dnp");
-    build(&src, &legacy, 2);
-    run(&binary, &legacy, &root.join("legacy-cache"), &[]);
-    assert!(!root.join("legacy-cache").exists());
+    fs::copy(root.join("extension.ts"), src.join("extension.ts")).unwrap();
+    run(
+        &binary,
+        &src.join("main.ts"),
+        &root.join("script-cache"),
+        &[],
+    );
+    assert!(!root.join("script-cache").exists());
 }
 
 #[test]
@@ -160,7 +163,7 @@ fn cache_damage_readonly_and_parallel_startup_are_nonfatal() {
     )
     .unwrap();
     let package = t.path().join("app");
-    build(&src, &package, 3);
+    build(&src, &package);
     let cache = t.path().join("cache");
     let binary = binary();
     let mut children = Vec::new();

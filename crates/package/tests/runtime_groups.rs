@@ -1,5 +1,5 @@
 //! Real Node-API, dependent shared libraries, process paths and persistent groups.
-use dnr_package::{PackOptions, PackageConfig, pack_with_version};
+use dnr_package::{PackOptions, PackageConfig, pack_with_config};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -26,7 +26,7 @@ fn compile(source: &Path, destination: &Path, flags: &[&str]) {
     successful(cc.output().unwrap());
     fs::remove_file(source).unwrap();
 }
-fn fixture(version: u32) -> (tempfile::TempDir, PathBuf) {
+fn fixture() -> (tempfile::TempDir, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("source");
     let group = source.join("node_modules/native-fixture");
@@ -131,7 +131,7 @@ console.log(JSON.stringify(p));
         "native":{"addons":[{"path":"node_modules/native-fixture/addon.node","napi":8}],"executables":["node_modules/native-fixture/tool"],"libraries":[format!("node_modules/native-fixture/{libname}")]}
     }]})).unwrap();
     let package = temp.path().join("application.dnp");
-    pack_with_version(
+    pack_with_config(
         &PackOptions {
             directory: source,
             entry: "main.ts".into(),
@@ -142,7 +142,6 @@ console.log(JSON.stringify(p));
             force: false,
         },
         &config,
-        version,
     )
     .unwrap();
     let fallback = temp.path().join("node_modules/native-fixture");
@@ -160,15 +159,26 @@ fn run(package: &Path, cache: &Path, arguments: &[&str]) -> Output {
         .unwrap()
 }
 
+fn native_directory(package: &Path, cache: &Path) -> PathBuf {
+    let package = dnr_package::Package::open(package, 0).unwrap();
+    let path_hash = dnr_package::persistent::hash(package.source_path.to_str().unwrap().as_bytes());
+    cache
+        .join("v3")
+        .join(path_hash)
+        .join("generations")
+        .join(package.package_id())
+        .join("native")
+}
+
 #[test]
 #[ignore = "requires a rebuilt DNR_BIN and C compiler"]
 fn native_group_paths_subprocesses_and_warm_reuse() {
-    let (temp, package) = fixture(2);
+    let (temp, package) = fixture();
     let cache = temp.path().join("cache");
     let paths: serde_json::Value =
         serde_json::from_str(successful(run(&package, &cache, &["read"])).trim()).unwrap();
     assert!(
-        !cache.exists(),
+        !native_directory(&package, &cache).exists(),
         "ordinary reads must not materialize the group"
     );
     assert_eq!(
@@ -195,7 +205,7 @@ fn native_group_paths_subprocesses_and_warm_reuse() {
 #[test]
 #[ignore = "requires a rebuilt DNR_BIN and C compiler"]
 fn install_cli_and_parallel_cold_starts() {
-    let (temp, package) = fixture(2);
+    let (temp, package) = fixture();
     let cache = temp.path().join("cache");
     let mut children: Vec<_> = (0..4)
         .map(|_| {
@@ -248,7 +258,7 @@ fn install_cli_and_parallel_cold_starts() {
             .unwrap()
             .contains("application.dnp.unpacked")
     );
-    assert!(!temp.path().join("unused").exists());
+    assert!(!native_directory(&dest.join("application.dnp"), &temp.path().join("unused")).exists());
     successful(
         Command::new(binary())
             .args(["cache", "clean", "--all"])
@@ -261,7 +271,7 @@ fn install_cli_and_parallel_cold_starts() {
 #[test]
 #[ignore = "requires a rebuilt DNR_BIN and C compiler"]
 fn v3_native_groups_ffi_subprocesses_and_sidecar() {
-    let (temp, package) = fixture(3);
+    let (temp, package) = fixture();
     let cache = temp.path().join("cache");
     let paths: serde_json::Value =
         serde_json::from_str(successful(run(&package, &cache, &["read"])).trim()).unwrap();

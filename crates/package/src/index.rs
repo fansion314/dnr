@@ -9,14 +9,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const INDEX: &str = ".dnr/index.json";
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Integrity {
-    pub path: String,
-    pub sha256: String,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Record {
@@ -86,16 +78,9 @@ pub(crate) fn copy_checked(
 }
 
 pub(crate) struct Prepared {
-    pub bytes: Vec<u8>,
     pub(crate) records: BTreeMap<String, Record>,
 }
 impl Prepared {
-    pub fn integrity(&self) -> Integrity {
-        Integrity {
-            path: INDEX.into(),
-            sha256: digest(&self.bytes),
-        }
-    }
     pub fn hash(&self, source: &str) -> Option<&str> {
         self.records.get(source).and_then(|r| r.sha256.as_deref())
     }
@@ -280,9 +265,7 @@ pub(crate) fn prepare(
             );
         }
     }
-    let bytes = serde_json::to_vec(&records)?;
     Ok(Prepared {
-        bytes,
         records: records.into_iter().map(|r| (r.source.clone(), r)).collect(),
     })
 }
@@ -297,35 +280,6 @@ pub(crate) struct State {
     by_group: HashMap<String, Vec<usize>>,
 }
 impl State {
-    pub fn open(
-        manifest: &Manifest,
-        bytes: &[u8],
-        archive: &mut zip::ZipArchive<crate::reader::PackageReader>,
-        entries: &BTreeMap<String, Entry>,
-        modes: &[u32],
-        requested: Option<&str>,
-    ) -> Result<(Self, BTreeMap<String, Entry>)> {
-        let integrity = manifest
-            .integrity
-            .as_ref()
-            .context("v2 requires integrity index")?;
-        ensure!(integrity.path == INDEX, "unknown integrity index");
-        let mut source = archive.by_name(INDEX)?;
-        // Bound metadata independently of uncompressed application payloads.
-        ensure!(
-            source.size() <= 64 * 1024 * 1024,
-            "oversized integrity index"
-        );
-        let mut index_bytes = Vec::new();
-        source.read_to_end(&mut index_bytes)?;
-        drop(source);
-        ensure!(
-            digest(&index_bytes) == integrity.sha256,
-            "integrity index checksum mismatch"
-        );
-        let records: Vec<Record> = serde_json::from_slice(&index_bytes)?;
-        Self::from_records(manifest, digest(bytes), records, entries, modes, requested)
-    }
     pub(crate) fn from_records(
         manifest: &Manifest,
         id: String,
@@ -448,10 +402,7 @@ impl State {
             }
         }
         ensure!(
-            entries
-                .keys()
-                .filter(|k| k.as_str() != INDEX)
-                .all(|k| sources.contains(k)),
+            entries.keys().all(|k| sources.contains(k)),
             "ZIP contains unindexed files"
         );
         // Validate every platform, not just the builder's host.
@@ -556,10 +507,8 @@ fn make_view(
     records: &[&Record],
     raw: &BTreeMap<String, Entry>,
 ) -> Result<BTreeMap<String, Entry>> {
-    if records.len() + 1 == raw.len() && records.iter().all(|r| r.path == r.source) {
-        let mut view = raw.clone();
-        view.remove(INDEX);
-        return Ok(view);
+    if records.len() == raw.len() && records.iter().all(|r| r.path == r.source) {
+        return Ok(raw.clone());
     }
     let mut view: BTreeMap<String, Entry> = BTreeMap::new();
     for r in records {

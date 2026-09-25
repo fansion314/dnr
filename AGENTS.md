@@ -19,15 +19,15 @@ dnr 将运行时与应用内容分开发行，避免每个 Deno CLI/桌面应用
 3. 应用格式是 shell 启动头 + ZIP；普通文件按条目使用 Zstd level 6。启动头转发参数，manifest 保存入口、格式版本和 appId。
 4. dnc 只打包目录与显式 include/exclude 的资源，不执行前端构建、依赖安装、依赖图收集、转译或 minify。
 5. dnr 支持本地模块和准备好的 `node_modules`，运行时转译 TS/TSX/JSX；不在线获取 npm、JSR、HTTP 模块。应用自己的 `fetch`、HTTP 服务等网络 API 不受此范围限制。
-6. 应用默认全权限运行，不是沙箱。v2/v3 包内 Node-API / FFI 库和程序必须在 manifest 的 group 中声明；首次原生加载/执行时整组准备，优先复用包旁预解压内容，其次复用用户持久缓存，否则校验后解压到用户缓存。普通读取不触发落盘；v1 保持原有临时库行为。ZIP 外的原生库继续从磁盘加载。v3 默认启用用户 V8/转译缓存，同路径内容换代；完整安装可用 `dnr <目录>` 启动。详见 docs/NATIVE-PACKAGING.md 和 docs/CACHE.md。
+6. 应用默认全权限运行，不是沙箱。新版仅支持 v3，v1/v2 包必须重新打包。包内 Node-API / FFI 库和程序必须在元数据 group 中声明；首次原生加载/执行时整组准备，优先复用包旁预解压内容，其次复用用户持久缓存，否则校验后解压。普通读取不触发原生落盘；ZIP 外的原生库继续从磁盘加载。v3 默认启用用户 V8/转译缓存，同路径内容换代；完整安装可用 `dnr <目录>` 启动。详见 docs/NATIVE-PACKAGING.md 和 docs/CACHE.md。
 7. 实际调用需要 GUI 的桌面 API 时才启动后端。普通脚本、HTTP 服务和 CLI 异常不应打开窗口。
 8. 页面通过 `window.bindings.<name>()` 调用 `BrowserWindow.bind()`。窗口、托盘、后台 JS 任务和退出事件共同决定生命周期；不能在最后一个窗口关闭时直接终止仍有工作的应用。
 9. 按用户要求，dnc 支持 desktop manifest 驱动的 macOS ARM64 薄 `.app` 和 Arch/CachyOS x86_64 pacman 包；两者不携带运行时。macOS 原生启动器保留 bundle 身份；Linux 使用系统 makepkg。仍不包含 DMG/PKG 安装器、深链注册或自动更新。用法见 `docs/DESKTOP-PACKAGING.md`。
 
 ### VFS 不变量
 
-- 逻辑 ZIP 映射在应用包真实所在目录，v2 声明组另有可逆的模块路径映射；ZIP 优先，仅“不存在”时回退磁盘。损坏、CRC 或解压错误不能触发回退。
-- ZIP 节点只读，目录枚举合并两层，同名条目以 ZIP 为准。v2 原生组件按声明的 group 惰性准备到内容寻址的磁盘目录，普通文件操作仍遵守 VFS 只读语义。组内模块 URL 映射到稳定的组路径。
+- 逻辑 ZIP 映射在应用包真实所在目录，声明组另有可逆的模块路径映射；ZIP 优先，仅“不存在”时回退磁盘。损坏、CRC 或解压错误不能触发回退。
+- ZIP 节点只读，目录枚举合并两层，同名条目以 ZIP 为准。原生组件按声明的 group 惰性准备到路径分代的磁盘目录，普通文件操作仍遵守 VFS 只读语义。组内模块 URL 映射到稳定的组路径。
 - 启动和元数据查询不解压普通文件；按文件懒解压并共享进程内缓存，默认内容预算 256 MiB。
 - 打开的文件句柄保留已解压数据，缓存淘汰不能使分段读取重复解压或失效。
 - 启动保留调用者 cwd；模块相对资源使用 `import.meta.url`。显式 `chdir` 仅能进入真实磁盘目录，ZIP-only 目录报错。
@@ -52,6 +52,8 @@ dnr 将运行时与应用内容分开发行，避免每个 Deno CLI/桌面应用
 应用执行路径：CLI 解析 → 磁盘入口或 ZIP manifest → 模块解析/VFS → Deno worker；首次 GUI 调用经主线程初始化 Laufey，绑定事件由 runtime 线程处理。
 
 `.upstream/`、`target/`、`dist/` 是准备或生成目录，不是实现的唯一来源。不要只在其中修复问题：runtime 接入改动保存到 `integration/rt/`，上游改动保存到对应补丁，依赖改动保存到锁文件。
+
+ZIP 覆盖层辅助实现放在 `integration/rt/dnr_vfs.rs`，编译缓存适配放在 `dnr_cache.rs`；不复制上游整文件以隐藏分叉。用 `python3 scripts/check-upstream-patches.py` 在独立 Git 快照上检查补丁，升级流程与保留钩子见 [docs/UPSTREAM.md](docs/UPSTREAM.md)。
 
 `xtask build` 会同步接入源码和锁文件，但不会自动应用新补丁。修改补丁后要验证干净快照上的 `prepare`；已有旧补丁的缓存树可能需要重新准备。替换任务自身的缓存前，先确保调试改动已保存。
 

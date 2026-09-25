@@ -20,9 +20,9 @@ if args.samples < 3:
 bins = {"before": args.before.resolve(), "after": args.after.resolve()}
 fixtures = args.fixtures.resolve()
 results = {}
-cases = [("v1_plain", "plain-v1.dnp", 0), ("v2_plain", "groups-0.dnp", 0),
-         ("v2_100_groups", "groups-100.dnp", 100),
-         ("v2_1000_groups", "groups-1000.dnp", 1000)]
+cases = [("v3_plain", "plain-v3.dnp", 0), ("v3_0_groups", "groups-0.dnp", 0),
+         ("v3_100_groups", "groups-100.dnp", 100),
+         ("v3_1000_groups", "groups-1000.dnp", 1000)]
 for case, package, groups in cases:
     samples = {name: {"outside_stat_ms": [], "stat_20k_ms": [], "total_ms": []} for name in bins}
     # Warm once, then alternate ordering to reduce scheduling/cache bias.

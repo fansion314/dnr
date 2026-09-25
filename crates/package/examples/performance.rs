@@ -2,9 +2,8 @@
 //! cargo run --release -p dnr-package --example performance
 //! Add DNR_BIN=/absolute/path/to/dnr for end-to-end startup/readdir timings.
 use anyhow::Result;
-use dnr_package::{DEFAULT_CACHE_BYTES, MANIFEST, MARKER, Manifest, Package, Region};
-use std::{fs, hint::black_box, io::Write, path::Path, process::Command, time::Instant};
-use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
+use dnr_package::{DEFAULT_CACHE_BYTES, PackOptions, Package, pack};
+use std::{fs, hint::black_box, path::Path, process::Command, time::Instant};
 
 fn measure(mut f: impl FnMut() -> Result<()>) -> Result<f64> {
     f()?; // Warm filesystem and executable pages before the measured samples.
@@ -19,24 +18,9 @@ fn measure(mut f: impl FnMut() -> Result<()>) -> Result<f64> {
 }
 
 fn fixture(path: &Path, nested: bool) -> Result<()> {
-    let header = format!("#!/bin/sh\nexit 127\n{MARKER}");
-    let mut file = fs::File::create(path)?;
-    file.write_all(header.as_bytes())?;
-    let mut zip = ZipWriter::new(Region::new(file, header.len() as u64)?);
-    let options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Zstd)
-        .compression_level(Some(6));
-    zip.start_file(MANIFEST, options)?;
-    zip.write_all(&serde_json::to_vec(&Manifest {
-        format_version: 1,
-        targets: Default::default(),
-        groups: Default::default(),
-        integrity: None,
-        entry: "main.js".into(),
-        app_id: "dnr.performance".into(),
-    })?)?;
-    zip.start_file("main.js", options)?;
-    zip.write_all(
+    let source = tempfile::tempdir()?;
+    fs::write(
+        source.path().join("main.js"),
         br#"
 import { readdirSync } from 'node:fs';
 if (Deno.args[0] === 'readdir') {
@@ -56,10 +40,19 @@ if (Deno.args[0] === 'readdir') {
         } else {
             format!("wide/f{n:05}")
         };
-        zip.start_file(name, options)?;
-        zip.write_all(b"export default 42;\n")?;
+        let file = source.path().join(name);
+        fs::create_dir_all(file.parent().unwrap())?;
+        fs::write(file, b"export default 42;\n")?;
     }
-    zip.finish()?;
+    pack(&PackOptions {
+        directory: source.path().into(),
+        output: path.into(),
+        entry: "main.js".into(),
+        app_id: Some("dnr.performance".into()),
+        includes: vec![],
+        excludes: vec![],
+        force: false,
+    })?;
     Ok(())
 }
 

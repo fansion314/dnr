@@ -46,33 +46,24 @@ pub fn install(args: &[String], require_directory: bool) -> Result<()> {
     );
     let source = Path::new(positional[0]);
     let package = Package::open_for_target(source, 0, target)?;
-    ensure!(package.package_id().is_some(), "install requires v2 or v3");
     if mode == "full" {
-        ensure!(
-            package.manifest.format_version == 3,
-            "full installation requires v3"
-        );
         package.install_full(Path::new(positional[1]), force)?;
         println!("Installed full application in {}", positional[1]);
         return Ok(());
     }
     if positional.len() == 1 {
         let base = cache_directory()?;
-        if package.manifest.format_version == 3 {
-            let generation = package.cache_generation()?;
-            for group in &package.manifest.groups {
-                if package.v2.as_ref().unwrap().group_indices(group).is_some() {
-                    package.prepare_group(group)?;
-                }
+        let generation = package.cache_generation()?;
+        for group in &package.manifest.groups {
+            if package.index.group_indices(group).is_some() {
+                package.prepare_group(group)?;
             }
-            generation.notify_index();
-        } else {
-            package.prepare_at(&base)?;
         }
+        generation.notify_index();
         println!(
             "Prepared {} ({}) in {}",
             package.manifest.app_id,
-            package.selected_target().unwrap(),
+            package.selected_target(),
             base.display()
         );
         return Ok(());
@@ -108,7 +99,7 @@ pub fn install(args: &[String], require_directory: bool) -> Result<()> {
     if destination.exists() && !same {
         let existing = Package::open(&destination, 0).ok();
         ensure!(
-            force || existing.as_ref().and_then(Package::package_id) == package.package_id(),
+            force || existing.as_ref().map(Package::package_id) == Some(package.package_id()),
             "installed package differs; use --force"
         );
     }
@@ -151,10 +142,10 @@ struct Cached {
     receipt: Receipt,
     partial: bool,
 }
-fn scan(base: &Path, format: u32) -> Result<Vec<Cached>> {
+fn scan(base: &Path) -> Result<Vec<Cached>> {
     let mut result = Vec::new();
-    let mut queue = vec![(base.join(format!("v{format}")), 0)];
-    let max_depth = if format == 3 { 3 } else { 4 };
+    let mut queue = vec![(base.join("v3"), 0)];
+    let max_depth = 3;
     while let Some((path, depth)) = queue.pop() {
         let meta = match fs::symlink_metadata(&path) {
             Ok(m) => m,
@@ -178,19 +169,17 @@ fn scan(base: &Path, format: u32) -> Result<Vec<Cached>> {
             if let Some(receipt) = parsed {
                 let target = path.parent().unwrap();
                 let id = target.parent().unwrap();
-                let shard = id.parent().unwrap();
                 let valid_id = receipt.package_id.len() == 64
                     && receipt
                         .package_id
                         .bytes()
                         .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
-                if receipt.format == format
+                if receipt.format == 3
                     && valid_id
                     && crate::config::identifier(&receipt.group).is_ok()
                     && crate::config::identifier(&receipt.target).is_ok()
                     && id.file_name().unwrap() == receipt.package_id.as_str()
                     && target.file_name().unwrap() == receipt.target.as_str()
-                    && (format == 3 || shard.file_name().unwrap() == &receipt.package_id[..2])
                     && (path.file_name().unwrap() == receipt.group.as_str()
                         || (partial
                             && path
@@ -282,14 +271,9 @@ fn cache(args: &[String]) -> Result<()> {
     if directory.is_none()
         && let Some(query_prefix) = &prefix
     {
-        // Check ambiguity across both formats before deleting anything.
+        // Resolve ambiguous content prefixes before deleting anything.
         let base = cache_directory()?;
         let mut ids = std::collections::BTreeSet::new();
-        for item in scan(&base, 2)? {
-            if item.receipt.package_id.starts_with(query_prefix) {
-                ids.insert(item.receipt.package_id);
-            }
-        }
         for path in crate::persistent::catalog::directories(&base)? {
             let id = path.file_name().unwrap().to_string_lossy().into_owned();
             if id.starts_with(query_prefix) {
@@ -309,31 +293,19 @@ fn cache(args: &[String]) -> Result<()> {
             stale,
             dry,
         )?;
-        if command == "rebuild" || package_path.is_some() || stale {
-            return Ok(());
+        return Ok(());
+    }
+    let mut bases = Vec::new();
+    for entry in fs::read_dir(directory.expect("user-cache command returned above"))? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() && entry.file_name().to_string_lossy().ends_with(".unpacked")
+        {
+            bases.push(entry.path());
         }
     }
-    let sidecars = directory.is_some();
-    let bases = if let Some(directory) = directory {
-        let mut bases = Vec::new();
-        for entry in fs::read_dir(directory)? {
-            let entry = entry?;
-            if entry.file_type()?.is_dir()
-                && entry.file_name().to_string_lossy().ends_with(".unpacked")
-            {
-                bases.push(entry.path());
-            }
-        }
-        bases
-    } else {
-        vec![cache_directory()?]
-    };
     let mut entries = Vec::new();
     for base in bases {
-        entries.extend(scan(&base, 2)?);
-        if sidecars {
-            entries.extend(scan(&base, 3)?);
-        }
+        entries.extend(scan(&base)?);
     }
     if let Some(prefix) = prefix {
         let prefix = prefix.to_ascii_lowercase();
@@ -343,7 +315,7 @@ fn cache(args: &[String]) -> Result<()> {
             .map(|e| &e.receipt.package_id)
             .collect::<std::collections::BTreeSet<_>>();
         ensure!(ids.len() <= 1, "ambiguous package ID prefix");
-        ensure!(!sidecars || !ids.is_empty(), "no matching cached package");
+        ensure!(!ids.is_empty(), "no matching cached package");
     }
     let mut bytes = 0u64;
     let mut count = 0;

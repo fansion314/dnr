@@ -921,3 +921,39 @@ v3 格式、路径分代缓存、V8/转译缓存、SQLite 辅助索引、硬链�
 最终同内容 Pi help 基准：关闭缓存 252.33 ms，暖缓存 208.40 ms，首次填充 324.09 ms（中位数，每组 30 次，随机交替）。详细范围、探针边界、原始数据和产物摘要见 [v3 验证报告](docs/V3-VALIDATION.md)。
 
 Linux / system-CEF 本轮未验证，用户已确认保留此状态；未安装远端依赖。没有替换系统安装或发布 v0.3.0。
+
+## v3-only 与上游边界重构（2026-09-25）
+
+本轮按用户要求移除 v1/v2 的读取、输出、JSON 索引和单库临时解压。共用索引校验迁入
+`index.rs`，原生库统一使用 v3 声明组；旧格式缓存不再参与管理。CLI 旧包报错提示重打包，
+`--format-version` 输出选项删除。v3 的二进制元数据编码与已有 v3 包保持兼容。
+
+Deno 补丁从 20 文件、128 hunks、`+509/-98` 改为 15 文件、110 hunks、`+394/-79`。
+ZIP 覆盖辅助逻辑迁入 `integration/rt/dnr_vfs.rs`；编译缓存组合适配器留在 `dnr_cache.rs`，
+恢复上游 standalone 缓存文件原状。移除 core 的纯性能探针，保留函数参数参与缓存键的修复。
+Laufey 补丁不变。未通过复制整个上游文件来隐藏分叉；边界和升级步骤见 [UPSTREAM.md](docs/UPSTREAM.md)。
+
+- 工作区 55 项非原生测试通过，另有 20 项按设计忽略；fmt、Clippy（拒绝警告）通过。
+- 独立 wire-format 夹具继续覆盖路径、链接、CRC 和 SHA-256 校验；新增 v1/v2 明确拒绝测试。
+- macOS ARM64 release 构建通过，sccache 保持启用。最终产物统一执行 19 项真实 runtime/原生测试全部通过，
+  覆盖 Workers、TS/CJS、FFI、Node-API、子进程、并行冷启动、正常/显式/异常退出的租约释放、
+  缓存损坏回退、完整安装、旁置优先和原生文件只读。旧测试中的“缓存目录不存在”改为
+  “原生载荷不存在”，保留 v3 编译缓存自动创建行为。
+- `scripts/check-upstream-patches.py` 对两个固定 Git 提交执行独立正向应用与反向检查通过；
+  当前 `.upstream/deno` 反向检查也通过。mirror 未修改。
+- 使用真实旧 Pi v2 包，dnr 执行/tree/install 和 dnc inspect 均明确拒绝，失败安装不创建目标目录。
+- 最终 dnr/dnc 下 Pi 的 3 项离线结构/缓存/旁置烟雾通过，包括真实 Node-API、Photon WASM、
+  TS 扩展、faux 回复、bash、会话与 HTML 导出。Pi 工作区没有新增修改。初次夹具使用
+  `pi-v3.dnp`，旁置烟雾假定文件名 `pi.dnp` 而失败；改用已有同 SHA-256 的 `v3/pi.dnp` 后通过。
+- v3 WebView 包输出 `DNR_GUI_OK` 并退出 0。窗口脚本两次在 Cmd+H 隐藏步骤失败；串行
+  对照系统已安装的 dnr 0.2.0 也在同一步失败。本轮不能确认隐藏、Dock 恢复、最小化与
+  标题栏关闭的自动化验收，不能把历史通过结果算作本轮通过；未因此改动窗口实现。
+
+最终产物 SHA-256：dnr `b1154b65751bf70bfae2c7a3e02569bd41591a785cbcd834936cbd51821777fc`；
+dnc `9c3cbd484a3de0d977fbbcd96b33c4a1422d87597fe9580e7a418b96bfed09bd`。
+
+更新后的 v3-only 缓存 A/B 脚本通过 1 次预热、每组 2 次采样的烟雾验证，四组输出一致。
+数据位于 `dist/validation-v3-refactor-20260925/bench-smoke/results.json`；样本仅验证脚本，
+本轮不据此给出新的性能结论。先前 30 次正式测量仍对应重构前实现。
+
+Linux x86_64 / system-CEF 本轮仍未验证。未替换系统安装，未提交、推送、打 tag 或发布版本。

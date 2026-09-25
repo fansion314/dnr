@@ -1,29 +1,11 @@
-use dnr_package::{MANIFEST, MARKER, PackOptions, Package, Region, pack};
-use std::{fs, io::Write, path::Path};
-use zip::{ZipWriter, write::SimpleFileOptions};
-
-const METADATA: &[u8] =
-    b"{\n  \"formatVersion\": 1, \"entry\": \"main.js\", \"appId\": \"test.contents\"\n}\n";
+mod support;
+use dnr_package::{PackOptions, Package, pack, v3::META};
+use std::{fs, path::Path};
 
 fn archive(path: &Path, entries: &[(&str, &str, bool)]) {
-    let mut file = fs::File::create(path).unwrap();
-    let header = format!("#!/bin/sh\nexit 127\n{MARKER}");
-    file.write_all(header.as_bytes()).unwrap();
-    let mut zip = ZipWriter::new(Region::new(file, header.len() as u64).unwrap());
-    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-    zip.start_file(MANIFEST, options).unwrap();
-    zip.write_all(METADATA).unwrap();
-    zip.start_file("main.js", options).unwrap();
-    zip.write_all(b"throw Error('must not execute');").unwrap();
-    for &(name, value, link) in entries {
-        if link {
-            zip.add_symlink(name, value, options).unwrap();
-        } else {
-            zip.start_file(name, options).unwrap();
-            zip.write_all(value.as_bytes()).unwrap();
-        }
-    }
-    zip.finish().unwrap();
+    let mut all = vec![("main.js", "throw Error('must not execute');", false)];
+    all.extend_from_slice(entries);
+    support::archive(path, &all);
 }
 
 #[test]
@@ -48,7 +30,7 @@ fn tree_includes_metadata_implicit_directories_and_links_without_disk_overlay() 
         concat!(
             ".\n",
             "├── .dnr/\n",
-            "│   └── manifest.json\n",
+            "│   └── meta.bin\n",
             "├── a/\n",
             "│   └── z\n",
             "├── a-/\n",
@@ -61,7 +43,10 @@ fn tree_includes_metadata_implicit_directories_and_links_without_disk_overlay() 
     assert_eq!(package.stats().decompressions, 0);
     let output = temp.path().join("output");
     package.extract_to(&output).unwrap();
-    assert_eq!(fs::read(output.join(MANIFEST)).unwrap(), METADATA);
+    assert_eq!(
+        fs::read(output.join(META)).unwrap(),
+        &*package.read_archive_file(META).unwrap()
+    );
     assert_eq!(fs::read(output.join("a/z")).unwrap(), b"zip");
     assert!(!output.join("disk-only").exists());
 }
@@ -113,7 +98,7 @@ fn extract_round_trips_bytes_empty_directories_links_and_executable_modes() {
         );
         assert_eq!(fs::metadata(output.join("zero")).unwrap().len(), 0);
         assert_eq!(fs::read_dir(output.join("empty")).unwrap().count(), 0);
-        assert!(output.join(MANIFEST).is_file());
+        assert!(output.join(META).is_file());
     }
     assert_eq!(package.stats().resident_bytes, 0);
 }

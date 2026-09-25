@@ -1,7 +1,7 @@
 //! Immutable, content-addressed native groups. No application-data storage here.
 use crate::{
     Package,
-    v2::{self, Record},
+    index::{self, Record},
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -66,20 +66,16 @@ pub struct NativeCacheStats {
     pub extractions: u64,
 }
 impl Groups {
-    pub(crate) fn new(manifest: &crate::Manifest, state: Option<&v2::State>, path: &Path) -> Self {
+    pub(crate) fn new(manifest: &crate::Manifest, state: &index::State, path: &Path) -> Self {
         Self {
             slots: manifest
                 .groups
                 .iter()
                 .map(|g| (g.clone(), GroupSlot::default()))
                 .collect(),
-            sidecar_target: state.filter(|s| s.has_groups()).map(|s| {
-                if manifest.format_version == 3 {
-                    sidecar(path).join("v3").join(&s.id).join(&s.target)
-                } else {
-                    generation(&sidecar(path), s)
-                }
-            }),
+            sidecar_target: state
+                .has_groups()
+                .then(|| sidecar(path).join("v3").join(&state.id).join(&state.target)),
             sidecar_present: OnceLock::new(),
             cache: OnceLock::new(),
             cache_target: OnceLock::new(),
@@ -122,12 +118,6 @@ impl Groups {
         }
         None
     }
-}
-fn generation(base: &Path, state: &v2::State) -> PathBuf {
-    base.join("v2")
-        .join(&state.id[..2])
-        .join(&state.id)
-        .join(&state.target)
 }
 fn normalized_path(path: &Path) -> Cow<'_, Path> {
     if path.is_absolute() && path.components().any(|c| c == Component::ParentDir) {
@@ -188,6 +178,14 @@ pub(crate) fn sidecar(package: &Path) -> PathBuf {
 }
 
 impl Package {
+    /// Resolve a declared library with its group's companion files.
+    pub fn native_library_path(&self, name: &str) -> Result<Option<PathBuf>> {
+        self.native_path(name, NativeUse::Library)
+    }
+    /// Call only after the host has finished using native libraries.
+    pub fn cleanup_native_libraries(&self) {
+        self.release_native_groups();
+    }
     /// Override the user cache for an embedded host or an isolated test.
     pub fn with_cache_directory(mut self, path: &Path) -> Result<Self> {
         ensure!(path.is_absolute(), "cache directory must be absolute");
@@ -212,45 +210,33 @@ impl Package {
             extractions: stats.extractions.load(Ordering::Relaxed),
         }
     }
-    pub fn package_id(&self) -> Option<&str> {
-        self.v2.as_ref().map(|v| v.id.as_str())
+    pub fn package_id(&self) -> &str {
+        &self.index.id
     }
-    pub fn selected_target(&self) -> Option<&str> {
-        self.v2.as_ref().map(|v| v.target.as_str())
+    pub fn selected_target(&self) -> &str {
+        &self.index.target
     }
     pub fn check_platform(&self) -> Result<()> {
-        if let Some(v) = &self.v2 {
-            ensure!(
-                self.manifest.targets.is_empty() || self.manifest.targets.contains_key(&v.target),
-                "package does not support {}; available: {}",
-                v.target,
-                self.manifest
-                    .targets
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-        }
+        let v = &self.index;
+        ensure!(
+            self.manifest.targets.is_empty() || self.manifest.targets.contains_key(&v.target),
+            "package does not support {}; available: {}",
+            v.target,
+            self.manifest
+                .targets
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         Ok(())
     }
     pub(crate) fn group_directory(&self, base: &Path, group: &str) -> Result<PathBuf> {
-        let v = self
-            .v2
-            .as_ref()
-            .context("repack as format v2 to use native groups")?;
-        if self.manifest.format_version == 3 {
-            return Ok(base.join("v3").join(&v.id).join(&v.target).join(group));
-        }
-        Ok(base
-            .join("v2")
-            .join(&v.id[..2])
-            .join(&v.id)
-            .join(&v.target)
-            .join(group))
+        let v = &self.index;
+        Ok(base.join("v3").join(&v.id).join(&v.target).join(group))
     }
     pub(crate) fn group_records(&self, group: &str) -> Result<Vec<&Record>> {
-        let v = self.v2.as_ref().context("v2 group required")?;
+        let v = &self.index;
         ensure!(
             self.materialized.slots.contains_key(group),
             "unknown group: {group}"
@@ -264,7 +250,7 @@ impl Package {
         Ok(records)
     }
     fn group_layout(&self, group: &str) -> Result<&Layout> {
-        let state = self.v2.as_ref().context("v2 group required")?;
+        let state = &self.index;
         let slot = self
             .materialized
             .slots
@@ -299,7 +285,7 @@ impl Package {
         }))
     }
     fn receipt(&self, group: &str) -> Result<Receipt> {
-        let v = self.v2.as_ref().context("v2 group required")?;
+        let v = &self.index;
         Ok(Receipt {
             format: self.manifest.format_version,
             package_id: v.id.clone(),
@@ -320,7 +306,7 @@ impl Package {
             let meta = fs::symlink_metadata(&receipt_path)?;
             ensure!(meta.is_file() && meta.len() <= 65536, "invalid receipt");
             let receipt: Receipt = serde_json::from_slice(&fs::read(receipt_path)?)?;
-            let state = self.v2.as_ref().unwrap();
+            let state = &self.index;
             let layout = self.group_layout(group)?;
             ensure!(
                 receipt.format == self.manifest.format_version
@@ -382,7 +368,7 @@ impl Package {
                             .bytes_hashed
                             .fetch_add(r.size, Ordering::Relaxed);
                         ensure!(
-                            Some(v2::file_digest(&path)?.as_str()) == r.sha256.as_deref(),
+                            Some(index::file_digest(&path)?.as_str()) == r.sha256.as_deref(),
                             "cached file checksum mismatch"
                         );
                     }
@@ -432,21 +418,11 @@ impl Package {
             Some(bound) => bound,
             None => {
                 if groups.cache_target.get().is_none() {
-                    let base = groups
-                        .cache
-                        .get()
-                        .cloned()
-                        .map(Ok)
-                        .unwrap_or_else(cache_directory)?;
-                    let v = self.v2.as_ref().unwrap();
-                    let target = if self.manifest.format_version == 3 {
-                        self.cache_generation()?
-                            .directory
-                            .join("native")
-                            .join(&v.target)
-                    } else {
-                        generation(&base, v)
-                    };
+                    let target = self
+                        .cache_generation()?
+                        .directory
+                        .join("native")
+                        .join(&self.index.target);
                     let _ = groups.cache_target.set(target);
                 }
                 let directory = groups.cache_target.get().unwrap().join(group);
@@ -463,9 +439,7 @@ impl Package {
         Ok(slot.bound.get().unwrap())
     }
     fn indexed_record(&self, name: &str) -> Result<Option<&Record>> {
-        let Some(state) = &self.v2 else {
-            return Ok(None);
-        };
+        let state = &self.index;
         if let Some(record) = state.record(name).filter(|r| r.kind != "symlink") {
             return Ok(Some(record));
         }
@@ -475,7 +449,7 @@ impl Package {
     /// Reserve a stable group URL without extracting any file. Non-group files
     /// return before locks, filesystem calls, or construction of physical paths.
     pub fn module_path(&self, name: &str) -> Result<Option<PathBuf>> {
-        if self.v2.as_ref().is_none_or(|s| !s.has_groups()) {
+        if !self.index.has_groups() {
             return Ok(None);
         }
         let Some(record) = self.indexed_record(name)? else {
@@ -499,7 +473,7 @@ impl Package {
             .map(|r| r.to_string_lossy().into_owned())
     }
     /// Filesystem hot path: retain the caller's allocation when no alias or
-    /// parent traversal needs translating (including all plain v1/v2 paths).
+    /// parent traversal needs translating (including ungrouped paths).
     pub fn virtual_path_cow<'a>(&self, path: &'a Path) -> Cow<'a, Path> {
         let original = path;
         let path = normalized_path(path);
@@ -515,42 +489,28 @@ impl Package {
         self.virtual_path_cow(path).into_owned()
     }
     pub fn is_unavailable(&self, name: &str) -> bool {
-        self.v2.as_ref().is_some_and(|v| {
-            !v.unavailable.is_empty()
-                && (v.unavailable.contains(name)
-                    || Path::new(name)
-                        .ancestors()
-                        .skip(1)
-                        .any(|p| v.unavailable.contains(p.to_string_lossy().as_ref())))
-        })
+        let v = &self.index;
+        !v.unavailable.is_empty()
+            && (v.unavailable.contains(name)
+                || Path::new(name)
+                    .ancestors()
+                    .skip(1)
+                    .any(|p| v.unavailable.contains(p.to_string_lossy().as_ref())))
     }
     pub fn is_unavailable_path(&self, path: &Path) -> bool {
-        self.v2.as_ref().is_some_and(|v| !v.unavailable.is_empty())
+        !self.index.unavailable.is_empty()
             && self
                 .logical_path(path)
                 .is_some_and(|name| self.is_unavailable(&name))
     }
 
     pub fn native_path(&self, name: &str, usage: NativeUse) -> Result<Option<PathBuf>> {
-        if self.v2.is_none() {
-            return match usage {
-                NativeUse::Library => self.native_library_path(name),
-                NativeUse::Executable => {
-                    let name = self.resolve(name)?;
-                    ensure!(
-                        !self.entries.contains_key(&name),
-                        "packaged executables require format v2"
-                    );
-                    Ok(None)
-                }
-            };
-        }
         let Some(record) = self.indexed_record(name)? else {
             let name = self.resolve(name)?;
             ensure!(
                 !self.is_unavailable(&name),
                 "native file is unavailable for {}: {name}",
-                self.selected_target().unwrap()
+                self.selected_target()
             );
             ensure!(
                 !self.entries.contains_key(&name),
@@ -578,10 +538,7 @@ impl Package {
         self.indexed_record(name).ok().flatten()?.napi
     }
     pub fn is_executable(&self, name: &str) -> bool {
-        self.v2
-            .as_ref()
-            .and_then(|v| v.record(name))
-            .is_some_and(|r| r.mode & 0o111 != 0)
+        self.index.record(name).is_some_and(|r| r.mode & 0o111 != 0)
     }
     pub(crate) fn prepare_group(&self, group: &str) -> Result<()> {
         self.ensure_group(group).map(|_| ())
@@ -617,12 +574,8 @@ impl Package {
     }
     pub(crate) fn prepare_at(&self, base: &Path) -> Result<()> {
         self.check_platform()?;
-        ensure!(
-            self.v2.is_some(),
-            "install requires a v2 package; repack with dnc"
-        );
         for group in &self.manifest.groups {
-            if self.v2.as_ref().unwrap().group_indices(group).is_none() {
+            if self.index.group_indices(group).is_none() {
                 continue;
             }
             let directory = self.group_directory(base, group)?;
@@ -748,7 +701,7 @@ impl Package {
                 lease.lock_shared()?;
                 let group_path = directory
                     .join("native")
-                    .join(self.selected_target().unwrap())
+                    .join(self.selected_target())
                     .join(group);
                 let group_lease = group_lock(&group_path, false)?;
                 group_lease.lock_shared()?;

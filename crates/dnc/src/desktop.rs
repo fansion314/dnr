@@ -218,7 +218,7 @@ pub fn build(args: &Args, path: &Path, target: Target) -> Result<()> {
         .map(PackageConfig::load)
         .transpose()?
         .unwrap_or_default();
-    let report = dnr_package::pack_with_version(&options, &config, args.format_version)?;
+    let report = dnr_package::pack_with_config(&options, &config)?;
     let base = path.parent().unwrap_or(Path::new("."));
     // The final staging directory is a sibling, allowing same-filesystem rename.
     let stage = tempfile::Builder::new()

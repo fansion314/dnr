@@ -1,11 +1,11 @@
 use dnr_package::{
-    PackOptions, Package, PackageConfig, pack_with_version,
+    PackOptions, Package, PackageConfig, pack_with_config,
     persistent::{Generation, SourceStamp, hash},
 };
 use std::{fs, path::Path};
 
 fn build(root: &Path, output: &Path) {
-    pack_with_version(
+    pack_with_config(
         &PackOptions {
             directory: root.into(),
             entry: "main.ts".into(),
@@ -16,7 +16,6 @@ fn build(root: &Path, output: &Path) {
             force: true,
         },
         &PackageConfig::default(),
-        3,
     )
     .unwrap();
 }
@@ -70,7 +69,7 @@ fn stored_metadata_content_identity_and_logical_full_install() {
     assert!(full.join("alias.ts").is_symlink());
     let (manifest, content) = dnr_package::v3::installed_manifest(&full).unwrap();
     assert_eq!(manifest.app_id, "test.v3");
-    assert_eq!(Some(content.as_str()), package.package_id());
+    assert_eq!(content.as_str(), package.package_id());
     assert!(!full.join("a.dnp").exists());
     fs::write(src.join("main.ts"), "export const value: number = 4;").unwrap();
     build(&src, &b);
@@ -236,7 +235,7 @@ fn short_variants_hardlink_reuse_and_sidecar_precedence() {
         "groups": [{"id": "tool", "files": [], "variants": {"host": [{"from": tool, "to": "deep/path/tool"}]}, "native": {"executables": ["deep/path/tool"]}}]
     })).unwrap()).unwrap();
     let a = t.path().join("a.dnp");
-    pack_with_version(
+    pack_with_config(
         &PackOptions {
             directory: src,
             entry: "main.ts".into(),
@@ -247,7 +246,6 @@ fn short_variants_hardlink_reuse_and_sidecar_precedence() {
             force: false,
         },
         &PackageConfig::load(&config).unwrap(),
-        3,
     )
     .unwrap();
     let cache = t.path().join("cache");
@@ -318,7 +316,7 @@ fn linked_variants_preserve_safe_physical_and_logical_paths() {
     let config_path = temp.path().join("config.json");
     fs::write(&config_path, serde_json::to_vec(&serde_json::json!({"schemaVersion":1,"targets":{"host":dnr_package::config::Target::host()},"groups":[{"id":"native","files":[],"variants":{"host":[{"from":native,"to":"deep"}]},"native":{"executables":["deep/tool"]}}]})).unwrap()).unwrap();
     let output = temp.path().join("app");
-    pack_with_version(
+    pack_with_config(
         &PackOptions {
             directory: src,
             output: output.clone(),
@@ -329,7 +327,6 @@ fn linked_variants_preserve_safe_physical_and_logical_paths() {
             force: false,
         },
         &PackageConfig::load(&config_path).unwrap(),
-        3,
     )
     .unwrap();
     let package = Package::open(&output, 0).unwrap();

@@ -17,11 +17,11 @@ fn fixture(dir: &Path) {
 }
 
 #[test]
-fn legacy_dnp_and_desktop_cli_contract() {
+fn v3_dnp_and_desktop_cli_contract() {
     let dir = tempfile::tempdir().unwrap();
     fixture(dir.path());
     let input = dir.path().join("input");
-    let output = dir.path().join("old.dnp");
+    let output = dir.path().join("app.dnp");
     assert!(
         dnc()
             .arg(&input)
@@ -33,6 +33,17 @@ fn legacy_dnp_and_desktop_cli_contract() {
     );
     let package = dnr_package::Package::open(&output, 1024).unwrap();
     assert_eq!(package.manifest.entry, "main.ts");
+    assert_eq!(package.manifest.format_version, 3);
+    for version in ["1", "2"] {
+        let rejected = dnc()
+            .arg(&input)
+            .args(["--entry", "main.ts", "--format-version", version, "-o"])
+            .arg(dir.path().join("unsupported.dnp"))
+            .output()
+            .unwrap();
+        assert!(!rejected.status.success());
+        assert!(!dir.path().join("unsupported.dnp").exists());
+    }
     for args in [
         vec!["--desktop-manifest", "desktop.json"],
         vec!["--target", "macos"],

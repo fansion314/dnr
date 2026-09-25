@@ -1,5 +1,5 @@
 //! Explicit archive inspection/export, independent of the runtime VFS overlay.
-use crate::{Entry, EntryKind, MANIFEST, Package};
+use crate::{Entry, EntryKind, Package};
 use anyhow::{Context, Result, ensure};
 use std::{collections::BTreeMap, fs, io, path::Path};
 
@@ -30,11 +30,7 @@ impl Package {
     }
     // The runtime index intentionally hides metadata; archive tools include it.
     fn contents(&self) -> Result<BTreeMap<String, Entry>> {
-        let mut entries = if self.v2.is_some() {
-            self.raw_entries.clone()
-        } else {
-            self.entries.clone()
-        };
+        let mut entries = self.raw_entries.clone();
         for name in entries.keys().cloned().collect::<Vec<_>>() {
             for parent in Path::new(&name)
                 .ancestors()
@@ -63,11 +59,7 @@ impl Package {
             size: 0,
         });
         let mut archive = self.archive.clone();
-        let metadata_name = if self.manifest.format_version == 3 {
-            crate::v3::META
-        } else {
-            MANIFEST
-        };
+        let metadata_name = crate::v3::META;
         let index = archive
             .index_for_name(metadata_name)
             .context("missing manifest")?;
@@ -81,11 +73,6 @@ impl Package {
                 size: file.size(),
             },
         );
-        for entry in entries.values() {
-            if self.v2.is_none() && matches!(entry.kind, EntryKind::Symlink(_)) {
-                self.resolve(&entry.name)?;
-            }
-        }
         Ok(entries)
     }
 
@@ -144,7 +131,7 @@ impl Package {
         fs::create_dir_all(stage.path().join(".dnr"))?;
         fs::write(
             stage.path().join(crate::v3::INSTALL),
-            crate::v3::installation(&self.metadata_bytes, self.selected_target().unwrap())?,
+            crate::v3::installation(&self.metadata_bytes, self.selected_target())?,
         )?;
         fs::hard_link(&install_lock, stage.path().join(crate::v3::INSTALL_LOCK))?;
         use std::os::unix::fs::PermissionsExt;
@@ -265,9 +252,7 @@ impl Package {
                         "ZIP size mismatch: {}",
                         entry.name
                     );
-                    if let Some(v2) = &self.v2 {
-                        v2.verify_file(entry.index, &path)?;
-                    }
+                    self.index.verify_file(entry.index, &path)?;
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;

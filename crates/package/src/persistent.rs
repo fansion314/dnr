@@ -1,5 +1,5 @@
 //! Path-owned cache generations. SQLite is a disposable catalog, never an authority.
-use crate::{materialize::secure_directory, v2::digest};
+use crate::{index::digest, materialize::secure_directory};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
