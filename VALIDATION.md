@@ -1187,3 +1187,31 @@ CEF/GTK3/WebKitGTK 均在 optdepend。此处复用本机源码与二进制，只
 | dnr-dual | `e59a6ca90cebaee9cc6625d3b11930b16ba6d3ed8f77d2e57e22aa9b1640b8c4` |
 | dnr-cef | `866c99a1cb72d37c076fc914fef2d33f3594c505cf92b886e24802c1b9994568` |
 | dnr-webview | `bf8934abbc09d96d09d6bb5a1ac8ce7432ddcea17e581b184e90cabdb6f6fef2` |
+
+
+### v0.3.1 正式发布与本机安装
+
+- 发布提交 `6a530c8` 与标签 `v0.3.1` 已推送 origin 和 GitHub。
+  [Actions 36148372522](https://github.com/fansion314/dnr/actions/runs/36148372522)
+  四个 Arch 构建及发布任务全部成功；
+  [Release v0.3.1](https://github.com/fansion314/dnr/releases/tag/v0.3.1)
+  包含三个 runtime、独立 dnc、摘要与构建环境记录。
+- 下载正式 dual 与 dnc 资产，单包 SHA-256 和统一 `SHA256SUMS` 全部通过；对应
+  `-bin` 配方真实执行 prepare/package，最终安装归档中的程序与正式资产逐字节相同。
+  `.PKGINFO` 核对 dnr-bin 仅强依赖 glibc/gcc-libs/zlib，GUI 栈均为可选依赖。
+- 正式 dual 二进制再次通过全部 20 项 runtime/原生测试、11 个懒加载/缺库场景、
+  10 个真实 GUI/故障回退场景，以及两个后端各四种 KWin 原生关闭场景。
+- 使用 `paru --sudo /usr/bin/pkexec -U --noconfirm` 安装 `dnr-bin 0.3.1-1` 与
+  `dnc-bin 0.3.1-1`。两者从 `/usr/bin` 解析，版本正确；pacman 分别检查 24/20
+  个文件，全部 0 altered。系统安装程序与复验产物 SHA-256 相同。
+- 安装后严格 CEF API 14900 检查通过，11 个懒加载/缺库/真实窗口场景再次通过；
+  已安装 Pi 版本命令输出 0.87.1，新 dnc 成功 inspect 现有 Pi v3 包。
+
+| 正式发行资产 | SHA-256 |
+| --- | --- |
+| dnr-0.3.1-1-x86_64.pkg.tar.zst | `3edde1c88ea5271664fb0f13498f7133b22061332d33ee2a4c94750765df50be` |
+| dnc-0.3.1-1-x86_64.pkg.tar.zst | `71a348782689c58b31c5a556f566ec2b55ece3b9c6ee07a84eb4170282962689` |
+
+已安装程序 SHA-256：dnr `2933a938257c3bbe0ec7c420987bce61120fffaf330e5e4e1617ad2dee14bc7a`，
+dnc `2f1ab863afe4ded00be91315d0904cf0a5f4c2664ef1f53f15e17f92bfe22a52`。
+资产、安装包、Actions 成功页面与正式产物复验日志保存在 `dist/release-v0.3.1/`。
