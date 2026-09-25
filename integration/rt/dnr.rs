@@ -67,6 +67,10 @@ pub fn cleanup_native_libraries() {
     if let Some(package) = PACKAGE.get() {
         package.cleanup_native_libraries();
     }
+    crate::dnr_cache::finish();
+    if let Some(package) = PACKAGE.get() {
+        package.finish_cache();
+    }
 }
 
 pub fn read_text(path: &Path) -> std::io::Result<String> {
@@ -128,7 +132,19 @@ fn directory(package: &Package) -> Result<VirtualDirectory, AnyError> {
     })
 }
 
+static INSTALLED_LEASE: OnceLock<std::fs::File> = OnceLock::new();
+
 pub fn application(mut args: Vec<String>) -> Result<StandaloneData, AnyError> {
+    let mut code_cache = true;
+    let mut transpile_cache = true;
+    while let Some(arg) = args.first() {
+        match arg.as_str() {
+            "--no-code-cache" => code_cache = false,
+            "--no-transpile-cache" => transpile_cache = false,
+            _ => break,
+        }
+        args.remove(0);
+    }
     let explicit = args.first().is_some_and(|s| s == "--package");
     if explicit {
         args.remove(0);
@@ -150,14 +166,26 @@ pub fn application(mut args: Vec<String>) -> Result<StandaloneData, AnyError> {
     if args.first().is_some_and(|s| s == "--") {
         args.remove(0);
     }
-    let is_package = explicit || {
-        use std::io::Read;
-        let mut header = [0u8; 10];
-        std::fs::File::open(&input)?.read(&mut header)? == 10 && &header == b"#!/bin/sh\n"
+    let installed = if input.is_dir() {
+        let _ = INSTALLED_LEASE.set(dnr_package::v3::installed_lease(&input)?);
+        Some(dnr_package::v3::installed_manifest(&input)?)
+    } else {
+        None
     };
+    let is_package = explicit
+        || (installed.is_none() && {
+            use std::io::Read;
+            let mut header = [0u8; 10];
+            std::fs::File::open(&input)?.read(&mut header)? == 10 && &header == b"#!/bin/sh\n"
+        });
     let (root, entry, app_id, mut vfs) = if is_package {
         let package = Arc::new(Package::open(&input, DEFAULT_CACHE_BYTES)?);
         package.check_platform()?;
+        if package.manifest.format_version == 3 && (code_cache || transpile_cache) {
+            if let Ok(generation) = package.cache_generation() {
+                crate::dnr_cache::init(generation, code_cache, transpile_cache);
+            }
+        }
         deno_runtime::deno_process::set_native_command_resolver(Arc::new(PackageCommands(
             package.clone(),
         )));
@@ -183,9 +211,32 @@ pub fn application(mut args: Vec<String>) -> Result<StandaloneData, AnyError> {
         let _ = PACKAGE.set(package);
         (root, entry, id, vfs)
     } else {
-        let root = input.parent().unwrap().to_owned();
-        let entry = input.file_name().unwrap().to_string_lossy().into_owned();
-        let id = format!("script:{}", input.display());
+        let (root, entry, id) = if let Some((manifest, content)) = installed {
+            if code_cache || transpile_cache {
+                let open = || -> Result<_, AnyError> {
+                    let stamp = dnr_package::persistent::SourceStamp::read(
+                        &input.join(dnr_package::v3::INSTALL),
+                    )?;
+                    dnr_package::persistent::Generation::open(
+                        &dnr_package::cache_directory()?,
+                        &input,
+                        &content,
+                        &manifest.app_id,
+                        &stamp,
+                    )
+                };
+                if let Ok(generation) = open() {
+                    crate::dnr_cache::init(generation, code_cache, transpile_cache);
+                }
+            }
+            (input.clone(), manifest.entry, manifest.app_id)
+        } else {
+            (
+                input.parent().unwrap().to_owned(),
+                input.file_name().unwrap().to_string_lossy().into_owned(),
+                format!("script:{}", input.display()),
+            )
+        };
         let vfs = FileBackedVfs::new(
             Cow::Borrowed(&[]),
             VfsRoot {

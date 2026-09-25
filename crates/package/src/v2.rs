@@ -87,7 +87,7 @@ pub(crate) fn copy_checked(
 
 pub(crate) struct Prepared {
     pub bytes: Vec<u8>,
-    records: BTreeMap<String, Record>,
+    pub(crate) records: BTreeMap<String, Record>,
 }
 impl Prepared {
     pub fn integrity(&self) -> Integrity {
@@ -324,6 +324,16 @@ impl State {
             "integrity index checksum mismatch"
         );
         let records: Vec<Record> = serde_json::from_slice(&index_bytes)?;
+        Self::from_records(manifest, digest(bytes), records, entries, modes, requested)
+    }
+    pub(crate) fn from_records(
+        manifest: &Manifest,
+        id: String,
+        records: Vec<Record>,
+        entries: &BTreeMap<String, Entry>,
+        modes: &[u32],
+        requested: Option<&str>,
+    ) -> Result<(Self, BTreeMap<String, Entry>)> {
         let mut groups = BTreeSet::new();
         for g in &manifest.groups {
             config::identifier(g)?;
@@ -496,7 +506,7 @@ impl State {
         }
         Ok((
             Self {
-                id: digest(bytes),
+                id,
                 target,
                 hashes,
                 records: selected,

@@ -1,6 +1,6 @@
-# DNR application formats v1 / v2
+# DNR application formats v1 / v2 / v3
 
-新 dnc 默认输出 v2，dnr 保持 v1 读取兼容。下文先描述共同封装和 v1 行为；v2 原生分组扩展见文末。
+dnc 0.3.0 默认输出 v3；`--format-version 2` 可输出旧格式。dnr 同时读取 v1/v2/v3。下文先描述共同封装和 v1 行为，随后描述 v2/v3 扩展。
 
 `.dnp` 是可执行的 POSIX shell 启动头与 ZIP 区域拼接而成的文件。扩展名不参与运行时识别。
 
@@ -65,3 +65,36 @@ v2 原生加载和执行只接受 manifest 索引中声明的对应入口。首�
 组内相对资源与原生依赖需要形成完整集合；没有 OS 挂载或任意 shell 字符串重写。
 
 作者配置、安装、清理命令和兼容性边界见 [原生打包](NATIVE-PACKAGING.md)。
+
+
+## v3：Stored 二进制元数据与短载荷路径
+
+封装仍用 `DNRZIP1`，普通文件仍为 Zstd level 6。第一个 ZIP 条目必须是
+`.dnr/meta.bin`，Stored、不加密、不使用 data descriptor，最大 64 MiB。运行时先从
+local header 定位元数据并校验 CRC，再核对中央目录名称、尺寸、方法与 CRC。
+不再生成 manifest.json/index.json；两者的语义合并到二进制元数据。
+
+所有整数为小端；字符串为 u32 字节长度＋UTF-8；可选字符串为 u8 存在标志（0/1）
+及存在时的字符串。序列以 u32 项数开头。读取必须有界，拒绝截断、无效标志和尾随数据。
+头部顺序为 `DNRMETA3`（8 字节）、u64 body 长度、32 字节 body SHA-256，再接 body：
+
+1. entry、appId 两个字符串。
+2. targets 序列：每项为 id、os、arch、可选 libc；按 id 排序。
+3. groups 字符串序列，按名称排序。
+4. 文件记录序列，按 `(path, target, source)` 排序。每项依次为 path、source、
+   u8 kind（0=file、1=directory、2=symlink）、u64 size、u32 mode、u8 摘要存在标志
+   及存在时的 32 字节 SHA-256、可选 link/group/target/native 四个字符串、u32 napi
+   （0 表示不存在）。字段意义和分组／平台／完整性约束沿用 v2。
+
+body 摘要即 `contentHash`，不包括自身、ZIP 时间戳、压缩方式或物理偏移。它绑定全部
+记录及内容摘要；不是整包字节摘要或发行者签名。普通文件仍在实际读取时验证 CRC/SHA。
+平台变体以确定性编号写入 `.dnr/p/<编号>-<原文件名>`，逻辑路径、平台和分组在元数据
+中保存。含符号链接的组保留必要相对布局，移除全组与链接目标共有的逻辑前缀后放在编号容器内，避免物理解包产生越界链接。原生组实际落盘恢复原有逻辑布局；不压平外部程序依赖的相对路径。
+
+`dnc inspect <包> --json` 输出 manifest、所有平台 records、contentHash/packageId 和
+archiveEntries（含工具合成的目录名称）。`dnc cat <包> <ZIP路径>` 输出经校验的原始条目，
+不应用磁盘回退。它们不启动 V8/GUI，也不要求系统 tar 支持 ZIP93。
+
+完整安装描述 `.dnr/install.bin` 以 `DNRINST3` 开头，随后是选定 target 字符串与原始
+meta.bin。它仅提供安装身份，磁盘源码可变，不能凭描述内的文件摘要跳过源码校验。
+原生旁置、路径分代与编译缓存详见 [缓存与安装](CACHE.md)。

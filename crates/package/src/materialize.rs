@@ -73,14 +73,25 @@ impl Groups {
                 .iter()
                 .map(|g| (g.clone(), GroupSlot::default()))
                 .collect(),
-            sidecar_target: state
-                .filter(|s| s.has_groups())
-                .map(|s| generation(&sidecar(path), s)),
+            sidecar_target: state.filter(|s| s.has_groups()).map(|s| {
+                if manifest.format_version == 3 {
+                    sidecar(path).join("v3").join(&s.id).join(&s.target)
+                } else {
+                    generation(&sidecar(path), s)
+                }
+            }),
             sidecar_present: OnceLock::new(),
             cache: OnceLock::new(),
             cache_target: OnceLock::new(),
             stats: Counters::default(),
         }
+    }
+    pub(crate) fn cache_base(&self) -> Result<PathBuf> {
+        self.cache
+            .get()
+            .cloned()
+            .map(Ok)
+            .unwrap_or_else(cache_directory)
     }
     fn alias_suffix<'a>(&self, path: &'a Path) -> Option<&'a Path> {
         // Two generation prefixes, regardless of the number of groups. A group
@@ -228,6 +239,9 @@ impl Package {
             .v2
             .as_ref()
             .context("repack as format v2 to use native groups")?;
+        if self.manifest.format_version == 3 {
+            return Ok(base.join("v3").join(&v.id).join(&v.target).join(group));
+        }
         Ok(base
             .join("v2")
             .join(&v.id[..2])
@@ -287,7 +301,7 @@ impl Package {
     fn receipt(&self, group: &str) -> Result<Receipt> {
         let v = self.v2.as_ref().context("v2 group required")?;
         Ok(Receipt {
-            format: 2,
+            format: self.manifest.format_version,
             package_id: v.id.clone(),
             app_id: self.manifest.app_id.clone(),
             target: v.target.clone(),
@@ -309,7 +323,7 @@ impl Package {
             let state = self.v2.as_ref().unwrap();
             let layout = self.group_layout(group)?;
             ensure!(
-                receipt.format == 2
+                receipt.format == self.manifest.format_version
                     && receipt.package_id == state.id
                     && receipt.target == state.target
                     && receipt.group == group
@@ -424,9 +438,16 @@ impl Package {
                         .cloned()
                         .map(Ok)
                         .unwrap_or_else(cache_directory)?;
-                    let _ = groups
-                        .cache_target
-                        .set(generation(&base, self.v2.as_ref().unwrap()));
+                    let v = self.v2.as_ref().unwrap();
+                    let target = if self.manifest.format_version == 3 {
+                        self.cache_generation()?
+                            .directory
+                            .join("native")
+                            .join(&v.target)
+                    } else {
+                        generation(&base, v)
+                    };
+                    let _ = groups.cache_target.set(target);
                 }
                 let directory = groups.cache_target.get().unwrap().join(group);
                 Bound {
@@ -562,6 +583,9 @@ impl Package {
             .and_then(|v| v.record(name))
             .is_some_and(|r| r.mode & 0o111 != 0)
     }
+    pub(crate) fn prepare_group(&self, group: &str) -> Result<()> {
+        self.ensure_group(group).map(|_| ())
+    }
     fn ensure_group(&self, group: &str) -> Result<&Path> {
         let bound = self.bind_group(group)?;
         if bound.ready.load(Ordering::Acquire) {
@@ -626,6 +650,7 @@ impl Package {
         let receipt = serde_json::to_vec(&self.receipt(group)?)?;
         fs::write(stage.path().join("pending.json"), &receipt)?;
         let records = self.group_records(group)?;
+        let reuse = self.reusable_group(group);
         for record in &records {
             let path = root.join(&record.path);
             fs::create_dir_all(path.parent().unwrap())?;
@@ -633,6 +658,11 @@ impl Package {
                 "directory" => fs::create_dir_all(&path)?,
                 "symlink" => {}
                 "file" => {
+                    if let Some((source, _lease, _group_lease)) = &reuse
+                        && fs::hard_link(source.join("root").join(&record.path), &path).is_ok()
+                    {
+                        continue;
+                    }
                     let mut archive = self.archive.clone();
                     let mut source = archive.by_name(&record.source)?;
                     let mut file = File::create_new(&path)?;
@@ -686,7 +716,53 @@ impl Package {
             .stats
             .extractions
             .fetch_add(1, Ordering::Relaxed);
+        if let Some(generation) = self.generation.get() {
+            generation.notify_index();
+        }
         Ok(())
+    }
+    fn reusable_group(&self, group: &str) -> Option<(PathBuf, File, File)> {
+        let generation = self.generation.get()?;
+        for directory in crate::persistent::catalog::candidates(
+            &generation.base,
+            &generation.receipt.content_hash,
+        ) {
+            if directory == generation.directory {
+                continue;
+            }
+            let attempt = || -> Result<(PathBuf, File, File)> {
+                ensure!(
+                    directory.starts_with(generation.base.join("v3"))
+                        && directory.canonicalize()? == directory,
+                    "invalid catalog path"
+                );
+                let root = directory
+                    .parent()
+                    .and_then(Path::parent)
+                    .context("bad generation")?;
+                let gate = crate::persistent::lock_file(&root.join(".gate"))?;
+                gate.lock()?;
+                let lease = crate::persistent::lock_file(
+                    &root.join(".leases").join(&generation.receipt.content_hash),
+                )?;
+                lease.lock_shared()?;
+                let group_path = directory
+                    .join("native")
+                    .join(self.selected_target().unwrap())
+                    .join(group);
+                let group_lease = group_lock(&group_path, false)?;
+                group_lease.lock_shared()?;
+                ensure!(
+                    self.valid_group(&group_path, group)?,
+                    "invalid reusable group"
+                );
+                Ok((group_path, lease, group_lease))
+            };
+            if let Ok(value) = attempt() {
+                return Some(value);
+            }
+        }
+        None
     }
     pub fn release_native_groups(&self) {
         for slot in self.materialized.slots.values() {

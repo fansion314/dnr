@@ -9,6 +9,16 @@
  
  # crypto
  aead-gcm-stream = "0.4"
+--- a/cli/lib/worker.rs
++++ b/cli/lib/worker.rs
+@@ -397,6 +397,7 @@
+         shared.resolve_unstable_features(feature_checker.as_ref());
+ 
+       let services = WebWorkerServiceOptions {
++        v8_code_cache: shared.code_cache.clone(),
+         deno_rt_native_addon_loader: shared.deno_rt_native_addon_loader.clone(),
+         root_cert_store_provider: Some(shared.root_cert_store_provider.clone()),
+         module_loader,
 --- a/cli/rt/Cargo.toml
 +++ b/cli/rt/Cargo.toml
 @@ -15,6 +15,10 @@
@@ -64,7 +74,38 @@
        Ok(Some(DenoCompileModuleData {
          media_type: MediaType::from_specifier(specifier),
          specifier,
-@@ -772,7 +785,7 @@
+@@ -722,6 +735,10 @@
+     _ => return Ok(source),
+   }
+ 
++  let opts = runtime_transpile_options(specifier);
++  let cache_key = crate::dnr_cache::emit_key(specifier, &source, &format!("{media_type:?}:{opts:?}:inline-sourcemap"));
++  if let Some(key) = &cache_key && let Some(text) = crate::dnr_cache::get_emit(specifier, key) { return Ok(text); }
++  let text = crate::dnr_cache::profile("transpile", || {
+   let parsed = deno_ast::parse_module(deno_ast::ParseParams {
+     specifier: specifier.clone(),
+     text: source.into(),
+@@ -731,7 +748,6 @@
+     maybe_syntax: None,
+   })
+   .map_err(JsErrorBox::from_err)?;
+-  let opts = runtime_transpile_options(specifier);
+   let transpiled = parsed
+     .transpile(
+       opts,
+@@ -742,7 +758,10 @@
+       },
+     )
+     .map_err(JsErrorBox::from_err)?;
+-  Ok(transpiled.into_source().text)
++  Ok::<_, JsErrorBox>(transpiled.into_source().text)
++  })?;
++  if let Some(key) = &cache_key { crate::dnr_cache::set_emit(specifier, key, &text); }
++  Ok(text)
+ }
+ 
+ /// Resolved JSX/decorator options for runtime transpiles, discovered lazily
+@@ -772,7 +791,7 @@
      let cfg_path = 'outer: loop {
        for name in ["deno.json", "deno.jsonc"] {
          let candidate = dir.join(name);
@@ -73,7 +114,7 @@
            break 'outer Some(candidate);
          }
        }
-@@ -783,7 +796,7 @@
+@@ -783,7 +802,7 @@
      let Some(cfg_path) = cfg_path else {
        return fallback;
      };
@@ -82,6 +123,48 @@
        return fallback;
      };
      let Some(json) =
+--- a/cli/rt/code_cache.rs
++++ b/cli/rt/code_cache.rs
+@@ -20,6 +20,7 @@
+ use url::Url;
+ 
+ enum CodeCacheStrategy {
++  Dnr(crate::dnr_cache::DnrCodeCache),
+   FirstRun(FirstRunCodeCacheStrategy),
+   SubsequentRun(SubsequentRunCodeCacheStrategy),
+ }
+@@ -35,6 +36,7 @@
+ }
+ 
+ impl DenoCompileCodeCache {
++  pub fn for_dnr() -> Self { Self { strategy: CodeCacheStrategy::Dnr(crate::dnr_cache::DnrCodeCache) } }
+   pub fn new(file_path: PathBuf, cache_key: u64) -> Self {
+     // attempt to deserialize the cache data
+     match deserialize(&file_path, cache_key) {
+@@ -80,6 +82,7 @@
+ 
+   pub fn enabled(&self) -> bool {
+     match &self.strategy {
++      CodeCacheStrategy::Dnr(_) => true,
+       CodeCacheStrategy::FirstRun(strategy) => {
+         !strategy.is_finished.is_raised()
+       }
+@@ -98,6 +101,7 @@
+     source_hash: u64,
+   ) -> Option<Vec<u8>> {
+     match &self.strategy {
++      CodeCacheStrategy::Dnr(cache) => cache.get_sync(specifier, code_cache_type, source_hash),
+       CodeCacheStrategy::FirstRun(strategy) => {
+         if !strategy.is_finished.is_raised() {
+           // we keep track of how many times the cache is requested
+@@ -124,6 +128,7 @@
+     bytes: &[u8],
+   ) {
+     match &self.strategy {
++      CodeCacheStrategy::Dnr(cache) => cache.set_sync(specifier, code_cache_type, source_hash, bytes),
+       CodeCacheStrategy::FirstRun(strategy) => {
+         if strategy.is_finished.is_raised() {
+           return;
 --- a/cli/rt/file_system.rs
 +++ b/cli/rt/file_system.rs
 @@ -73,7 +73,17 @@
@@ -1013,11 +1096,12 @@
  
 --- a/cli/rt/lib.rs
 +++ b/cli/rt/lib.rs
-@@ -1,5 +1,8 @@
+@@ -1,5 +1,9 @@
  // Copyright 2018-2026 the Deno authors. MIT license.
  
 +extern crate self as denort;
 +pub mod dnr;
++pub mod dnr_cache;
 +pub mod dnr_desktop;
  use std::borrow::Cow;
  use std::env;
@@ -1107,7 +1191,24 @@
    let hmr_watch_dir = options.hmr_watch_dir;
    let hmr_on_reload = options.hmr_on_reload;
    let op_state_init = options.op_state_init;
-@@ -1868,6 +1907,7 @@
+@@ -1641,7 +1680,7 @@
+       metadata.workspace_resolver.catalogs,
+     )
+   };
+-  let code_cache = match metadata.code_cache_key {
++  let code_cache = if is_dnr_host && crate::dnr_cache::code_enabled() { Some(Arc::new(DenoCompileCodeCache::for_dnr())) } else { match metadata.code_cache_key {
+     Some(code_cache_key) => Some(Arc::new(DenoCompileCodeCache::new(
+       root_path.with_file_name(format!(
+         "{}.cache",
+@@ -1653,6 +1692,7 @@
+       log::debug!("Code cache disabled.");
+       None
+     }
++  }
+   };
+   let blob_store = Arc::new(BlobStore::default());
+   let module_loader_factory = StandaloneModuleLoaderFactory {
+@@ -1868,6 +1908,7 @@
        .js_runtime()
        .execute_script("ext:deno_desktop/init", crate::desktop::DESKTOP_JS)?;
  
@@ -1115,7 +1216,7 @@
      // Initialize auto-update JS (DesktopUpdater cppgc object is already
      // registered via the desktop extension's objects).
      let js = crate::desktop::desktop_auto_update_js(
-@@ -1898,6 +1938,7 @@
+@@ -1898,6 +1939,7 @@
      worker
        .js_runtime()
        .execute_script("ext:deno_desktop/error_reporting", js)?;
@@ -1123,7 +1224,7 @@
    }
  
    if let Some(watch_dir) = hmr_watch_dir {
-@@ -1942,6 +1983,9 @@
+@@ -1942,6 +1984,9 @@
      worker.dispatch_process_exit_event()?;
      Ok(worker.exit_code())
    } else if has_desktop {
@@ -1203,3 +1304,353 @@
        command: arg_cmd.to_string(),
        error: Box::new(e),
      })?;
+--- a/libs/core/modules/map.rs
++++ b/libs/core/modules/map.rs
+@@ -862,12 +862,12 @@
+             Some(&origin),
+             v8::CachedData::new(cache),
+           );
+-          let maybe_module = v8::script_compiler::compile_module2(
++          let maybe_module = crate::modules::dnr_profile_compile("esm", || v8::script_compiler::compile_module2(
+             tc_scope,
+             &mut source,
+             v8::script_compiler::CompileOptions::ConsumeCodeCache,
+             v8::script_compiler::NoCacheReason::NoReason,
+-          );
++          ));
+           // Check if the provided code cache is rejected by V8.
+           let rejected = match source.get_cached_data() {
+             Some(cached_data) => cached_data.rejected(),
+@@ -880,7 +880,7 @@
+         let mut source =
+           v8::script_compiler::Source::new(source_str, Some(&origin));
+         (
+-          v8::script_compiler::compile_module(tc_scope, &mut source),
++          crate::modules::dnr_profile_compile("esm", || v8::script_compiler::compile_module(tc_scope, &mut source)),
+           true,
+         )
+       });
+@@ -903,7 +903,7 @@
+     {
+       let unbound_module_script = module.get_unbound_module_script(tc_scope);
+       let code_cache =
+-        unbound_module_script.create_code_cache().ok_or_else(|| {
++        crate::modules::dnr_profile_compile("serialize", || unbound_module_script.create_code_cache()).ok_or_else(|| {
+           ModuleError::Concrete(
+             ModuleConcreteError::UnboundModuleScriptCodeCache,
+           )
+--- a/libs/core/modules/map/ext_script.rs
++++ b/libs/core/modules/map/ext_script.rs
+@@ -674,14 +674,14 @@
+           v8::script_compiler::CompileOptions::NoCompileOptions,
+         ),
+       };
+-    let function = match v8::script_compiler::compile_function(
++    let function = match crate::modules::dnr_profile_compile("function", || v8::script_compiler::compile_function(
+       tc_scope,
+       &mut compile_source,
+       &[bootstrap_param],
+       &[],
+       compile_options,
+       v8::script_compiler::NoCacheReason::NoReason,
+-    ) {
++    )) {
+       Some(f) => f,
+       None => {
+         let exception = tc_scope.exception().unwrap();
+@@ -708,7 +708,7 @@
+     if (!had_data || rejected)
+       && let (Some(spec), Some(info)) =
+         (cache_specifier.as_ref(), code_cache_info.as_ref())
+-      && let Some(cache) = function.create_code_cache()
++      && let Some(cache) = crate::modules::dnr_profile_compile("serialize", || function.create_code_cache())
+     {
+       let fut = self.loader.borrow().code_cache_ready(
+         spec.clone(),
+--- a/libs/core/modules/mod.rs
++++ b/libs/core/modules/mod.rs
+@@ -998,3 +998,15 @@
+     ModuleError::Concrete(value)
+   }
+ }
++
++// Opt-in validation probe: the timer covers only the V8 API call, not stderr logging.
++pub(crate) fn dnr_profile_compile<T>(kind: &'static str, f: impl FnOnce() -> T) -> T {
++  static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++  if *ENABLED.get_or_init(|| std::env::var_os("DNR_PROFILE").is_some()) {
++    let start = std::time::Instant::now();
++    let result = f();
++    let ns = start.elapsed().as_nanos();
++    eprintln!("DNR_PROFILE kind={kind} ns={ns}");
++    result
++  } else { f() }
++}
+--- a/libs/core/ops_builtin_v8.rs
++++ b/libs/core/ops_builtin_v8.rs
+@@ -349,12 +349,12 @@
+           Some(&origin),
+           v8::CachedData::new(code_cache_data),
+         );
+-        let script = v8::script_compiler::compile(
++        let script = crate::modules::dnr_profile_compile("script", || v8::script_compiler::compile(
+           tc_scope,
+           &mut source,
+           v8::script_compiler::CompileOptions::ConsumeCodeCache,
+           v8::script_compiler::NoCacheReason::NoReason,
+-        );
++        ));
+         // Check if the provided code cache is rejected by V8.
+         let rejected = match source.get_cached_data() {
+           Some(cached_data) => cached_data.rejected(),
+@@ -372,7 +372,7 @@
+     })
+     .unwrap_or_else(|| (None, None));
+   let script = maybe_script
+-    .unwrap_or_else(|| v8::Script::compile(tc_scope, source, Some(&origin)));
++    .unwrap_or_else(|| crate::modules::dnr_profile_compile("script", || v8::Script::compile(tc_scope, source, Some(&origin))));
+ 
+   let null = v8::null(tc_scope);
+   let script = match script {
+@@ -396,7 +396,7 @@
+     && let Some(cb) = state.eval_context_code_cache_ready_cb.borrow().as_ref()
+   {
+     let unbound_script = script.get_unbound_script(tc_scope);
+-    let code_cache = unbound_script.create_code_cache().ok_or_else(|| {
++    let code_cache = crate::modules::dnr_profile_compile("serialize", || unbound_script.create_code_cache()).ok_or_else(|| {
+       JsErrorBox::type_error(
+         "Unable to get code cache from unbound module script",
+       )
+@@ -474,7 +474,16 @@
+     .borrow()
+     .as_ref()
+     .map(|cb| {
+-      let source_units = code_cache_source_units(tc_scope, source);
++      let mut source_units = code_cache_source_units(tc_scope, source);
++      // Function parameters affect the compiled meaning even when the body and URL match.
++      // Append length-delimited UTF-16 parameters only to the cache key, never the V8 source.
++      source_units.extend([0, 0xffff, 1]);
++      for param in &params {
++        let units = code_cache_source_units(tc_scope, *param);
++        let n = units.len() as u64;
++        source_units.extend([n as u16, (n >> 16) as u16, (n >> 32) as u16, (n >> 48) as u16]);
++        source_units.extend(units);
++      }
+       // A cache backend that can't answer must not fail the compile: degrade
+       // to an uncached compile and don't arm the write side either.
+       let Ok(code_cache) = cb(&specifier, &source_units) else {
+@@ -486,14 +495,14 @@
+           Some(&origin),
+           v8::CachedData::new(code_cache_data),
+         );
+-        let function = v8::script_compiler::compile_function(
++        let function = crate::modules::dnr_profile_compile("function", || v8::script_compiler::compile_function(
+           tc_scope,
+           &mut source,
+           &params,
+           &[],
+           v8::script_compiler::CompileOptions::ConsumeCodeCache,
+           v8::script_compiler::NoCacheReason::NoReason,
+-        );
++        ));
+         // Check if the provided code cache is rejected by V8.
+         let rejected = match source.get_cached_data() {
+           Some(cached_data) => cached_data.rejected(),
+@@ -515,14 +524,14 @@
+     Some(f) => f,
+     None => {
+       let mut source = v8::script_compiler::Source::new(source, Some(&origin));
+-      v8::script_compiler::compile_function(
++      crate::modules::dnr_profile_compile("function", || v8::script_compiler::compile_function(
+         tc_scope,
+         &mut source,
+         &params,
+         &[],
+         v8::script_compiler::CompileOptions::NoCompileOptions,
+         v8::script_compiler::NoCacheReason::NoReason,
+-      )
++      ))
+     }
+   };
+ 
+@@ -547,7 +556,7 @@
+   if let Some(code_cache_hash) = maybe_code_cache_hash
+     && let Some(cb) = state.eval_context_code_cache_ready_cb.borrow().as_ref()
+   {
+-    let code_cache = function.create_code_cache().ok_or_else(|| {
++    let code_cache = crate::modules::dnr_profile_compile("serialize", || function.create_code_cache()).ok_or_else(|| {
+       JsErrorBox::type_error("Unable to create code cache from function")
+     })?;
+     cb(specifier, code_cache_hash, &code_cache);
+--- a/libs/core/runtime/jsrealm.rs
++++ b/libs/core/runtime/jsrealm.rs
+@@ -484,7 +484,7 @@
+ 
+     v8::tc_scope!(let tc_scope, scope);
+ 
+-    let script = match v8::Script::compile(tc_scope, source, Some(&origin)) {
++    let script = match crate::modules::dnr_profile_compile("script", || v8::Script::compile(tc_scope, source, Some(&origin))) {
+       Some(script) => script,
+       None => {
+         let exception = tc_scope.exception().unwrap();
+@@ -539,12 +539,12 @@
+           Some(&origin),
+           v8::CachedData::new(data),
+         );
+-        let script = v8::script_compiler::compile(
++        let script = crate::modules::dnr_profile_compile("script", || v8::script_compiler::compile(
+           tc_scope,
+           &mut source,
+           v8::script_compiler::CompileOptions::ConsumeCodeCache,
+           v8::script_compiler::NoCacheReason::NoReason,
+-        );
++        ));
+         // Check if the provided code cache is rejected by V8.
+         let rejected = match source.get_cached_data() {
+           Some(cached_data) => cached_data.rejected(),
+@@ -561,7 +561,7 @@
+       };
+ 
+     let script = maybe_script
+-      .unwrap_or_else(|| v8::Script::compile(tc_scope, source, Some(&origin)));
++      .unwrap_or_else(|| crate::modules::dnr_profile_compile("script", || v8::Script::compile(tc_scope, source, Some(&origin))));
+ 
+     let script = match script {
+       Some(script) => script,
+--- a/runtime/code_cache.rs
++++ b/runtime/code_cache.rs
+@@ -24,3 +24,49 @@
+     data: &[u8],
+   );
+ }
++
++pub fn configure(js_runtime: &mut deno_core::JsRuntime, cache: Option<std::sync::Arc<dyn CodeCache>>) {
++    js_runtime
++      .set_eval_context_code_cache_cbs(cache.map(|cache| {
++      let cache_clone = cache.clone();
++      (
++        Box::new(move |specifier: &ModuleSpecifier, source: &[u16]| {
++          let source_hash = {
++            use std::hash::Hash;
++            use std::hash::Hasher;
++            let mut hasher = twox_hash::XxHash64::default();
++            source.hash(&mut hasher);
++            hasher.finish()
++          };
++          let data = cache
++            .get_sync(specifier, CodeCacheType::Script, source_hash)
++            .inspect(|_| {
++              // This log line is also used by tests.
++              log::debug!(
++                "V8 code cache hit for script: {specifier}, [{source_hash}]"
++              );
++            })
++            .map(std::borrow::Cow::Owned);
++          Ok(deno_core::SourceCodeCacheInfo {
++            data,
++            hash: source_hash,
++          })
++        }) as Box<dyn Fn(&_, &_) -> _>,
++        Box::new(
++          move |specifier: ModuleSpecifier, source_hash: u64, data: &[u8]| {
++            // This log line is also used by tests.
++            log::debug!(
++              "Updating V8 code cache for script: {specifier}, [{source_hash}]"
++            );
++            cache_clone.set_sync(
++              specifier,
++              CodeCacheType::Script,
++              source_hash,
++              data,
++            );
++          },
++        ) as Box<dyn Fn(_, _, &_)>,
++      )
++    }));
++
++}
+--- a/runtime/web_worker.rs
++++ b/runtime/web_worker.rs
+@@ -389,6 +389,7 @@
+   pub root_cert_store_provider: Option<Arc<dyn RootCertStoreProvider>>,
+   pub shared_array_buffer_store: Option<SharedArrayBufferStore>,
+   pub bundle_provider: Option<Arc<dyn deno_bundle_runtime::BundleProvider>>,
++  pub v8_code_cache: Option<Arc<dyn crate::code_cache::CodeCache>>,
+ }
+ 
+ pub struct WebWorkerOptions {
+@@ -675,6 +676,7 @@
+       ),
+       eval_context_code_cache_cbs: None,
+     });
++    crate::code_cache::configure(&mut js_runtime, services.v8_code_cache);
+ 
+     {
+       let state = js_runtime.op_state();
+--- a/runtime/worker.rs
++++ b/runtime/worker.rs
+@@ -30,7 +30,6 @@
+ use deno_core::PollEventLoopOptions;
+ use deno_core::RuntimeOptions;
+ use deno_core::SharedArrayBufferStore;
+-use deno_core::SourceCodeCacheInfo;
+ use deno_core::error::CoreError;
+ use deno_core::error::JsError;
+ use deno_core::v8;
+@@ -57,7 +56,6 @@
+ use crate::BootstrapOptions;
+ use crate::FeatureChecker;
+ use crate::code_cache::CodeCache;
+-use crate::code_cache::CodeCacheType;
+ use crate::deno_inspector_server::get_inspector_server;
+ use crate::ops;
+ use crate::shared::runtime;
+@@ -559,48 +557,7 @@
+       })
+     };
+ 
+-    js_runtime
+-      .set_eval_context_code_cache_cbs(services.v8_code_cache.map(|cache| {
+-      let cache_clone = cache.clone();
+-      (
+-        Box::new(move |specifier: &ModuleSpecifier, source: &[u16]| {
+-          let source_hash = {
+-            use std::hash::Hash;
+-            use std::hash::Hasher;
+-            let mut hasher = twox_hash::XxHash64::default();
+-            source.hash(&mut hasher);
+-            hasher.finish()
+-          };
+-          let data = cache
+-            .get_sync(specifier, CodeCacheType::Script, source_hash)
+-            .inspect(|_| {
+-              // This log line is also used by tests.
+-              log::debug!(
+-                "V8 code cache hit for script: {specifier}, [{source_hash}]"
+-              );
+-            })
+-            .map(Cow::Owned);
+-          Ok(SourceCodeCacheInfo {
+-            data,
+-            hash: source_hash,
+-          })
+-        }) as Box<dyn Fn(&_, &_) -> _>,
+-        Box::new(
+-          move |specifier: ModuleSpecifier, source_hash: u64, data: &[u8]| {
+-            // This log line is also used by tests.
+-            log::debug!(
+-              "Updating V8 code cache for script: {specifier}, [{source_hash}]"
+-            );
+-            cache_clone.set_sync(
+-              specifier,
+-              CodeCacheType::Script,
+-              source_hash,
+-              data,
+-            );
+-          },
+-        ) as Box<dyn Fn(_, _, &_)>,
+-      )
+-    }));
++    crate::code_cache::configure(&mut js_runtime, services.v8_code_cache);
+ 
+     js_runtime
+       .op_state()

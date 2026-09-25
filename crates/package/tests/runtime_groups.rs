@@ -1,5 +1,5 @@
 //! Real Node-API, dependent shared libraries, process paths and persistent groups.
-use dnr_package::{PackOptions, PackageConfig, pack_with_config};
+use dnr_package::{PackOptions, PackageConfig, pack_with_version};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -26,7 +26,7 @@ fn compile(source: &Path, destination: &Path, flags: &[&str]) {
     successful(cc.output().unwrap());
     fs::remove_file(source).unwrap();
 }
-fn fixture() -> (tempfile::TempDir, PathBuf) {
+fn fixture(version: u32) -> (tempfile::TempDir, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("source");
     let group = source.join("node_modules/native-fixture");
@@ -131,7 +131,7 @@ console.log(JSON.stringify(p));
         "native":{"addons":[{"path":"node_modules/native-fixture/addon.node","napi":8}],"executables":["node_modules/native-fixture/tool"],"libraries":[format!("node_modules/native-fixture/{libname}")]}
     }]})).unwrap();
     let package = temp.path().join("application.dnp");
-    pack_with_config(
+    pack_with_version(
         &PackOptions {
             directory: source,
             entry: "main.ts".into(),
@@ -142,6 +142,7 @@ console.log(JSON.stringify(p));
             force: false,
         },
         &config,
+        version,
     )
     .unwrap();
     let fallback = temp.path().join("node_modules/native-fixture");
@@ -162,7 +163,7 @@ fn run(package: &Path, cache: &Path, arguments: &[&str]) -> Output {
 #[test]
 #[ignore = "requires a rebuilt DNR_BIN and C compiler"]
 fn native_group_paths_subprocesses_and_warm_reuse() {
-    let (temp, package) = fixture();
+    let (temp, package) = fixture(2);
     let cache = temp.path().join("cache");
     let paths: serde_json::Value =
         serde_json::from_str(successful(run(&package, &cache, &["read"])).trim()).unwrap();
@@ -194,7 +195,7 @@ fn native_group_paths_subprocesses_and_warm_reuse() {
 #[test]
 #[ignore = "requires a rebuilt DNR_BIN and C compiler"]
 fn install_cli_and_parallel_cold_starts() {
-    let (temp, package) = fixture();
+    let (temp, package) = fixture(2);
     let cache = temp.path().join("cache");
     let mut children: Vec<_> = (0..4)
         .map(|_| {
@@ -254,5 +255,86 @@ fn install_cli_and_parallel_cold_starts() {
             .env("DNR_CACHE_DIR", &cache)
             .output()
             .unwrap(),
+    );
+}
+
+#[test]
+#[ignore = "requires a rebuilt DNR_BIN and C compiler"]
+fn v3_native_groups_ffi_subprocesses_and_sidecar() {
+    let (temp, package) = fixture(3);
+    let cache = temp.path().join("cache");
+    let paths: serde_json::Value =
+        serde_json::from_str(successful(run(&package, &cache, &["read"])).trim()).unwrap();
+    let native = PathBuf::from(paths["addon"].as_str().unwrap());
+    assert!(
+        !native.exists(),
+        "compilation must not extract native groups"
+    );
+    successful(run(&package, &cache, &[]));
+    let stamp = fs::metadata(&native).unwrap().modified().unwrap();
+    successful(run(&package, &cache, &[]));
+    assert_eq!(stamp, fs::metadata(&native).unwrap().modified().unwrap());
+    let dest = temp.path().join("installed");
+    fs::create_dir_all(dest.join("node_modules/native-fixture")).unwrap();
+    fs::write(
+        dest.join("node_modules/native-fixture/disk-only.txt"),
+        "disk fallback",
+    )
+    .unwrap();
+    let install_cache = temp.path().join("install-must-not-write");
+    successful(
+        Command::new(binary())
+            .arg("install")
+            .arg(&package)
+            .arg(&dest)
+            .env("DNR_CACHE_DIR", &install_cache)
+            .output()
+            .unwrap(),
+    );
+    assert!(!install_cache.exists());
+    let sidecar: serde_json::Value = serde_json::from_str(
+        successful(run(
+            &dest.join("application.dnp"),
+            &temp.path().join("compile-only"),
+            &[],
+        ))
+        .trim(),
+    )
+    .unwrap();
+    assert!(
+        sidecar["addon"]
+            .as_str()
+            .unwrap()
+            .contains("application.dnp.unpacked/v3/")
+    );
+    let full = temp.path().join("full");
+    successful(
+        Command::new(binary())
+            .arg("install")
+            .arg(&package)
+            .arg(&full)
+            .args(["--mode", "full"])
+            .env("DNR_CACHE_DIR", &install_cache)
+            .output()
+            .unwrap(),
+    );
+    assert!(!install_cache.exists());
+    fs::write(
+        full.join("node_modules/native-fixture/disk-only.txt"),
+        "disk fallback",
+    )
+    .unwrap();
+    // Full installations intentionally have ordinary mutable disk semantics.
+    let main = fs::read_to_string(full.join("main.ts")).unwrap();
+    let main = main
+        .lines()
+        .filter(|line| !line.starts_with("try { Deno.writeTextFileSync(p.data,"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(full.join("main.ts"), main).unwrap();
+    let full_paths: serde_json::Value =
+        serde_json::from_str(successful(run(&full, &cache, &[])).trim()).unwrap();
+    assert!(
+        Path::new(full_paths["addon"].as_str().unwrap()).starts_with(full.canonicalize().unwrap())
     );
 }

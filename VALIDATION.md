@@ -913,3 +913,11 @@ macOS 证据沿用上文 2026-09-20 的记录；未执行 X11、其他 GPU/发�
 - pi 提交已推送 origin 的 `codex/deepseek-responses` 与 GitHub `main`；Songjian 已推送
   origin `main`。pi 源码配方固定到 v2 实现提交，下一次预编译包使用独立打包标签
   `pi-dnr-v0.86.0-2`；本轮仅推送其分支，没有移动旧标签或发布新的 pi Release。
+
+## v0.3.0：2026-09-25 macOS ARM64
+
+v3 格式、路径分代缓存、V8/转译缓存、SQLite 辅助索引、硬链接和两种安装模式已完成本机验证。19 项 runtime/原生测试、Pi 两种部署的离线烟雾、PTY 交互回复和真实 WebView/窗口生命周期通过。
+
+最终同内容 Pi help 基准：关闭缓存 252.33 ms，暖缓存 208.40 ms，首次填充 324.09 ms（中位数，每组 30 次，随机交替）。详细范围、探针边界、原始数据和产物摘要见 [v3 验证报告](docs/V3-VALIDATION.md)。
+
+Linux / system-CEF 本轮未验证，用户已确认保留此状态；未安装远端依赖。没有替换系统安装或发布 v0.3.0。

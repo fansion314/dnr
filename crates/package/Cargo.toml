@@ -17,6 +17,8 @@ tempfile.workspace = true
 zip.workspace = true
 sha2 = "0.10.9"
 globset = "0.4.18"
+crc32fast = "1.5.0"
+rusqlite = { version = "0.40.0", features = ["bundled", "fallible_uint"] }
 
 # sha2 0.10 gates AArch64's runtime-detected hardware backend behind asm.
 # x86_64 already selects its accelerated backend without this feature.

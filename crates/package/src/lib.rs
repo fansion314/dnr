@@ -16,13 +16,15 @@ pub mod config;
 mod contents;
 mod materialize;
 mod native;
+pub mod persistent;
 mod reader;
 mod v2;
+pub mod v3;
 pub use config::PackageConfig;
 pub use materialize::{NativeCacheStats, NativeUse, cache_directory};
 pub use v2::Integrity;
 
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 pub const MARKER: &str = "# DNRZIP1\n";
 pub const MANIFEST: &str = ".dnr/manifest.json";
 pub const DEFAULT_CACHE_BYTES: usize = 256 * 1024 * 1024;
@@ -234,15 +236,27 @@ fn identity(options: &PackOptions) -> String {
 
 /// Legacy v1 writer. New packages should use `pack_with_config` (an empty config is valid).
 pub fn pack(options: &PackOptions) -> Result<PackReport> {
-    pack_internal(options, None)
+    pack_internal(options, None, 1)
 }
 
 /// Build format v2. Configuration has already been reviewed by the packager.
 pub fn pack_with_config(options: &PackOptions, config: &PackageConfig) -> Result<PackReport> {
-    pack_internal(options, Some(config))
+    pack_internal(options, Some(config), 2)
 }
 
-fn pack_internal(options: &PackOptions, config: Option<&PackageConfig>) -> Result<PackReport> {
+pub fn pack_with_version(
+    options: &PackOptions,
+    config: &PackageConfig,
+    version: u32,
+) -> Result<PackReport> {
+    ensure!(matches!(version, 2 | 3), "output format must be 2 or 3");
+    pack_internal(options, Some(config), version)
+}
+fn pack_internal(
+    options: &PackOptions,
+    config: Option<&PackageConfig>,
+    version: u32,
+) -> Result<PackReport> {
     ensure!(options.directory.is_dir(), "input must be a directory");
     let entry = normalized_name(&options.entry)?;
     ensure!(!entry.starts_with(".dnr/"), "reserved entrypoint");
@@ -279,9 +293,85 @@ fn pack_internal(options: &PackOptions, config: Option<&PackageConfig>) -> Resul
             &output,
         )?;
     }
-    let prepared = config
+    let mut prepared = config
         .map(|c| v2::prepare(c, &mut entries, &excludes, &output))
         .transpose()?;
+    if version == 3 {
+        let prepared = prepared.as_mut().unwrap();
+        let mut records = BTreeMap::new();
+        let linked_groups: std::collections::HashSet<_> = prepared
+            .records
+            .values()
+            .filter(|r| r.kind == "symlink")
+            .filter_map(|r| r.group.clone())
+            .collect();
+        let mut group_roots: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for record in prepared.records.values() {
+            if let Some(group) = record.group.as_ref().filter(|g| linked_groups.contains(*g)) {
+                let mut paths = vec![record.path.clone()];
+                if let Some(link) = &record.link {
+                    paths.push(resolve_link(&record.path, link)?);
+                }
+                for path in paths {
+                    let components: Vec<String> = path
+                        .split('/')
+                        .filter(|p| !p.is_empty())
+                        .map(str::to_owned)
+                        .collect();
+                    group_roots
+                        .entry(group.clone())
+                        .and_modify(|root| {
+                            let shared = root
+                                .iter()
+                                .zip(&components)
+                                .take_while(|(a, b)| a == b)
+                                .count();
+                            root.truncate(shared);
+                        })
+                        .or_insert(components);
+                }
+            }
+        }
+        let mut containers = BTreeMap::new();
+        for (n, (old, mut record)) in std::mem::take(&mut prepared.records)
+            .into_iter()
+            .enumerate()
+        {
+            if old.starts_with(".dnr/payloads/") {
+                // Relative links impose a real layout constraint. Keep these groups together
+                // so physical extraction cannot turn a contained logical link into an escape.
+                let name = if record
+                    .group
+                    .as_ref()
+                    .is_some_and(|g| linked_groups.contains(g))
+                {
+                    let container = containers
+                        .entry((record.group.clone(), record.target.clone()))
+                        .or_insert(n);
+                    let root = group_roots[record.group.as_ref().unwrap()].join("/");
+                    let suffix = if record.path == root {
+                        ""
+                    } else if root.is_empty() {
+                        &record.path
+                    } else {
+                        record.path.strip_prefix(&format!("{root}/")).unwrap()
+                    };
+                    if suffix.is_empty() {
+                        format!(".dnr/p/{container:06}")
+                    } else {
+                        format!(".dnr/p/{container:06}/{suffix}")
+                    }
+                } else {
+                    format!(".dnr/p/{n:06}-{}", record.path.rsplit('/').next().unwrap())
+                };
+                let source = entries.remove(&old).unwrap();
+                entries.insert(name.clone(), source);
+                record.source = name;
+            }
+            records.insert(record.source.clone(), record);
+        }
+        prepared.records = records;
+    }
     let entry_path = entries
         .get(&entry)
         .context("entrypoint is missing or excluded")?;
@@ -292,14 +382,17 @@ fn pack_internal(options: &PackOptions, config: Option<&PackageConfig>) -> Resul
         "invalid app id"
     );
     let manifest = Manifest {
-        format_version: if config.is_some() { FORMAT_VERSION } else { 1 },
+        format_version: version,
         entry: entry.clone(),
         app_id,
         targets: config.map(|c| c.targets.clone()).unwrap_or_default(),
         groups: config
             .map(|c| c.groups.iter().map(|g| g.id.clone()).collect())
             .unwrap_or_default(),
-        integrity: prepared.as_ref().map(|p| p.integrity()),
+        integrity: prepared
+            .as_ref()
+            .filter(|_| version == 2)
+            .map(|p| p.integrity()),
     };
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     let quoted_entry = entry.replace('\'', "'\\''");
@@ -314,11 +407,28 @@ fn pack_internal(options: &PackOptions, config: Option<&PackageConfig>) -> Resul
         .compression_method(CompressionMethod::Zstd)
         .compression_level(Some(6))
         .unix_permissions(0o644);
-    zip.start_file(MANIFEST, file_options)?;
-    zip.write_all(&serde_json::to_vec(&manifest)?)?;
-    if let Some(p) = &prepared {
-        zip.start_file(v2::INDEX, file_options)?;
-        zip.write_all(&p.bytes)?;
+    if version == 3 {
+        zip.start_file(
+            v3::META,
+            SimpleFileOptions::default()
+                .compression_method(CompressionMethod::Stored)
+                .unix_permissions(0o644),
+        )?;
+        let records = prepared
+            .as_ref()
+            .unwrap()
+            .records
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        zip.write_all(&v3::encode(&manifest, &records)?)?;
+    } else {
+        zip.start_file(MANIFEST, file_options)?;
+        zip.write_all(&serde_json::to_vec(&manifest)?)?;
+        if let Some(p) = &prepared {
+            zip.start_file(v2::INDEX, file_options)?;
+            zip.write_all(&p.bytes)?;
+        }
     }
     let mut source_bytes = 0;
     for (name, source) in &entries {
@@ -472,6 +582,10 @@ pub struct Package {
     v2: Option<v2::State>,
     materialized: materialize::Groups,
     raw_entries: BTreeMap<String, Entry>,
+    pub source_path: PathBuf,
+    metadata_bytes: Vec<u8>,
+    source_stamp: persistent::SourceStamp,
+    generation: std::sync::OnceLock<Arc<persistent::Generation>>,
 }
 impl std::fmt::Debug for Package {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -489,18 +603,49 @@ impl Package {
     pub fn open_for_target(path: &Path, budget: usize, target: Option<&str>) -> Result<Self> {
         let path = path.canonicalize()?;
         let mut file = File::open(&path)?;
+        let source_stamp = persistent::SourceStamp::from_metadata(&file.metadata()?);
         let offset = zip_offset(&mut file)?;
+        let prefix = v3::read_prefix(&mut file, offset)?;
         let mut archive = ZipArchive::new(reader::PackageReader::new(file, offset)?)?;
-        let manifest_bytes = {
-            let mut source = archive.by_name(MANIFEST)?;
-            ensure!(source.size() <= 65536, "oversized manifest");
+        let is_v3 = archive.index_for_name(v3::META).is_some();
+        let manifest_bytes = if let Some(bytes) = prefix {
+            let metadata = archive.by_index(0)?;
+            ensure!(
+                metadata.name() == v3::META
+                    && metadata.compression() == CompressionMethod::Stored
+                    && metadata.size() == bytes.len() as u64
+                    && metadata.crc32() == crc32fast::hash(&bytes),
+                "metadata local/central header mismatch"
+            );
+            bytes
+        } else {
+            ensure!(!is_v3, "v3 metadata must be the first ZIP entry");
+            let mut source = archive.by_name(if is_v3 { v3::META } else { MANIFEST })?;
+            if is_v3 {
+                ensure!(
+                    source.compression() == CompressionMethod::Stored && source.size() <= v3::LIMIT,
+                    "invalid v3 metadata entry"
+                );
+            }
+            ensure!(
+                source.size() <= if is_v3 { v3::LIMIT } else { 65536 },
+                "oversized manifest"
+            );
             let mut bytes = Vec::new();
             source.read_to_end(&mut bytes)?;
             bytes
         };
-        let manifest: Manifest = serde_json::from_slice(&manifest_bytes)?;
+        let metadata = if is_v3 {
+            Some(v3::decode(&manifest_bytes)?)
+        } else {
+            None
+        };
+        let manifest: Manifest = match &metadata {
+            Some(m) => m.manifest.clone(),
+            None => serde_json::from_slice(&manifest_bytes)?,
+        };
         ensure!(
-            matches!(manifest.format_version, 1 | 2),
+            matches!(manifest.format_version, 1..=3),
             "unsupported DNR format: {}",
             manifest.format_version
         );
@@ -523,13 +668,14 @@ impl Package {
             modes.push(file.unix_mode().unwrap_or(0o644) & 0o777);
             let name = normalized_name(file.name().trim_end_matches('/'))?;
             ensure!(seen.insert(name.clone()), "duplicate archive path: {name}");
-            if name == MANIFEST {
+            if name == if is_v3 { v3::META } else { MANIFEST } {
                 continue;
             }
             ensure!(
                 !name.starts_with(".dnr/")
                     || (manifest.format_version == 2
-                        && (name == v2::INDEX || name.starts_with(".dnr/payloads/"))),
+                        && (name == v2::INDEX || name.starts_with(".dnr/payloads/")))
+                    || (is_v3 && name.starts_with(".dnr/p/")),
                 "unknown reserved entry: {name}"
             );
             let kind = if file.is_dir() {
@@ -553,7 +699,17 @@ impl Package {
                 },
             );
         }
-        let (v2, mut entries, raw_entries) = if manifest.format_version == 2 {
+        let (v2, mut entries, raw_entries) = if let Some(metadata) = metadata {
+            let (state, view) = v2::State::from_records(
+                &manifest,
+                metadata.content_hash,
+                metadata.records,
+                &entries,
+                &modes,
+                target,
+            )?;
+            (Some(state), view, entries)
+        } else if manifest.format_version == 2 {
             let (state, view) = v2::State::open(
                 &manifest,
                 &manifest_bytes,
@@ -618,6 +774,10 @@ impl Package {
             v2,
             materialized,
             raw_entries,
+            source_path: path,
+            metadata_bytes: manifest_bytes,
+            source_stamp,
+            generation: Default::default(),
         })
     }
 
@@ -686,6 +846,45 @@ impl Package {
             }
             Ok(bytes.into())
         })
+    }
+    pub fn finish_cache(&self) {
+        if let Some(generation) = self.generation.get() {
+            generation.finish();
+        }
+    }
+    pub fn cache_generation(&self) -> Result<Arc<persistent::Generation>> {
+        ensure!(
+            self.manifest.format_version == 3,
+            "v3 cache requires a v3 package"
+        );
+        if let Some(generation) = self.generation.get() {
+            return Ok(generation.clone());
+        }
+        let base = self.materialized.cache_base()?;
+        let value = persistent::Generation::open(
+            &base,
+            &self.source_path,
+            self.package_id().unwrap(),
+            &self.manifest.app_id,
+            &self.source_stamp,
+        )?;
+        let _ = self.generation.set(value);
+        Ok(self.generation.get().unwrap().clone())
+    }
+    pub fn inspect(&self) -> Result<serde_json::Value> {
+        let records = if self.manifest.format_version == 3 {
+            serde_json::to_value(v3::decode(&self.metadata_bytes)?.records)?
+        } else if self.manifest.format_version == 2 {
+            let mut archive = self.archive.clone();
+            let mut bytes = Vec::new();
+            archive.by_name(v2::INDEX)?.read_to_end(&mut bytes)?;
+            serde_json::from_slice(&bytes)?
+        } else {
+            serde_json::json!([])
+        };
+        Ok(
+            serde_json::json!({"manifest": self.manifest, "records": records, "archiveEntries": self.archive_names()?, "contentHash": self.package_id(), "packageId": self.package_id()}),
+        )
     }
     pub fn stats(&self) -> CacheStats {
         self.cache.stats()

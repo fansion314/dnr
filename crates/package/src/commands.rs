@@ -12,30 +12,63 @@ use std::{
 
 pub fn run(args: &[String]) -> Result<bool> {
     match args.first().map(String::as_str) {
-        Some("install") => install(&args[1..])?,
+        Some("install") => install(&args[1..], false)?,
         Some("cache") => cache(&args[1..])?,
         _ => return Ok(false),
     }
     Ok(true)
 }
-fn install(args: &[String]) -> Result<()> {
-    const HELP: &str = "usage: dnr install <application.dnp> [directory] [--force]";
+pub fn install(args: &[String], require_directory: bool) -> Result<()> {
+    const HELP: &str = "usage: install <application.dnp> [directory] [--mode native|full] [--target <id>] [--force]";
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!("{HELP}");
         return Ok(());
     }
-    let force = args.iter().any(|a| a == "--force");
-    let positional: Vec<_> = args.iter().filter(|a| a.as_str() != "--force").collect();
+    let mut positional = Vec::new();
+    let mut force = false;
+    let mut mode = "native";
+    let mut target = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--force" => force = true,
+            "--mode" => mode = args.next().context("--mode needs a value")?,
+            "--target" => target = Some(args.next().context("--target needs a value")?.as_str()),
+            value if value.starts_with("--") => bail!("unknown install option: {value}"),
+            _ => positional.push(arg),
+        }
+    }
     ensure!((1..=2).contains(&positional.len()), "{HELP}");
-    let source = Path::new(positional[0]);
-    let package = Package::open(source, 0)?;
+    ensure!(matches!(mode, "native" | "full"), "invalid install mode");
     ensure!(
-        package.package_id().is_some(),
-        "install requires format v2; repack this application with dnc"
+        !(require_directory || mode == "full") || positional.len() == 2,
+        "this install requires a directory"
     );
+    let source = Path::new(positional[0]);
+    let package = Package::open_for_target(source, 0, target)?;
+    ensure!(package.package_id().is_some(), "install requires v2 or v3");
+    if mode == "full" {
+        ensure!(
+            package.manifest.format_version == 3,
+            "full installation requires v3"
+        );
+        package.install_full(Path::new(positional[1]), force)?;
+        println!("Installed full application in {}", positional[1]);
+        return Ok(());
+    }
     if positional.len() == 1 {
         let base = cache_directory()?;
-        package.prepare_at(&base)?;
+        if package.manifest.format_version == 3 {
+            let generation = package.cache_generation()?;
+            for group in &package.manifest.groups {
+                if package.v2.as_ref().unwrap().group_indices(group).is_some() {
+                    package.prepare_group(group)?;
+                }
+            }
+            generation.notify_index();
+        } else {
+            package.prepare_at(&base)?;
+        }
         println!(
             "Prepared {} ({}) in {}",
             package.manifest.app_id,
@@ -83,12 +116,13 @@ fn install(args: &[String]) -> Result<()> {
     std::io::copy(&mut fs::File::open(source)?, &mut stage)?;
     stage.flush()?;
     stage.as_file().sync_all()?;
-    let copied = Package::open(stage.path(), 0)?;
+    let copied = Package::open_for_target(stage.path(), 0, target)?;
     ensure!(
         copied.package_id() == package.package_id(),
         "source changed during installation"
     );
     copied.prepare_at(&sidecar(&destination))?;
+    publish_permissions(&sidecar(&destination))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -117,19 +151,20 @@ struct Cached {
     receipt: Receipt,
     partial: bool,
 }
-fn scan(base: &Path) -> Result<Vec<Cached>> {
+fn scan(base: &Path, format: u32) -> Result<Vec<Cached>> {
     let mut result = Vec::new();
-    let mut queue = vec![(base.join("v2"), 0)];
+    let mut queue = vec![(base.join(format!("v{format}")), 0)];
+    let max_depth = if format == 3 { 3 } else { 4 };
     while let Some((path, depth)) = queue.pop() {
         let meta = match fs::symlink_metadata(&path) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(e.into()),
         };
-        if !meta.is_dir() || meta.file_type().is_symlink() || depth > 4 {
+        if !meta.is_dir() || meta.file_type().is_symlink() || depth > max_depth {
             continue;
         }
-        if depth == 4 {
+        if depth == max_depth {
             let (receipt_path, partial) = if path.join("receipt.json").is_file() {
                 (path.join("receipt.json"), false)
             } else {
@@ -149,13 +184,13 @@ fn scan(base: &Path) -> Result<Vec<Cached>> {
                         .package_id
                         .bytes()
                         .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
-                if receipt.format == 2
+                if receipt.format == format
                     && valid_id
                     && crate::config::identifier(&receipt.group).is_ok()
                     && crate::config::identifier(&receipt.target).is_ok()
                     && id.file_name().unwrap() == receipt.package_id.as_str()
                     && target.file_name().unwrap() == receipt.target.as_str()
-                    && shard.file_name().unwrap() == &receipt.package_id[..2]
+                    && (format == 3 || shard.file_name().unwrap() == &receipt.package_id[..2])
                     && (path.file_name().unwrap() == receipt.group.as_str()
                         || (partial
                             && path
@@ -184,42 +219,58 @@ fn scan(base: &Path) -> Result<Vec<Cached>> {
     Ok(result)
 }
 fn cache(args: &[String]) -> Result<()> {
-    const HELP: &str = "usage: dnr cache <list|info|clean> [--directory <install-directory>] [--package <id-prefix>|--all] [--dry-run]";
+    const HELP: &str = "usage: dnr cache <list|info|clean|rebuild> [--directory <install-directory>] [--package <id-prefix>|--path <package-path>|--all|--stale] [--dry-run]";
     if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
         println!("{HELP}");
         return Ok(());
     }
     let command = &args[0];
     ensure!(
-        matches!(command.as_str(), "list" | "info" | "clean"),
+        matches!(command.as_str(), "list" | "info" | "clean" | "rebuild"),
         "{HELP}"
     );
     let mut directory = None;
+    let mut package_path = None;
+    let mut stale = false;
     let mut prefix = None;
     let mut all = false;
     let mut dry = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--directory" | "--package" => {
+            "--directory" | "--package" | "--path" => {
                 let value = args.get(i + 1).context("option requires a value")?;
                 if args[i] == "--directory" {
                     directory = Some(PathBuf::from(value));
+                } else if args[i] == "--path" {
+                    package_path = Some(PathBuf::from(value));
                 } else {
                     prefix = Some(value.clone());
                 }
                 i += 1;
             }
             "--all" => all = true,
+            "--stale" => stale = true,
             "--dry-run" => dry = true,
             value => bail!("unknown cache option: {value}"),
         }
         i += 1;
     }
-    ensure!(!(all && prefix.is_some()), "choose --all or --package");
     ensure!(
-        command != "clean" || all || prefix.is_some(),
-        "clean requires --all or --package"
+        !(all && (prefix.is_some() || package_path.is_some())),
+        "choose --all or a package selector"
+    );
+    ensure!(
+        directory.is_none() || (package_path.is_none() && !stale && command != "rebuild"),
+        "--directory cannot be combined with --path, --stale or rebuild"
+    );
+    ensure!(
+        command != "rebuild" || (!all && !stale && prefix.is_none() && package_path.is_none()),
+        "rebuild does not accept package selectors"
+    );
+    ensure!(
+        command != "clean" || all || prefix.is_some() || package_path.is_some() || stale,
+        "clean requires --all, --package, --path or --stale"
     );
     if let Some(p) = &prefix {
         ensure!(
@@ -227,6 +278,42 @@ fn cache(args: &[String]) -> Result<()> {
             "invalid package ID prefix"
         );
     }
+    let mut prefix = prefix.map(|p| p.to_ascii_lowercase());
+    if directory.is_none()
+        && let Some(query_prefix) = &prefix
+    {
+        // Check ambiguity across both formats before deleting anything.
+        let base = cache_directory()?;
+        let mut ids = std::collections::BTreeSet::new();
+        for item in scan(&base, 2)? {
+            if item.receipt.package_id.starts_with(query_prefix) {
+                ids.insert(item.receipt.package_id);
+            }
+        }
+        for path in crate::persistent::catalog::directories(&base)? {
+            let id = path.file_name().unwrap().to_string_lossy().into_owned();
+            if id.starts_with(query_prefix) {
+                ids.insert(id);
+            }
+        }
+        ensure!(ids.len() <= 1, "ambiguous package ID prefix");
+        ensure!(!ids.is_empty(), "no matching cached package");
+        prefix = ids.into_iter().next();
+    }
+    if directory.is_none() {
+        crate::persistent::catalog::command(
+            &cache_directory()?,
+            command,
+            package_path.as_deref(),
+            prefix.as_deref(),
+            stale,
+            dry,
+        )?;
+        if command == "rebuild" || package_path.is_some() || stale {
+            return Ok(());
+        }
+    }
+    let sidecars = directory.is_some();
     let bases = if let Some(directory) = directory {
         let mut bases = Vec::new();
         for entry in fs::read_dir(directory)? {
@@ -243,7 +330,10 @@ fn cache(args: &[String]) -> Result<()> {
     };
     let mut entries = Vec::new();
     for base in bases {
-        entries.extend(scan(&base)?);
+        entries.extend(scan(&base, 2)?);
+        if sidecars {
+            entries.extend(scan(&base, 3)?);
+        }
     }
     if let Some(prefix) = prefix {
         let prefix = prefix.to_ascii_lowercase();
@@ -253,7 +343,7 @@ fn cache(args: &[String]) -> Result<()> {
             .map(|e| &e.receipt.package_id)
             .collect::<std::collections::BTreeSet<_>>();
         ensure!(ids.len() <= 1, "ambiguous package ID prefix");
-        ensure!(!ids.is_empty(), "no matching cached package");
+        ensure!(!sidecars || !ids.is_empty(), "no matching cached package");
     }
     let mut bytes = 0u64;
     let mut count = 0;
@@ -311,4 +401,25 @@ fn directory_bytes(path: &Path) -> Result<u64> {
         }
     }
     Ok(bytes)
+}
+
+fn publish_permissions(root: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut queue = vec![root.to_owned()];
+    while let Some(path) = queue.pop() {
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                queue.push(entry.path());
+            } else if entry.file_type()?.is_file() {
+                let mode = entry.metadata()?.permissions().mode() & 0o777;
+                fs::set_permissions(
+                    entry.path(),
+                    fs::Permissions::from_mode(mode & !0o222 | 0o444),
+                )?;
+            }
+        }
+    }
+    Ok(())
 }

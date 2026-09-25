@@ -19,7 +19,7 @@ dnr 将运行时与应用内容分开发行，避免每个 Deno CLI/桌面应用
 3. 应用格式是 shell 启动头 + ZIP；普通文件按条目使用 Zstd level 6。启动头转发参数，manifest 保存入口、格式版本和 appId。
 4. dnc 只打包目录与显式 include/exclude 的资源，不执行前端构建、依赖安装、依赖图收集、转译或 minify。
 5. dnr 支持本地模块和准备好的 `node_modules`，运行时转译 TS/TSX/JSX；不在线获取 npm、JSR、HTTP 模块。应用自己的 `fetch`、HTTP 服务等网络 API 不受此范围限制。
-6. 应用默认全权限运行，不是沙箱。v2 包内 Node-API / FFI 库和程序必须在 manifest 的 group 中声明；首次原生加载/执行时整组准备，优先复用包旁预解压内容，其次复用用户持久缓存，否则校验后解压到用户缓存。普通读取不触发落盘；v1 保持原有临时库行为。ZIP 外的原生库继续从磁盘加载。详见 docs/NATIVE-PACKAGING.md。
+6. 应用默认全权限运行，不是沙箱。v2/v3 包内 Node-API / FFI 库和程序必须在 manifest 的 group 中声明；首次原生加载/执行时整组准备，优先复用包旁预解压内容，其次复用用户持久缓存，否则校验后解压到用户缓存。普通读取不触发落盘；v1 保持原有临时库行为。ZIP 外的原生库继续从磁盘加载。v3 默认启用用户 V8/转译缓存，同路径内容换代；完整安装可用 `dnr <目录>` 启动。详见 docs/NATIVE-PACKAGING.md 和 docs/CACHE.md。
 7. 实际调用需要 GUI 的桌面 API 时才启动后端。普通脚本、HTTP 服务和 CLI 异常不应打开窗口。
 8. 页面通过 `window.bindings.<name>()` 调用 `BrowserWindow.bind()`。窗口、托盘、后台 JS 任务和退出事件共同决定生命周期；不能在最后一个窗口关闭时直接终止仍有工作的应用。
 9. 按用户要求，dnc 支持 desktop manifest 驱动的 macOS ARM64 薄 `.app` 和 Arch/CachyOS x86_64 pacman 包；两者不携带运行时。macOS 原生启动器保留 bundle 身份；Linux 使用系统 makepkg。仍不包含 DMG/PKG 安装器、深链注册或自动更新。用法见 `docs/DESKTOP-PACKAGING.md`。
@@ -80,7 +80,7 @@ cargo run -p xtask -- build --debug
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime --test runtime_native --test runtime_groups -- --ignored
+DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime --test runtime_native --test runtime_groups --test runtime_cache -- --ignored
 ```
 
 原生测试默认被忽略；普通 `cargo test --workspace` 通过不能代表 runtime 已通过。原生测试还需要 C 编译器，会构建真实 Node-API 插件。文档修改检查路径和命令即可，不必重建 runtime。
@@ -110,7 +110,7 @@ cargo run -p xtask -- build
 file dist/dnr
 ldd dist/dnr
 cargo test --workspace
-DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime --test runtime_native --test runtime_groups -- --ignored
+DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime --test runtime_native --test runtime_groups --test runtime_cache -- --ignored
 dist/dnr examples/desktop/smoke.ts
 ```
 
@@ -145,7 +145,7 @@ pkg-config --modversion gtk+-3.0 xi x11
 cargo run -p xtask -- build --backend system-cef
 dist/dnr --check-system-cef
 ldd dist/dnr
-DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime --test runtime_native --test runtime_groups -- --ignored
+DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime --test runtime_native --test runtime_groups --test runtime_cache -- --ignored
 dist/dnr examples/desktop/smoke.ts
 PATH="$PWD/dist:$PATH" dist/desktop-smoke.dnp
 ```

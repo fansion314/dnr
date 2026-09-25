@@ -2,14 +2,14 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|s| s == "--version" || s == "-V") {
         println!(
-            "dnr 0.2.0 (Deno 2.9.7; Laufey 0.7.0; formats 1,2; backend {})",
+            "dnr 0.3.0 (Deno 2.9.7; Laufey 0.7.0; formats 1,2,3; backend {})",
             env!("DNR_BACKEND")
         );
         return;
     }
     if args.is_empty() || args.first().is_some_and(|s| s == "--help" || s == "-h") {
         println!(
-            "dnr <script.ts|application.dnp> [args...]\ndnr tree <application.dnp>\ndnr extract <application.dnp> <directory>\ndnr install <application.dnp> [directory] [--force]\ndnr cache <list|info|clean> [options]\n\nShared Deno runtime. Local modules and prepared node_modules only.\nDesktop activates on GUI API use. Applications run with full permissions.\nTree includes ZIP metadata; extract requires a new or empty directory.\nNative groups: dnc scan and --package-config; see docs/NATIVE-PACKAGING.md.\nUse explicit paths (./tree, ./install, ./cache) for scripts with command names."
+            "dnr [--no-code-cache] [--no-transpile-cache] <script.ts|application.dnp|installed-directory> [args...]\ndnr tree <application.dnp>\ndnr extract <application.dnp> <directory>\ndnr install <application.dnp> [directory] [--mode native|full] [--force]\ndnr cache <list|info|clean|rebuild> [options]\n\nShared Deno runtime. Local modules and prepared node_modules only.\nDesktop activates on GUI API use. Applications run with full permissions.\nTree includes ZIP metadata; extract requires a new or empty directory.\nNative groups: dnc scan and --package-config; see docs/NATIVE-PACKAGING.md.\nUse explicit paths (./tree, ./install, ./cache) for scripts with command names."
         );
         return;
     }

@@ -15,6 +15,24 @@ fn main() {
     deno_runtime::deno_webgpu::print_linker_flags("dnr");
     let root =
         PathBuf::from(std::env::var("DNR_ROOT").expect("build via cargo run -p xtask -- build"));
+    use std::hash::{Hash, Hasher};
+    let mut cache_id = std::collections::hash_map::DefaultHasher::new();
+    for file in [
+        "integration/deno.patch",
+        "integration/deno.Cargo.lock",
+        "integration/rt/dnr_cache.rs",
+        "integration/rt/dnr.rs",
+    ] {
+        let path = root.join(file);
+        println!("cargo:rerun-if-changed={}", path.display());
+        std::fs::read(path)
+            .expect("cache identity input")
+            .hash(&mut cache_id);
+    }
+    println!(
+        "cargo:rustc-env=DNR_CACHE_BUILD_ID={:016x}",
+        cache_id.finish()
+    );
     let backend = std::env::var("DNR_BACKEND").unwrap_or_else(|_| "webview".into());
     println!("cargo:rustc-env=DNR_BACKEND={backend}");
     println!("cargo:rerun-if-env-changed=DNR_BACKEND");

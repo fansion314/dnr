@@ -1,13 +1,15 @@
 mod desktop;
 
 use clap::Parser;
-use dnr_package::{Include, PackOptions, PackageConfig, pack_with_config};
+use dnr_package::{Include, PackOptions, PackageConfig, pack_with_version};
 use std::path::PathBuf;
 
 /// Package a prepared JS/TS application as .dnp or a thin desktop app.
 #[derive(Parser)]
 #[command(version)]
 struct Args {
+    #[arg(long, default_value_t = 3)]
+    format_version: u32,
     /// Directory containing the prepared application and its dependencies.
     directory: PathBuf,
     /// Entry module, relative to the application directory.
@@ -39,6 +41,27 @@ struct Args {
 
 fn main() -> anyhow::Result<()> {
     let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.first().is_some_and(|a| a == "cat") {
+        anyhow::ensure!(raw.len() == 3, "usage: dnc cat <package> <archive-path>");
+        let package = dnr_package::Package::open(std::path::Path::new(&raw[1]), 0)?;
+        use std::io::Write;
+        std::io::stdout()
+            .lock()
+            .write_all(&package.read_archive_file(&raw[2])?)?;
+        return Ok(());
+    }
+    if raw.first().is_some_and(|a| a == "inspect") {
+        anyhow::ensure!(
+            raw.len() == 3 && raw[2] == "--json",
+            "usage: dnc inspect <package> --json"
+        );
+        let package = dnr_package::Package::open(std::path::Path::new(&raw[1]), 0)?;
+        println!("{}", serde_json::to_string_pretty(&package.inspect()?)?);
+        return Ok(());
+    }
+    if raw.first().is_some_and(|a| a == "install") {
+        return dnr_package::commands::install(&raw[1..], true);
+    }
     if raw.first().is_some_and(|a| a == "scan") {
         #[derive(Parser)]
         struct Scan {
@@ -92,7 +115,7 @@ fn main() -> anyhow::Result<()> {
         app_id: args.app_id,
         force: args.force,
     };
-    let report = pack_with_config(&options, &config)?;
+    let report = pack_with_version(&options, &config, args.format_version)?;
     eprintln!(
         "{}: {} files, {} bytes → {} bytes",
         options.output.display(),

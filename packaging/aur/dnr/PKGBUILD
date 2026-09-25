@@ -1,6 +1,6 @@
 # Maintainer: Peilin Fan <peilin.fan@foxmail.com>
 pkgname=dnr
-pkgver=0.2.0
+pkgver=0.3.0
 pkgrel=1
 pkgdesc='Shared Deno runtime (system CEF)'
 arch=('x86_64')
@@ -35,7 +35,7 @@ check() {
     cd "$srcdir/dnr"
     cargo test --locked -p dnr-package -p xtask
     DNR_BIN="$srcdir/dnr/dist/dnr" cargo test --locked -p dnr-package \
-        --test runtime --test runtime_native --test runtime_groups -- --ignored
+        --test runtime --test runtime_native --test runtime_groups --test runtime_cache -- --ignored
     dist/dnr --check-system-cef
 }
 

@@ -1,6 +1,6 @@
 pkgbase = dnc
 	pkgdesc = Lightweight application packager for the shared dnr runtime
-	pkgver = 0.2.0
+	pkgver = 0.3.0
 	pkgrel = 1
 	url = https://github.com/fansion314/dnr
 	arch = x86_64
@@ -12,7 +12,7 @@ pkgbase = dnc
 	optdepends = base-devel: build Arch application packages with dnc
 	options = !lto
 	options = !debug
-	source = dnr::git+https://github.com/fansion314/dnr.git#tag=v0.2.0
+	source = dnr::git+https://github.com/fansion314/dnr.git#tag=v0.3.0
 	sha256sums = SKIP
 
 pkgname = dnc

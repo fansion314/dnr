@@ -4,6 +4,30 @@ use anyhow::{Context, Result, ensure};
 use std::{collections::BTreeMap, fs, io, path::Path};
 
 impl Package {
+    pub fn archive_names(&self) -> Result<Vec<String>> {
+        Ok(self
+            .contents()?
+            .into_values()
+            .map(|entry| {
+                if entry.kind == EntryKind::Directory {
+                    format!("{}/", entry.name)
+                } else {
+                    entry.name
+                }
+            })
+            .collect())
+    }
+
+    pub fn read_archive_file(&self, name: &str) -> Result<std::sync::Arc<[u8]>> {
+        let mut archive = self.archive.clone();
+        let source = archive.by_name(name)?;
+        ensure!(!source.is_dir(), "not an archive file");
+        drop(source);
+        let index = archive
+            .index_for_name(name)
+            .context("missing archive file")?;
+        self.read_index(index)
+    }
     // The runtime index intentionally hides metadata; archive tools include it.
     fn contents(&self) -> Result<BTreeMap<String, Entry>> {
         let mut entries = if self.v2.is_some() {
@@ -39,14 +63,19 @@ impl Package {
             size: 0,
         });
         let mut archive = self.archive.clone();
+        let metadata_name = if self.manifest.format_version == 3 {
+            crate::v3::META
+        } else {
+            MANIFEST
+        };
         let index = archive
-            .index_for_name(MANIFEST)
+            .index_for_name(metadata_name)
             .context("missing manifest")?;
         let file = archive.by_index(index)?;
         entries.insert(
-            MANIFEST.into(),
+            metadata_name.into(),
             Entry {
-                name: MANIFEST.into(),
+                name: metadata_name.into(),
                 kind: EntryKind::File,
                 index,
                 size: file.size(),
@@ -58,6 +87,82 @@ impl Package {
             }
         }
         Ok(entries)
+    }
+
+    pub(crate) fn install_full(&self, destination: &Path, force: bool) -> Result<()> {
+        self.check_platform()?;
+        let parent = destination
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        fs::create_dir_all(parent)?;
+        let parent = parent.canonicalize()?;
+        let destination = parent.join(destination.file_name().context("directory needs a name")?);
+        if destination.exists() {
+            let meta = fs::symlink_metadata(&destination)?;
+            ensure!(
+                meta.is_dir() && !meta.file_type().is_symlink(),
+                "invalid install directory"
+            );
+            ensure!(
+                fs::read_dir(&destination)?.next().is_none()
+                    || (force && crate::v3::installed_manifest(&destination).is_ok()),
+                "full install needs an empty directory or --force on an existing full installation"
+            );
+        }
+        let install_lock = destination.join(crate::v3::INSTALL_LOCK);
+        let lease = crate::persistent::lock_file(&install_lock)?;
+        lease
+            .try_lock()
+            .context("full installation is in use; retry after it exits")?;
+        let stage = tempfile::Builder::new()
+            .prefix(".dnr-install-")
+            .tempdir_in(&parent)?;
+        for entry in self.entries.values() {
+            let path = stage.path().join(&entry.name);
+            fs::create_dir_all(path.parent().unwrap())?;
+            match &entry.kind {
+                EntryKind::Directory => fs::create_dir_all(path)?,
+                EntryKind::Symlink(_) => {}
+                EntryKind::File => {
+                    let bytes = self.read_index(entry.index)?;
+                    use std::io::Write;
+                    let mut output = fs::File::create_new(&path)?;
+                    output.write_all(&bytes)?;
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut archive = self.archive.clone();
+                    let mode = archive.by_index(entry.index)?.unix_mode().unwrap_or(0o644) & 0o777;
+                    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+                }
+            }
+        }
+        for entry in self.entries.values() {
+            if let EntryKind::Symlink(link) = &entry.kind {
+                std::os::unix::fs::symlink(link, stage.path().join(&entry.name))?;
+            }
+        }
+        fs::create_dir_all(stage.path().join(".dnr"))?;
+        fs::write(
+            stage.path().join(crate::v3::INSTALL),
+            crate::v3::installation(&self.metadata_bytes, self.selected_target().unwrap())?,
+        )?;
+        fs::hard_link(&install_lock, stage.path().join(crate::v3::INSTALL_LOCK))?;
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(stage.path(), fs::Permissions::from_mode(0o755))?;
+        let backup = tempfile::Builder::new()
+            .prefix(".dnr-old-install-")
+            .tempdir_in(&parent)?;
+        let old = backup.path().join("old");
+        if destination.exists() {
+            fs::rename(&destination, &old)?;
+        }
+        if let Err(e) = fs::rename(stage.path(), &destination) {
+            if old.exists() {
+                fs::rename(&old, &destination)?;
+            }
+            return Err(e.into());
+        }
+        Ok(())
     }
 
     /// Print the ZIP tree, including metadata, without reading ordinary file bodies.

@@ -4115,10 +4115,12 @@ dependencies = [
 
 [[package]]
 name = "dnr-package"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
+ "crc32fast",
  "globset",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",

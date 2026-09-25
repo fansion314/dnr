@@ -87,9 +87,30 @@ dnr tree my-app.dnp
 dnr extract my-app.dnp ./my-app-unpacked
 ```
 
-Both commands include hidden entries and `.dnr/manifest.json`, and neither executes the app. `tree` reads the package index without decompressing ordinary files. `extract` requires a new or empty directory, verifies file contents before publishing the result, and preserves directories, symlinks, and ordinary Unix permissions. It extracts the ZIP contents, not the shell launcher header.
+Both commands include hidden entries and format metadata (`.dnr/meta.bin` in v3), and neither executes the app. `tree` reads the package index without decompressing ordinary files. `extract` requires a new or empty directory, verifies file contents before publishing the result, and preserves directories, symlinks, and ordinary Unix permissions. It extracts the ZIP contents, not the shell launcher header.
 
 Use `dnr tree --help`, `dnr extract --help`, or `dnc --help` for command help. To run a script named `tree` or `extract`, use an explicit path such as `dnr ./tree`.
+
+## Caching and installation (v0.3.0)
+
+New packages use format v3: one uncompressed binary metadata entry and short native payload paths.
+Use `dnc --format-version 2` for older runtimes; dnr still reads v1/v2 packages.
+V3 applications and their extensions automatically cache V8 compilation and TS/JSX output in the
+user cache. Updating the same package path replaces its cache generation while active older
+processes retain their leases. Source code and normal initialization are still required.
+
+```sh
+dnr install app.dnp ./installed             # dnp + native groups, no user-cache writes
+dnr install app.dnp ./source --mode full     # logical source/resources, no dnp
+dnr ./source                               # preserves appId and v3 compilation caches
+dnc inspect app.dnp --json                  # no runtime/GUI required
+dnc install app.dnp ./staging               # headless installation for package builders
+dnr cache rebuild                          # rebuild the optional SQLite catalog
+```
+
+Runtime native loading prefers validated sidecars; V8 and transpilation caches always use the
+user cache. `--no-code-cache` and `--no-transpile-cache` disable the respective compilation caches.
+See [cache and installation semantics](docs/CACHE.md) and [format v3](docs/FORMAT.md).
 
 ## Desktop apps
 
