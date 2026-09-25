@@ -93,15 +93,43 @@ fn main() {
         }
         println!("cargo:rustc-link-lib=c++");
     } else {
-        // GUI libraries are providers for generated dlopen imports, never ELF
-        // DT_NEEDED entries. Only the static backends and their jump table link.
-        println!("cargo:rustc-link-lib=static=dnr_gui_imports");
-        println!("cargo:rustc-link-lib=dl");
-        for flag in std::fs::read_to_string(output.join("gui-wrap-flags"))
-            .expect("generated GUI wrap flags")
-            .lines()
-        {
-            println!("cargo:rustc-link-arg-bin=dnr={flag}");
+        if backend == "dual" {
+            // GUI libraries are providers for generated dlopen imports, never ELF
+            // DT_NEEDED entries. Only the static backends and their jump table link.
+            println!("cargo:rustc-link-lib=static=dnr_gui_imports");
+            println!("cargo:rustc-link-lib=dl");
+            for flag in std::fs::read_to_string(output.join("gui-wrap-flags"))
+                .expect("generated GUI wrap flags")
+                .lines()
+            {
+                println!("cargo:rustc-link-arg-bin=dnr={flag}");
+            }
+        } else {
+            let packages: &[&str] = if backend == "system-cef" {
+                &["gtk+-3.0", "xi", "x11"]
+            } else {
+                &["webkit2gtk-4.1", "gtk+-3.0"]
+            };
+            let out = Command::new("pkg-config")
+                .arg("--libs")
+                .args(packages)
+                .output()
+                .expect("querying native backend libraries");
+            assert!(out.status.success(), "pkg-config failed");
+            for flag in String::from_utf8(out.stdout).unwrap().split_whitespace() {
+                if let Some(lib) = flag.strip_prefix("-l") {
+                    println!("cargo:rustc-link-lib={lib}");
+                } else if let Some(path) = flag.strip_prefix("-L") {
+                    println!("cargo:rustc-link-search=native={path}");
+                } else {
+                    println!("cargo:rustc-link-arg-bin=dnr={flag}");
+                }
+            }
+            if backend == "system-cef" {
+                println!("cargo:rustc-link-search=native=/usr/lib/cef");
+                println!("cargo:rustc-link-lib=cef");
+                println!("cargo:rustc-link-arg-bin=dnr=-Wl,-rpath,/usr/lib/cef");
+            }
         }
         println!("cargo:rustc-link-lib=stdc++");
         // Do not hide every Rust archive: without release LTO, Node-API

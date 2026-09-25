@@ -1104,3 +1104,86 @@ CEF helper 或显式 ABI 检查时 `dlopen` 对应系统库。生成器拒绝数
 验收后清理本次任务独立的约 19 GiB Cargo `target` 中间文件，并运行
 `container clean arch-dev` 回收宿主空间；`/root/dnr-lazy/dist/dnr`、固定上游副本和
 原生导入表构建目录仍保留，后续完整 Rust 构建需重新生成 target。
+
+
+## v0.3.1：Linux 双后端按需加载（2026-09-25）
+
+从 origin 快进至 `d786abb` 后，在本机 CachyOS x86_64 / KDE Wayland / NVIDIA
+RTX 3080 完成原生验证。Linux `7.2.7-1-cachyos`、Rust `1.98.1`、GCC `16.2.1`、
+GTK `3.24.52`、WebKitGTK `2.52.6`、CEF `152.0.6-1`（API 14900），保留 sccache、
+clang/mold。日志与三种独立产物位于 `dist/validation-v0.3.1/`。
+
+### 实现与发行约束
+
+- 修正试验提交对所有 Linux 变体启用懒加载的问题。仅 dual 生成导入表、链接跳板并
+  `dlopen` GUI 系统库；单后端恢复 pkg-config/CEF 直接链接。
+- 懒加载 CMake 规则移至 `integration/native/GuiImports.cmake`，ELF 验证移至
+  `xtask/src/linux_artifact.rs`。最终产物必须保留全部上游 Node-API 导出；dual 不得
+  包含 GUI `DT_NEEDED`，单后端必须直接依赖所选引擎且不得依赖另一个引擎。
+- 保留一次解析后尾跳转的热路径，不增加逐调用符号查询或互斥锁。没有改动 Deno/
+  Laufey 补丁、VFS、缓存或桌面生命周期实现。独立快照上的两份补丁 apply/reverse
+  检查通过；构建同步现有接入源码，未修改 mirror。
+- `dnr`/`dnr-bin` 的强运行依赖缩减为 glibc、gcc-libs、zlib；CEF、GTK3、WebKitGTK
+  改为可选。CEF 系统包不会自动拉入 GTK，因此文档与 optdepends 明确 CEF 需要
+  `cef` + `gtk3`。dual 源码配方仍保留两套 GUI 栈的构建依赖；两个单后端配方保持
+  原有强运行依赖。八份配方与 `.SRCINFO` 同步到 0.3.1。
+
+### 功能与真实桌面
+
+- fmt、Clippy（workspace/all-targets，拒绝警告）、58 项工作区测试通过；
+  21 项显式原生/平台测试按设计不在普通工作区测试执行。
+- `test_gui_imports.py` 的 9 项真实 ELF 测试与 `test-backend-selection.sh` 的
+  15 个分派场景通过。dual 的 release ELF 仅需 libstdc++、libz、libgcc_s、libm、
+  libc 和动态加载器，没有任何 GUI 库的强依赖。
+- `test-linux-lazy.py --gui` 的 11 个场景通过：使用 `LD_AUDIT` 在测试进程中拒绝
+  动态加载器查找 GUI 库，不卸载或修改系统库。三种 CLI 后端参数在全部 GUI 库
+  不可加载且无显示环境时仍完成 HTTP 服务/fetch；两次 maps 探针均没有 GUI 映射。
+  首次窗口前同样无 GUI 映射；缺少 WebView 时 CEF 可用，缺少 CEF 时 WebView 可用，
+  auto 正确回退。显式缺库、全部缺库和严格 ABI 检查均退出 78。
+- `test-linux-backends.py` 在磁盘和 v3 DNP 各通过 10 个场景，覆盖实际页面引擎、
+  绑定、ABI/资源/初始化失败回退。故障注入补充拦截显式 dlsym，适配懒加载；错误
+  场景严格要求退出 78，所有场景检查原生子进程退出。
+- dual 两个后端各通过四种 KWin 原生关闭场景（Deno/Node 退出、异步收尾、空闲关闭），
+  全进程组约 0.07–0.18 秒退出。没有把脚本主动 close 当作标题栏关闭验收。
+- 新 dual 直接运行本机已安装的 Pi v3 `--version`/`--help` 通过（版本 0.87.1）。
+
+本轮不新增 macOS、X11、其他 GPU 或发行版验收。系统库缺失通过进程级 ELF 加载器
+拒绝模拟；没有声称已卸载本机 GUI 包。后端崩溃仍不是可恢复的初始化错误。
+
+### 三种 release 产物
+
+`CARGO_BUILD_JOBS=6 CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_CACHE_RUSTC_INFO=0 cargo run
+--locked -p xtask -- build --backend <dual|system-cef|webview>` 均成功（单后端附加
+`--runtime-only`），分别约 3 分钟。保持上游弃用、unused-variable 以及 WebView 链接时
+clang `-pthread` unused-argument 警告，没有新增构建错误。
+
+三种产物各自执行 `runtime`、`runtime_native`、`runtime_groups`、`runtime_cache`、
+`runtime_backend` 的全部 20 项显式测试，合计 60 项全部通过。上文容器 debug ELF
+出现的 Worker 暖缓存时序失败在本机这三份 release 测试中没有复现。
+
+CEF-only ELF 直接需要 libcef 与 GTK，不需要 WebKitGTK；WebView-only 直接需要
+WebKitGTK/JSC/GTK，不需要 CEF。两个单后端也各自通过四种 KWin 原生关闭场景。
+所有 CEF 产物的严格 API 14900 检查通过。`dist/dnr` 最终恢复为已验证的 dual 产物。
+
+### 性能
+
+`bench-gui-loading.py --samples 30` 完成每组两次预热、30 次随机交替样本。
+CLI 中位数为 dual 39.89 ms、CEF-only 58.99 ms、WebView-only 63.56 ms。
+包含进程/ELF 启动成本的首个可用窗口：CEF dual/direct 为 261.75/263.11 ms，
+WebView 为 346.25/360.80 ms；200 次页面调用分别为 19.21/21.48 ms 和
+9.54/9.60 ms。本机这些场景没有观察到明显性能下降。方法、边界和原始样本位置见
+[性能记录](docs/PERFORMANCE.md)。
+
+### 本机包与产物摘要
+
+八份 PKGBUILD 的 Bash 语法和 `makepkg --printsrcinfo` 一致性通过。用已验证 dual
+执行真实 `makepkg --noextract --repackage --force --nodeps`，生成
+`dnr-0.3.1-1-x86_64.pkg.tar.zst`，其 `.PKGINFO` 仅强依赖 glibc/gcc-libs/zlib，
+CEF/GTK3/WebKitGTK 均在 optdepend。此处复用本机源码与二进制，只验证 package()
+及最终元数据；正式发布由标签触发的 Arch 容器工作流完整重建。
+
+| 本机产物 | SHA-256 |
+| --- | --- |
+| dnr-dual | `e59a6ca90cebaee9cc6625d3b11930b16ba6d3ed8f77d2e57e22aa9b1640b8c4` |
+| dnr-cef | `866c99a1cb72d37c076fc914fef2d33f3594c505cf92b886e24802c1b9994568` |
+| dnr-webview | `bf8934abbc09d96d09d6bb5a1ac8ce7432ddcea17e581b184e90cabdb6f6fef2` |

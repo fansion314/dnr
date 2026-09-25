@@ -4,7 +4,7 @@
 
 ## 双后端（默认）
 
-从当前未发布源码构建 dual 仍需同时安装两套开发包。两个 Laufey 后端静态链接进同一个 dnr；运行时的 GUI 系统库由生成的函数跳板在首次 GUI 请求时按后端加载，普通 CLI 进程不加载 CEF、WebKitGTK 或 GTK。已发布的 v0.3.0 ELF 和对应 AUR 配方仍强依赖两套运行库，须等待新发行版后才能改为可选依赖。
+v0.3.1 起，dual 构建仍需同时安装两套开发包，但运行时 CEF/WebKitGTK 是可选依赖。两个 Laufey 后端静态链接进同一个 dnr；首次桌面 API 请求时按后端加载系统库，普通 CLI/HTTP 进程不加载 CEF、WebKitGTK 或 GTK。CEF helper 和显式 ABI 检查也会按需加载 CEF。CEF 窗口需要 `cef` 与 `gtk3`（CEF 系统包不会自动安装 GTK）；WebView 安装 `webkit2gtk-4.1` 即带入 GTK 等依赖。仅 dual 生成导入表和跳板；单后端构建保持原有直接链接。
 
 ```sh
 cargo run -p xtask -- prepare --deno /path/to/deno --laufey /path/to/laufey
@@ -22,7 +22,18 @@ python3 scripts/test-linux-backends.py --dnr dist/dnr --logs dist/validation-dua
 
 GUI 回归脚本通过临时 `LD_PRELOAD` 测试库注入 CEF ABI、资源与初始化失败，验证页面引擎、绑定、回退及子进程清理，不修改系统 CEF。可用 `--package path/to/smoke.dnp` 对打包后的 smoke.ts 做同样验证。
 
-当前源码产物只在真正使用 GUI 时加载所选后端库；`auto` 遇到 CEF 缺库也会尝试 WebView。显式选择缺库时返回错误，进程级崩溃不通过重新运行应用来回退。用 `readelf -d dist/dnr` 检查主 ELF 无 GUI `DT_NEEDED`，再用 `/proc/<pid>/maps` 检查纯 CLI 进程未映射 GUI 库。单后端构建的 `auto` 使用唯一可用后端；显式请求未编译的后端返回错误。
+dual 产物只在真正使用 GUI 时加载所选后端库；`auto` 遇到 CEF 缺库也会尝试 WebView。显式选择缺库时返回错误，进程级崩溃不通过重新运行应用来回退。用 `readelf -d dist/dnr` 检查主 ELF 无 GUI `DT_NEEDED`，再用 `/proc/<pid>/maps` 检查纯 CLI 进程未映射 GUI 库。单后端构建的 `auto` 使用唯一可用后端；显式请求未编译的后端返回错误。单后端 ELF 保留所选后端的 `DT_NEEDED`，相关运行库仍是强依赖。
+
+### 懒加载复验
+
+```sh
+python3 integration/native/tests/test_gui_imports.py
+python3 scripts/test-linux-lazy.py --dnr dist/dnr --gui --logs dist/validation-lazy
+```
+
+第二个脚本用 `LD_AUDIT` 在测试进程中拒绝 GUI 库装载，不修改系统库。覆盖缺少全部 GUI 库时的 CLI/HTTP、创建窗口前 `/proc/self/maps` 无 GUI 库、各后端缺库、CEF 回退、显式选择失败与原生子进程清理。去掉 `--gui` 可用于无显示环境的发行构建。
+
+生成器从静态后端 ELF 引用与系统库导出推导函数集合，不维护手写 C ABI 签名。初始化时一次解析完整后端后才发布指针；热路径只有一次尾跳转，没有逐调用查找或加锁。句柄保留到进程退出，保证回退后已有后台代码的指针仍有效。构建会检查最终 ELF 的后端依赖和 Node-API 导出。
 
 ## WebView
 

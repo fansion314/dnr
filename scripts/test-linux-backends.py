@@ -27,6 +27,14 @@ int cef_initialize(const void* args, const void* settings, void* app, void* sand
   int (*real)(const void*, const void*, void*, void*) = dlsym(RTLD_NEXT, "cef_initialize");
   return real(args, settings, app, sandbox);
 }
+// Lazy imports use a provider handle, so LD_PRELOAD symbol interposition alone
+// cannot inject these failures. Intercept explicit lookups as well as PLT calls.
+void* dlsym(void* handle, const char* name) {
+  void* (*real)(void*, const char*) = dlvsym(RTLD_NEXT, "dlsym", "GLIBC_2.2.5");
+  if (mode("abi") && !strcmp(name, "cef_api_hash")) return &cef_api_hash;
+  if (mode("initialize") && !strcmp(name, "cef_initialize")) return &cef_initialize;
+  return real(handle, name);
+}
 int access(const char* path, int flags) {
   if (mode("resources") && !strcmp(path, "/usr/lib/cef/icudtl.dat")) return -1;
   int (*real)(const char*, int) = dlsym(RTLD_NEXT, "access");
@@ -42,7 +50,7 @@ def run(binary, args, env, log_path, success=True, markers=()):
         try:
             code = process.wait(timeout=35)
             output = log_path.read_text()
-            assert (code == 0) == success, f"{log_path.name}: exit={code}\n{output}"
+            assert code == (0 if success else 78), f"{log_path.name}: exit={code}\n{output}"
             for marker in markers:
                 assert marker in output, f"{log_path.name}: missing {marker}\n{output}"
             deadline = time.monotonic() + 15

@@ -4,7 +4,7 @@ Eight release-pinned recipes are provided for native x86_64 systems:
 
 | Package | Backend | Backend dependencies |
 | --- | --- | --- |
-| `dnr` (default) | system CEF + WebView | `cef`, `webkit2gtk-4.1`, `libsoup3`, `gtk3`, `libx11`, `libxi` |
+| `dnr` (default) | system CEF + WebView | Optional: `cef` + `gtk3`, or `webkit2gtk-4.1` |
 | `dnr-cef` | system CEF only | `cef`, `gtk3`, `libx11`, `libxi` |
 | `dnr-webview` | WebKitGTK | `webkit2gtk-4.1`, `gtk3`, `libsoup3` |
 | `dnr-bin` | Both backends, GitHub Release binary | Same as `dnr` |
@@ -14,18 +14,21 @@ Eight release-pinned recipes are provided for native x86_64 systems:
 | `dnc-bin` | GitHub Release packager binary | Same as `dnc` |
 
 The six runtime recipes install only `/usr/bin/dnr`, licenses and documentation.
-They conflict with each other; the alternative packages provide `dnr=0.3.0` so applications
+They conflict with each other; the alternative packages provide `dnr=0.3.1` so applications
 can depend on either runtime. The two packager recipes install only `/usr/bin/dnc`
 plus their own licenses and documentation. Choose `dnc` or `dnc-bin` independently
-of the runtime; they conflict only with each other, and `dnc-bin` provides `dnc=0.3.0`.
+of the runtime; they conflict only with each other, and `dnc-bin` provides `dnc=0.3.1`.
 The packager does not depend on an installed runtime. Applications requiring CEF
 must explicitly select `--backend system-cef`.
 The default dual runtime uses `--backend auto`: system CEF first, then WebView if
-CEF ABI/resource checks or initialization fail. Use `--backend webview` to select
-WebView explicitly. Place this option before the application path. Both sets of
-linked system libraries are required even when selecting only one backend.
+CEF library loading, ABI/resource checks or initialization fail. Use `--backend webview` to select
+WebView explicitly. Place this option before the application path. For CEF windows
+install `cef` and `gtk3`; the system CEF package does not depend on GTK. WebView needs
+`webkit2gtk-4.1`, which pulls in GTK. The dual runtime loads GUI libraries only when a
+desktop operation needs them; CLI/HTTP apps require neither backend. The two single-
+backend variants retain direct linking and mandatory backend dependencies.
 See [Linux backend selection](../../docs/LINUX.md) for fallback boundaries.
-The source URL is `https://github.com/fansion314/dnr.git`, pinned to `v0.3.0`.
+The source URL is `https://github.com/fansion314/dnr.git`, pinned to `v0.3.1`.
 For runtime builds, Deno and Laufey are downloaded separately at the full commits used by xtask.
 These are release packages, not moving `-git` packages.
 
@@ -59,8 +62,10 @@ makepkg -si
 ```
 
 `makepkg -s` installs missing repository dependencies. The runtime recipes declare Rust,
-Clang/libclang, CMake, Python, pkgconf and Git for building, plus the directly
-linked system libraries. Make, GCC and binutils are supplied by `base-devel`.
+Clang/libclang, CMake, Python, pkgconf and Git for building. The dual source recipe also
+requires both GUI stacks as build dependencies, while `dnr` and `dnr-bin` list CEF and
+WebKitGTK as optional runtime dependencies. Make, GCC and binutils are supplied by
+`base-devel`.
 Existing sccache configuration is preserved; sccache is not required.
 Cargo uses both committed lockfiles. The build needs network access for Cargo
 sources and the matching prebuilt Rusty V8 library; V8 itself is not built locally.

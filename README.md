@@ -134,7 +134,7 @@ dnr --backend=webview desktop.dnp
 dnr --backend auto desktop.dnp   # default
 ```
 
-In a dual build, `auto` tries system CEF first and falls back to WebView if its library, ABI/resource checks, or initialization fail. Explicit selection reports errors without fallback. Once a backend has initialized, it stays selected for the process; application code is not restarted. The published v0.3.0 binaries still require both linked system-library sets. The current unreleased Linux source build loads GUI libraries only when a backend is requested, so CLI processes do not need either set; the release-pinned AUR recipes have not yet changed. See the [Linux guide](docs/LINUX.md). Process crashes are not recoverable fallback cases.
+In a dual build, `auto` tries system CEF first and falls back to WebView if its libraries, ABI/resource checks or initialization fail. Explicit selection reports errors without fallback. Once a backend has initialized, it stays selected for the process; application code is not restarted. Since v0.3.1, only dual builds load GUI system libraries on the first desktop operation, so CLI/HTTP apps need neither CEF nor WebKitGTK installed. CEF helpers and `--check-system-cef` also load CEF on demand. Single-backend builds retain direct system-library linking and require their backend libraries at process startup; they reject an unavailable explicit choice. Process crashes cannot trigger fallback.
 
 GUI initialization happens when a desktop API needs it. Windows, trays, and background tasks contribute to the app's lifetime; closing the last window does not automatically stop an active server. The example shuts its server down when the user closes the window.
 
