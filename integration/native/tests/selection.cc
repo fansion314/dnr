@@ -4,6 +4,7 @@
 #include <cstring>
 #include <string>
 #include <unistd.h>
+#include "../gui_loader.h"
 
 extern "C" int dnr_native_preflight(int, char**, const char*);
 extern "C" int dnr_native_main(int, char**);
@@ -13,6 +14,14 @@ static bool resources_present = true;
 static int cef_calls = 0, webview_calls = 0, hash_calls = 0;
 static int cef_status = 0;
 static bool cef_ready = false;
+static bool cef_loadable = true, webview_loadable = true;
+static int cef_loads = 0, webview_loads = 0;
+bool dnr_load_gui(unsigned backend) {
+  if (backend == DnrGuiCef) { ++cef_loads; return cef_loadable; }
+  assert(backend == DnrGuiWebView);
+  ++webview_loads;
+  return webview_loadable;
+}
 extern "C" bool dnr_runtime_is_initialized() { return initialized; }
 extern "C" const char* cef_api_hash(int, int) {
   ++hash_calls;
@@ -31,30 +40,39 @@ int main(int argc, char** argv) {
   std::string test = argv[1];
   char name[] = "dnr", script[] = "app.ts", type[] = "--type=renderer";
   char* app_args[] = {name, script, type, nullptr};
-  const char* selection = test == "explicit-cef" ? "system-cef" :
-                          test == "explicit-webview" ? "webview" : "auto";
-  if (test == "helper") {
+  const char* selection = test == "explicit-cef" || test == "explicit-cef-missing" ? "system-cef" :
+                          test == "explicit-webview" || test == "explicit-webview-missing" ? "webview" : "auto";
+  if (test == "helper" || test == "helper-missing") {
     char* helper_args[] = {name, type, nullptr};
     cef_status = 7;
-    assert(dnr_native_preflight(2, helper_args, "auto") == 7);
-    assert(cef_calls == 1 && webview_calls == 0);
+    cef_loadable = test != "helper-missing";
+    assert(dnr_native_preflight(2, helper_args, "auto") == (cef_loadable ? 7 : 78));
+    assert(cef_calls == (cef_loadable ? 1 : 0) && webview_calls == 0);
+    assert(cef_loads == 1 && webview_loads == 0);
     return 0;
   }
   assert(dnr_native_preflight(3, app_args, selection) == -1);
   assert(hash_calls == 0 && cef_calls == 0 && webview_calls == 0);
+  assert(cef_loads == 0 && webview_loads == 0);
   if (test == "headless") return 0;
   if (test == "resource-fallback") resources_present = false;
   if (test == "abi-fallback" || test == "explicit-webview") matching_hash = false;
   if (test == "init-fallback" || test == "explicit-cef" || test == "after-ready") cef_status = 9;
   if (test == "success" || test == "after-ready") cef_ready = true;
+  if (test == "load-fallback" || test == "explicit-cef-missing" || test == "both-missing") cef_loadable = false;
+  if (test == "explicit-webview-missing" || test == "both-missing") webview_loadable = false;
   int result = dnr_native_main(1, app_args);
-  if (test == "explicit-cef" || test == "after-ready") {
+  if (test == "explicit-cef-missing" || test == "explicit-webview-missing" || test == "both-missing") {
+    assert(result == 78 && cef_calls == 0 && webview_calls == 0);
+    if (test == "explicit-cef-missing") assert(webview_loads == 0);
+    if (test == "explicit-webview-missing") assert(cef_loads == 0);
+  } else if (test == "explicit-cef" || test == "after-ready") {
     assert(result == 9 && cef_calls == 1 && webview_calls == 0);
   } else if (test == "success") {
     assert(result == 0 && cef_calls == 1 && webview_calls == 0);
   } else {
     assert(result == 0 && webview_calls == 1);
-    if (test == "abi-fallback" || test == "resource-fallback" || test == "explicit-webview") assert(cef_calls == 0);
+    if (test == "abi-fallback" || test == "resource-fallback" || test == "explicit-webview" || test == "load-fallback") assert(cef_calls == 0);
     if (test == "explicit-webview") assert(hash_calls == 0);
   }
 }

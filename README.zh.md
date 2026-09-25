@@ -147,7 +147,7 @@ dnr --backend system-cef examples/desktop/smoke.ts
 dnr --backend=webview desktop.dnp
 ```
 
-省略参数等同 `auto`：双后端优先 CEF，ABI/资源检查失败或初始化返回错误时回退 WebView；显式选择不回退。单后端的 `auto` 使用已有后端，显式选择未编译的后端报错。仍在首次 GUI API 调用时初始化，不重跑应用，后端初始化成功后不再切换。双后端需要安装两套链接的系统库；进程崩溃和 ELF 动态依赖缺失不属于可恢复的初始化错误。入口后的参数仍交给应用。
+省略参数等同 `auto`：双后端优先 CEF，动态库、ABI/资源检查失败或初始化返回错误时回退 WebView；显式选择不回退。单后端的 `auto` 使用已有后端，显式选择未编译的后端报错。仍在首次 GUI API 调用时初始化，不重跑应用，后端初始化成功后不再切换。已发布的 v0.3.0 二进制仍强依赖两套系统库；当前未发布的 Linux 源码构建仅在请求后端时加载 GUI 库，纯 CLI 不需要它们，固定发行版 AUR 配方尚未更新。进程崩溃不属于可恢复的初始化错误。详见 [Linux 指南](docs/LINUX.md)。入口后的参数仍交给应用。
 
 ## Arch Linux / CachyOS 软件包
 

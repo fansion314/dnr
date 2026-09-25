@@ -93,32 +93,24 @@ fn main() {
         }
         println!("cargo:rustc-link-lib=c++");
     } else {
-        let packages: &[&str] = match backend.as_str() {
-            "system-cef" => &["gtk+-3.0", "xi", "x11"],
-            "dual" => &["webkit2gtk-4.1", "gtk+-3.0", "xi", "x11"],
-            _ => &["webkit2gtk-4.1", "gtk+-3.0"],
-        };
-        let out = Command::new("pkg-config")
-            .arg("--libs")
-            .args(packages)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "pkg-config failed");
-        for flag in String::from_utf8(out.stdout).unwrap().split_whitespace() {
-            if let Some(lib) = flag.strip_prefix("-l") {
-                println!("cargo:rustc-link-lib={lib}");
-            } else if let Some(path) = flag.strip_prefix("-L") {
-                println!("cargo:rustc-link-search=native={path}");
-            } else {
-                println!("cargo:rustc-link-arg-bin=dnr={flag}");
-            }
+        // GUI libraries are providers for generated dlopen imports, never ELF
+        // DT_NEEDED entries. Only the static backends and their jump table link.
+        println!("cargo:rustc-link-lib=static=dnr_gui_imports");
+        println!("cargo:rustc-link-lib=dl");
+        for flag in std::fs::read_to_string(output.join("gui-wrap-flags"))
+            .expect("generated GUI wrap flags")
+            .lines()
+        {
+            println!("cargo:rustc-link-arg-bin=dnr={flag}");
         }
         println!("cargo:rustc-link-lib=stdc++");
-        println!("cargo:rustc-link-arg-bin=dnr=-Wl,--exclude-libs,ALL");
+        // Do not hide every Rust archive: without release LTO, Node-API
+        // functions still live in deno_napi.rlib. --exclude-libs,ALL overrides
+        // its explicit dynamic export list and lets section GC discard them.
+        println!(
+            "cargo:rustc-link-arg-bin=dnr=-Wl,--exclude-libs,libdnr_laufey.a:liblaufey_backend_common.a:libdnr_gui_imports.a"
+        );
         if backend == "system-cef" || backend == "dual" {
-            println!("cargo:rustc-link-search=native=/usr/lib/cef");
-            println!("cargo:rustc-link-lib=cef");
-            println!("cargo:rustc-link-arg-bin=dnr=-Wl,-rpath,/usr/lib/cef");
             // CEF's wrapper is built by the system CMake module.
             let wrapper = PathBuf::from(
                 std::fs::read_to_string(output.join("cef-wrapper-path"))
@@ -129,6 +121,10 @@ fn main() {
                 wrapper.exists(),
                 "CEF wrapper archive missing: {}",
                 wrapper.display()
+            );
+            println!(
+                "cargo:rustc-link-arg-bin=dnr=-Wl,--exclude-libs,{}",
+                wrapper.file_name().unwrap().to_str().unwrap()
             );
             println!("cargo:rustc-link-arg-bin=dnr={}", wrapper.display());
         }

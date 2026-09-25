@@ -1056,3 +1056,51 @@ CEF 专用变体，共三个 runtime 加独立 dnc。八份 PKGBUILD 的 `bash -
 安装包保存在 `dist/release-install/`，正式 runtime GUI 日志在
 `dist/validation-release-v0.3.0/`。这里只发布 GitHub 资产并使用本地配方安装，
 未向 AUR 服务器提交仓库；未更改用户应用数据。
+
+## 未发布的 Linux GUI 库延迟装载试验（2026-09-25）
+
+在本机 Apple `arch-dev` 容器的 Arch Linux x86_64 用户态验证；宿主内核仍为 ARM64，
+经 Apple 的 Intel 二进制翻译执行，**不是原生 x86_64 内核或真实 GUI 验收**。
+固定 Deno `abd22074e4`、Laufey `1fe8787` 的独立副本位于容器 `/root/mirror/`；
+dnr 源码快照在 `/root/dnr-lazy`，原始 mirror、仓库未提交的性能文档和 pacman 已安装的
+`dnr-bin 0.3.0-1` / `pi-dnr-bin 0.87.1-2` 均未替换。
+
+当前源码保留两个 Laufey 后端静态编入同一个 ELF。Linux 构建从真实后端对象、
+CEF wrapper 与系统库导出自动生成 x86_64 跳板和分后端导入表；仅在 GUI 初始化、
+CEF helper 或显式 ABI 检查时 `dlopen` 对应系统库。生成器拒绝数据、IFUNC、弱引用、
+显式版本化及归属含糊的 GUI 导入；C++ `_Z*` 符号继续由普通 C++ 运行库解析。
+
+- `cmake` dual 原生构建通过；`python3 integration/native/tests/test_gui_imports.py`
+  的 9 项真实 ELF 测试、`bash scripts/test-backend-selection.sh` 的 15 个分派场景通过。
+- `CARGO_BUILD_JOBS=3 cargo run --locked -p xtask -- build --debug --runtime-only --backend dual`
+  完整构建通过；最终产物 `dist/dnr` 为 Linux x86-64 PIE、未精简 debug ELF，
+  SHA-256 `d2281290b091517ba819919f6060318d9aaaa4ee759fe1fb9b9f1b0dff3cfbf0`。
+  `readelf -d` 仅见 `libstdc++`、`libz`、`libgcc_s`、`libm`、`libc` 和 ELF loader，
+  没有 CEF、WebKitGTK、GTK、GLib 或 X11 的 `DT_NEEDED`；`ldd` 无缺失依赖。
+- 在普通脚本、显式 `--backend system-cef` 和 `--backend webview` 的纯 CLI 路径中，
+  `/proc/self/maps` 探针均输出 `DNR_NO_GUI_LIBRARIES`，退出 0。新 runtime 运行
+  已安装的 Pi v3 包 `--version` 与 `--help` 均退出 0；`--check-system-cef` 按需加载
+  系统 CEF 152.0.6，并通过 API 14900 hash 检查。
+- 无显示环境显式启动 WebView 后进入预期 `no usable graphical display` 错误，
+  没有缺库/缺导出错误。临时 `LD_PRELOAD` 测试 shim 拒绝 CEF `dlopen` 时，
+  `auto` 明确回退 WebView，显式 CEF 退出 78 且不回退；这不等于页面 GUI 验收。
+  另一临时 shim 拒绝 WebKitGTK、JavaScriptCore 和 Soup 装载时，显式 CEF ABI
+  检查仍退出 0，证明该路径无需另一套后端库。
+- 修复 `--exclude-libs,ALL` 在 debug 链接中隐藏 Node-API 导出的问题后，
+  `xtask` 对照上游完整导出表和 GUI `DT_NEEDED` 黑名单检查最终 ELF；
+  `napi_create_int32` 等符号重新出现在
+  `.dynsym`。真实插件测试及可在 root 容器运行的 17 项 runtime/原生/后端测试通过；
+  另以非 root 用户运行只读目录插件测试通过。`cargo fmt --all -- --check`、
+  `cargo clippy --locked --workspace --all-targets -- -D warnings`、
+  `cargo test --locked --workspace` 通过。
+
+**保留的失败与范围：** `runtime_cache::v3_cache_workers_cjs_extensions_and_full_install`
+在本次 debug ELF 下稳定报告暖缓存 `code_misses=1`，已发布的旧 release ELF 则通过。
+隔离 A/B 显示：Worker 发出首条消息后立即被终止时，debug 冷运行未落盘
+`worker.ts` 字节码，下一次运行多 1 次 miss；延迟消息 20 ms 后冷运行即落盘，
+暖运行 miss 为 0。符合 Worker 终止与异步缓存写入的时序竞争，但本轮没有改动缓存实现
+或将它归因于 GUI loader。尚未构建新 release、未在真实图形会话验证双后端窗口，
+未更新指向旧 v0.3.0 发布二进制的 AUR 配方，也未更换容器的 pacman 安装。
+验收后清理本次任务独立的约 19 GiB Cargo `target` 中间文件，并运行
+`container clean arch-dev` 回收宿主空间；`/root/dnr-lazy/dist/dnr`、固定上游副本和
+原生导入表构建目录仍保留，后续完整 Rust 构建需重新生成 target。

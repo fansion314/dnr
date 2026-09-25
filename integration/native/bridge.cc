@@ -1,5 +1,8 @@
 #include <cstring>
 #include <iostream>
+#ifdef DNR_LAZY_GUI
+#include "gui_loader.h"
+#endif
 
 extern "C" bool dnr_runtime_is_initialized();
 namespace {
@@ -16,6 +19,9 @@ int dnr_webview_main(int argc, char** argv);
 #include <unistd.h>
 int dnr_cef_main(int argc, char** argv);
 static int check_cef() {
+#ifdef DNR_LAZY_GUI
+  if (!dnr_load_gui(DnrGuiCef)) return 78;
+#endif
   const char* hash = cef_api_hash(CEF_API_VERSION, 0);
   if (!hash || std::strcmp(hash, CEF_API_HASH_PLATFORM)) {
     std::cerr << "dnr: system CEF API/hash mismatch; rebuild against the installed CEF package\n";
@@ -92,6 +98,9 @@ extern "C" int dnr_native_main(int argc, char** argv) {
   }
 #endif
 #ifdef DNR_WEBVIEW
+#ifdef DNR_LAZY_GUI
+  if (!dnr_load_gui(DnrGuiWebView)) return 78;
+#endif
   return dnr_webview_main(argc, argv);
 #else
   return 2;

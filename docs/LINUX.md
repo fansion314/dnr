@@ -4,7 +4,7 @@
 
 ## 双后端（默认）
 
-需要同时安装下面两个单后端的开发包和运行库。两个 Laufey 后端静态链接进同一个 dnr，系统 CEF/WebKitGTK 仍为外部动态依赖。
+从当前未发布源码构建 dual 仍需同时安装两套开发包。两个 Laufey 后端静态链接进同一个 dnr；运行时的 GUI 系统库由生成的函数跳板在首次 GUI 请求时按后端加载，普通 CLI 进程不加载 CEF、WebKitGTK 或 GTK。已发布的 v0.3.0 ELF 和对应 AUR 配方仍强依赖两套运行库，须等待新发行版后才能改为可选依赖。
 
 ```sh
 cargo run -p xtask -- prepare --deno /path/to/deno --laufey /path/to/laufey
@@ -14,6 +14,7 @@ dist/dnr examples/desktop/smoke.ts system-cef             # auto: CEF 优先
 dist/dnr --backend system-cef examples/desktop/smoke.ts system-cef
 dist/dnr --backend webview examples/desktop/smoke.ts webview
 bash scripts/test-backend-selection.sh
+python3 integration/native/tests/test_gui_imports.py
 python3 scripts/test-linux-backends.py --dnr dist/dnr --logs dist/validation-dual
 ```
 
@@ -21,7 +22,7 @@ python3 scripts/test-linux-backends.py --dnr dist/dnr --logs dist/validation-dua
 
 GUI 回归脚本通过临时 `LD_PRELOAD` 测试库注入 CEF ABI、资源与初始化失败，验证页面引擎、绑定、回退及子进程清理，不修改系统 CEF。可用 `--package path/to/smoke.dnp` 对打包后的 smoke.ts 做同样验证。
 
-两套 ELF 依赖均须存在，否则系统加载器会在 dnr 启动前报错。进程级崩溃不通过重新运行应用来回退。单后端构建的 `auto` 使用唯一可用后端；显式请求未编译的后端返回错误。
+当前源码产物只在真正使用 GUI 时加载所选后端库；`auto` 遇到 CEF 缺库也会尝试 WebView。显式选择缺库时返回错误，进程级崩溃不通过重新运行应用来回退。用 `readelf -d dist/dnr` 检查主 ELF 无 GUI `DT_NEEDED`，再用 `/proc/<pid>/maps` 检查纯 CLI 进程未映射 GUI 库。单后端构建的 `auto` 使用唯一可用后端；显式请求未编译的后端返回错误。
 
 ## WebView
 
@@ -51,7 +52,7 @@ DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime --test runtime_
 dist/dnr examples/desktop/smoke.ts
 ```
 
-确认 `libcef.so` 来自 `/usr/lib/cef`，没有缺失依赖；GUI 测试退出后检查 Chromium 子进程正常退出。dual、WebView 和 system-CEF 是三个构建变体，后一次构建替换 `dist/dnr`。
+当前源码构建的主 ELF 不应直接链接 `libcef.so`；`--check-system-cef` 按需从 `/usr/lib/cef` 加载并检查 ABI。GUI 测试退出后检查 Chromium 子进程正常退出。dual、WebView 和 system-CEF 是三个构建变体，后一次构建替换 `dist/dnr`。
 
 ## 共同检查
 

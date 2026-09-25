@@ -40,6 +40,99 @@ fn run(cmd: &mut Command) -> Result<()> {
     Ok(())
 }
 
+fn verify_linux_napi_exports(root: &Path, artifact: &Path) -> Result<()> {
+    let exports = fs::read_to_string(
+        root.join(".upstream/deno/ext/napi/generated_symbol_exports_list_linux.def"),
+    )?;
+    let expected: Vec<_> = exports.split('"').skip(1).step_by(2).collect();
+    if expected.is_empty() {
+        bail!("upstream Node-API export list is empty or has changed format");
+    }
+    let output = Command::new("readelf")
+        .args(["--wide", "--dyn-syms"])
+        .arg(artifact)
+        .output()
+        .context("checking runtime Node-API dynamic exports with readelf")?;
+    if !output.status.success() {
+        bail!(
+            "readelf failed for {}: {}",
+            artifact.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let symbols = String::from_utf8(output.stdout)?;
+    let defined: std::collections::HashSet<_> = symbols
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            (fields.len() >= 8
+                && matches!(fields[4], "GLOBAL" | "WEAK")
+                && matches!(fields[5], "DEFAULT" | "PROTECTED")
+                && fields[6] != "UND")
+                .then(|| fields[7].split('@').next().unwrap())
+        })
+        .collect();
+    let missing: Vec<_> = expected
+        .into_iter()
+        .filter(|name| !defined.contains(name))
+        .collect();
+    if !missing.is_empty() {
+        bail!(
+            "runtime is missing {} required Node-API exports: {}",
+            missing.len(),
+            missing.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn verify_linux_no_gui_needed(artifact: &Path) -> Result<()> {
+    let output = Command::new("readelf")
+        .args(["--wide", "--dynamic"])
+        .arg(artifact)
+        .output()
+        .context("checking runtime GUI dynamic dependencies with readelf")?;
+    if !output.status.success() {
+        bail!(
+            "readelf failed for {}: {}",
+            artifact.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let dynamic = String::from_utf8(output.stdout)?;
+    let gui_prefixes = [
+        "libcef.so",
+        "libwebkit2gtk-",
+        "libjavascriptcoregtk-",
+        "libgtk-3.so",
+        "libgdk-3.so",
+        "libsoup-3.0.so",
+        "libXi.so",
+        "libX11.so",
+        "libcairo.so",
+        "libgio-2.0.so",
+        "libgobject-2.0.so",
+        "libglib-2.0.so",
+    ];
+    let gui_needed: Vec<_> = dynamic
+        .lines()
+        .filter(|line| line.contains("(NEEDED)"))
+        .filter_map(|line| {
+            line.split_once("Shared library: [")
+                .and_then(|(_, name)| name.split_once(']'))
+                .map(|(name, _)| name)
+        })
+        .filter(|name| gui_prefixes.iter().any(|prefix| name.starts_with(prefix)))
+        .collect();
+    if !gui_needed.is_empty() {
+        bail!(
+            "runtime directly links GUI libraries that must load lazily: {}",
+            gui_needed.join(", ")
+        );
+    }
+    Ok(())
+}
+
 fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
@@ -163,6 +256,15 @@ fn main() -> Result<()> {
                 cargo.env("CMAKE", cmake);
             }
             run(&mut cargo)?;
+            let runtime_artifact = root.join(if debug {
+                "target/runtime/debug/dnr"
+            } else {
+                "target/runtime/release/dnr"
+            });
+            if cfg!(target_os = "linux") {
+                verify_linux_napi_exports(&root, &runtime_artifact)?;
+                verify_linux_no_gui_needed(&runtime_artifact)?;
+            }
             fs::create_dir_all(root.join("dist"))?;
             if !runtime_only {
                 fs::copy(
@@ -174,14 +276,7 @@ fn main() -> Result<()> {
                     root.join("dist/dnc"),
                 )?;
             }
-            fs::copy(
-                root.join(if debug {
-                    "target/runtime/debug/dnr"
-                } else {
-                    "target/runtime/release/dnr"
-                }),
-                root.join("dist/dnr"),
-            )?;
+            fs::copy(runtime_artifact, root.join("dist/dnr"))?;
             if !debug {
                 let artifact = root.join("dist/dnr");
                 let mut strip = Command::new("strip");
