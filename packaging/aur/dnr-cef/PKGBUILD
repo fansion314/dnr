@@ -1,16 +1,17 @@
 # Maintainer: Peilin Fan <peilin.fan@foxmail.com>
-pkgname=dnr
+pkgname=dnr-cef
 pkgver=0.3.0
 pkgrel=1
-pkgdesc='Shared Deno runtime (system CEF + WebView)'
+pkgdesc='Shared Deno runtime (system CEF)'
 arch=('x86_64')
 url='https://github.com/fansion314/dnr'
 license=('MIT' 'Apache-2.0' 'BSD-3-Clause')
-depends=('glibc' 'gcc-libs' 'gtk3' 'glib2' 'cairo' 'zlib' 'libx11' 'libxi' 'cef' 'webkit2gtk-4.1' 'libsoup3')
+depends=('glibc' 'gcc-libs' 'gtk3' 'glib2' 'cairo' 'zlib' 'libx11' 'libxi' 'cef')
 makedepends=('git' 'rust' 'clang' 'cmake' 'python' 'pkgconf')
 optdepends=('libayatana-appindicator: system tray support'
             'libnotify: desktop notifications via notify-send')
-conflicts=('dnr-bin' 'dnr-cef' 'dnr-cef-bin' 'dnr-webview' 'dnr-webview-bin')
+provides=("dnr=$pkgver")
+conflicts=('dnr' 'dnr-bin' 'dnr-cef-bin' 'dnr-webview' 'dnr-webview-bin')
 # xtask handles Rust LTO and stripping; avoid distro C/C++ LTO and debug packages.
 options=('!lto' '!debug')
 _deno_commit=abd22074e47c6a5cd14e9e4e84743f084aa5a575
@@ -28,7 +29,7 @@ prepare() {
 
 build() {
     cd "$srcdir/dnr"
-    cargo run --locked -p xtask -- build --runtime-only --backend dual
+    cargo run --locked -p xtask -- build --runtime-only --backend system-cef
 }
 
 check() {
@@ -36,7 +37,6 @@ check() {
     cargo test --locked -p dnr-package -p xtask
     DNR_BIN="$srcdir/dnr/dist/dnr" cargo test --locked -p dnr-package \
         --test runtime --test runtime_native --test runtime_groups --test runtime_cache --test runtime_backend -- --ignored
-    bash scripts/test-backend-selection.sh
     dist/dnr --check-system-cef
 }
 

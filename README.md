@@ -20,8 +20,8 @@ Apps share the **installed runtime binary**, while each app runs in its own proc
 | Platform | Desktop backend | App distribution |
 | --- | --- | --- |
 | macOS ARM64 | System WebView (WebKit) | `.dnp`, thin `.app` |
-| Linux x86_64 | GTK3 + WebKitGTK 4.1 | `.dnp`, Arch/CachyOS `.pkg.tar.zst` |
-| Linux x86_64, Arch/CachyOS system-CEF variant | System CEF + GTK3 | `.dnp`, Arch/CachyOS `.pkg.tar.zst` |
+| Linux x86_64 (default) | System CEF + WebKitGTK 4.1 + GTK3 | `.dnp`, Arch/CachyOS `.pkg.tar.zst` |
+| Linux x86_64, CEF-only or WebView-only variants | System CEF or WebKitGTK + GTK3 | `.dnp`, Arch/CachyOS `.pkg.tar.zst` |
 
 The runtime statically includes the customized Deno runtime and Laufey backend; system frameworks and WebView/CEF libraries remain external dependencies. Windows, macOS Intel, and Linux ARM64 are not currently supported targets.
 
@@ -126,6 +126,16 @@ dnc examples/desktop --entry main.ts --app-id com.example.desktop -o desktop.dnp
 
 The example starts a local HTTP server, creates a `Deno.BrowserWindow`, and registers a function with `window.bind("greet", ...)`. The page calls it through `window.bindings.greet(...)`. See [the complete example](examples/desktop/main.ts).
 
+On Linux, select the desktop backend before the entry point:
+
+```sh
+dnr --backend system-cef examples/desktop/smoke.ts
+dnr --backend=webview desktop.dnp
+dnr --backend auto desktop.dnp   # default
+```
+
+In a dual build, `auto` tries system CEF first and falls back to WebView if its ABI/resource checks or initialization fail. Explicit selection reports errors without fallback. Once a backend has initialized, it stays selected for the process; application code is not restarted. Both sets of linked system libraries must be installed. The fallback handles returned initialization errors, not process crashes or missing ELF dependencies. Single-backend builds use their available backend in auto mode and reject an unavailable explicit choice.
+
 GUI initialization happens when a desktop API needs it. Windows, trays, and background tasks contribute to the app's lifetime; closing the last window does not automatically stop an active server. The example shuts its server down when the user closes the window.
 
 For a desktop launcher with an application name and icon, create a JSON desktop manifest and build on the target platform:
@@ -158,7 +168,7 @@ Use `dnc scan prepared --output dnr.package.json` to generate a configuration pr
 
 ## Arch Linux / CachyOS packages
 
-Release-pinned AUR recipes are in [`packaging/aur`](packaging/aur/README.md): `dnr` uses system CEF, and `dnr-webview` uses WebKitGTK. Choose `dnr-bin` or `dnr-webview-bin` to use GitHub Release binaries without compiling the runtime. These four packages install only `dnr`; choose one runtime. Install `dnc` or `dnc-bin` separately when you need the packager; it has no GUI/runtime dependency. Tagged releases build both runtime backends and standalone dnc in three parallel Arch container jobs, then publish all three packages together. See the [packaging guide](packaging/aur/README.md) for dependencies and installation instructions.
+Release-pinned AUR recipes are in [`packaging/aur`](packaging/aur/README.md). `dnr` and `dnr-bin` include both system CEF and WebView; `dnr-cef`/`dnr-cef-bin` include only system CEF, and `dnr-webview`/`dnr-webview-bin` include only WebView. Choose one runtime and install `dnc` or `dnc-bin` separately for packaging. Tagged releases build the three runtime variants and standalone dnc in four Arch container jobs.
 
 ## Build from source
 
@@ -184,14 +194,15 @@ cargo run --locked -p xtask -- build
 
 `prepare` copies those sources into `.upstream/` and applies the local integration without modifying the source checkouts. `build` produces `dist/dnr` and `dist/dnc`. A regular root-workspace `cargo build` does not build the full runtime.
 
-For the Linux system-CEF variant, replace the build command with:
+Linux builds default to `--backend dual`, linking both backends. macOS defaults to WebView. To build a single Linux backend:
 
 ```sh
-cargo run --locked -p xtask -- build --backend system-cef
+cargo run --locked -p xtask -- build --backend system-cef  # CEF only
+# Or: cargo run --locked -p xtask -- build --backend webview
 dist/dnr --check-system-cef
 ```
 
-Both variants write to the same `dist/dnr`. Keep separate copies if you need both, and repeat the CEF compatibility check after a system CEF update.
+All variants write to the same `dist/dnr`. Keep separate copies if you need both, and repeat the CEF compatibility check after a system CEF update.
 
 If you only need the packager:
 

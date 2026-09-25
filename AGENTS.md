@@ -7,7 +7,7 @@ dnr 将运行时与应用内容分开发行，避免每个 Deno CLI/桌面应用
 - `dnr`：共享安装的原生可执行文件，执行磁盘 JS/TS 或 `.dnp` 应用包。
 - `dnc`：将准备好的目录和资源打包为可直接执行的 `.dnp`，不携带运行时。
 - “共享”指共享安装文件；每个应用仍运行在独立进程中，不是常驻的多应用服务。
-- 目标平台：macOS ARM64、Linux x86_64。默认使用系统 WebView，Linux 另有 system-CEF 构建变体。
+- 目标平台：macOS ARM64、Linux x86_64。macOS 使用系统 WebView；Linux 默认同时链接 system-CEF 与 WebView，并保留两个单后端构建变体。
 - 主体、包格式和 VFS 用 Rust；复用并少量修改 Laufey 的 C++/Objective-C++ 后端。
 
 先读 [README.md](README.md)、[包格式](docs/FORMAT.md) 和 [验证记录](VALIDATION.md)。Linux 操作细节另见 [LINUX.md](docs/LINUX.md)。
@@ -20,7 +20,7 @@ dnr 将运行时与应用内容分开发行，避免每个 Deno CLI/桌面应用
 4. dnc 只打包目录与显式 include/exclude 的资源，不执行前端构建、依赖安装、依赖图收集、转译或 minify。
 5. dnr 支持本地模块和准备好的 `node_modules`，运行时转译 TS/TSX/JSX；不在线获取 npm、JSR、HTTP 模块。应用自己的 `fetch`、HTTP 服务等网络 API 不受此范围限制。
 6. 应用默认全权限运行，不是沙箱。新版仅支持 v3，v1/v2 包必须重新打包。包内 Node-API / FFI 库和程序必须在元数据 group 中声明；首次原生加载/执行时整组准备，优先复用包旁预解压内容，其次复用用户持久缓存，否则校验后解压。普通读取不触发原生落盘；ZIP 外的原生库继续从磁盘加载。v3 默认启用用户 V8/转译缓存，同路径内容换代；完整安装可用 `dnr <目录>` 启动。详见 docs/NATIVE-PACKAGING.md 和 docs/CACHE.md。
-7. 实际调用需要 GUI 的桌面 API 时才启动后端。普通脚本、HTTP 服务和 CLI 异常不应打开窗口。
+7. Linux 用 `--backend auto|system-cef|webview`（入口前）选择桌面后端，默认 auto 优先 CEF，ABI/资源检查或初始化返回失败时回退 WebView；显式选择不回退，初始化成功后不切换或重跑应用。实际调用需要 GUI 的桌面 API 时才启动后端。普通脚本、HTTP 服务和 CLI 异常不应打开窗口。
 8. 页面通过 `window.bindings.<name>()` 调用 `BrowserWindow.bind()`。窗口、托盘、后台 JS 任务和退出事件共同决定生命周期；不能在最后一个窗口关闭时直接终止仍有工作的应用。
 9. 按用户要求，dnc 支持 desktop manifest 驱动的 macOS ARM64 薄 `.app` 和 Arch/CachyOS x86_64 pacman 包；两者不携带运行时。macOS 原生启动器保留 bundle 身份；Linux 使用系统 makepkg。仍不包含 DMG/PKG 安装器、深链注册或自动更新。用法见 `docs/DESKTOP-PACKAGING.md`。
 
@@ -108,7 +108,7 @@ uname -sm
 rustc --version
 pkg-config --modversion gtk+-3.0 webkit2gtk-4.1
 cargo run -p xtask -- prepare --deno /path/to/deno --laufey /path/to/laufey
-cargo run -p xtask -- build
+cargo run -p xtask -- build --backend webview
 file dist/dnr
 ldd dist/dnr
 cargo test --workspace
@@ -154,7 +154,7 @@ PATH="$PWD/dist:$PATH" dist/desktop-smoke.dnp
 
 确认 API hash 检查通过、`libcef.so` 来自 `/usr/lib/cef`、资源可定位、GUI 和绑定可用、退出后无遗留 CEF 子进程。不能跳过 ABI 校验，不能通过复制整个 Chromium 来掩盖 system-CEF 问题。
 
-两个后端的构建会覆盖同一个 `dist/dnr`；分别记录版本、依赖和结果，保留产物时放进各自目录，避免把 WebView 的结果写成 CEF 的结果。
+dual 与两个单后端构建都会覆盖同一个 `dist/dnr`；分别记录版本、依赖和结果，保留产物时放进各自目录，避免把 WebView 的结果写成 CEF 的结果。
 
 ### 5. 收尾与证据
 

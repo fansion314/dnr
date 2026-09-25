@@ -957,3 +957,72 @@ dnc `9c3cbd484a3de0d977fbbcd96b33c4a1422d87597fe9580e7a418b96bfed09bd`。
 本轮不据此给出新的性能结论。先前 30 次正式测量仍对应重构前实现。
 
 Linux x86_64 / system-CEF 本轮仍未验证。未替换系统安装，未提交、推送、打 tag 或发布版本。
+
+## 2026-09-25 Linux 双后端与 AUR 扩展
+
+环境：CachyOS x86_64，Linux `7.2.7-1-cachyos`，KDE Wayland，NVIDIA 驱动
+`615.71.09`；Rust `1.98.1`，GCC `16.2.1`。GTK `3.24.52`、WebKitGTK
+`2.52.6`、Xi `1.8.3`、X11 `1.8.13`；系统 CEF 包 `152.0.6-1`，API
+`14900`。保留系统 sccache 与已配置的 clang/mold。
+
+### 构建与无显示测试
+
+- 独立快照上的 `python3 scripts/check-upstream-patches.py` 通过（退出 0）。
+  旧 `.upstream` 的 Deno 补丁已过期，首次 prepare 失败；保留为
+  `.upstream/{deno,laufey}-before-dual-20260925` 后，从固定 mirror 提交重新
+  `cargo run --locked -p xtask -- prepare` 成功，未修改 mirror。
+- `CARGO_BUILD_JOBS=6 CARGO_PROFILE_RELEASE_DEBUG=0 cargo run --locked -p xtask -- build --backend dual`
+  成功（退出 0）。`dist/dnr --version` 报告 `backend dual`；`ldd` 同时列出
+  `/usr/lib/cef/libcef.so` 与 `libwebkit2gtk-4.1.so.0`，没有缺失库；
+  `dist/dnr --check-system-cef` 通过（退出 0）。构建保留上游 unused-variable
+  与 clang `-pthread` unused-argument 警告，无构建错误。
+- 三个配置 dual、system-cef、webview 的原生 CMake 静态库均编译并完成测试宿主
+  链接；单 WebView 宿主不链接 CEF，单 CEF 宿主不链接 WebKitGTK。完整 Rust
+  runtime 本轮构建的是 dual，不能将这两项原生库检查算作两个单后端的完整验收。
+- `cargo fmt --all -- --check`、`cargo clippy --locked --workspace --all-targets -- -D warnings`
+  通过（退出 0）；`cargo test --locked --workspace`：58 通过、21 显式忽略。
+- `bash scripts/test-backend-selection.sh`：10 个分派场景通过，覆盖默认优先级、
+  ABI/资源/初始化失败回退、初始化前提前返回、显式选择、初始化后禁止切换及 CEF helper。
+- `DNR_BIN="$PWD/dist/dnr" cargo test --locked -p dnr-package --test runtime --test runtime_native --test runtime_groups --test runtime_cache --test runtime_backend -- --ignored`
+  20 项通过（退出 0），包括 Node-API/FFI/缓存、磁盘与 DNP 入口参数保留，
+  应用 `--type=renderer` 参数不会被分派为 CEF 子进程。
+
+### 真实 GUI 与故障回退
+
+`python3 scripts/test-linux-backends.py --dnr dist/dnr --logs dist/validation-dual-20260925/backends`
+通过（退出 0）：默认 CEF、显式 CEF、显式 WebView 均检查页面实际引擎并输出
+`DNR_BACKEND_OK` 与 `DNR_GUI_OK`。临时 `LD_PRELOAD` 测试库分别模拟 CEF
+ABI 不匹配、必需资源不可读和 `cef_initialize` 返回失败；三种情况均自动回退
+WebView，窗口绑定与异步收尾成功。显式 CEF 遇 ABI 不匹配退出 78；显式 WebView
+不受模拟 CEF 故障影响。严格 ABI 检查在故障下退出 78，普通无显示 CLI 仍退出 0。
+所有测试核对退出状态与测试进程组清理，没有遗留原生子进程；没有修改系统 CEF。
+
+`dist/dnc examples/desktop --entry smoke.ts --app-id com.example.dual-smoke -o dist/validation-dual-20260925/smoke.dnp`
+生成 v3 包。使用同一 GUI 脚本的 `--package` 参数复验，全部 10 个场景通过（退出 0），结果记录在
+`dist/validation-dual-20260925/package-backends/`。
+
+`python3 scripts/test-linux-close.py --dnr dist/dnr --backend system-cef --logs dist/validation-dual-20260925/close-cef`
+与 `--backend webview --logs dist/validation-dual-20260925/close-webview`
+均通过（退出 0）。两后端各覆盖 Deno 显式退出、Node 退出 9、异步服务收尾和
+空闲关闭；使用 KWin 原生窗口关闭请求，全部子进程在约 0.12–0.23 秒内清理。
+
+### AUR 与验证范围
+
+默认 `dnr`/`dnr-bin` 改为 dual，新增 `dnr-cef`/`dnr-cef-bin`，保留
+`dnr-webview`/`dnr-webview-bin`；六种 runtime 互斥。发布矩阵与产物检查增加
+CEF 专用变体，共三个 runtime 加独立 dnc。八份 PKGBUILD 的 `bash -n` 和
+`makepkg --printsrcinfo` 与 `.SRCINFO` 对比均通过，CI shell 脚本语法通过。
+本轮未执行完整 makepkg 构建/安装或 GitHub/AUR 发布；未验证 macOS。
+
+回退覆盖可返回的初始化错误；两套 ELF 系统依赖仍须安装，未将缺失动态库或
+进程级崩溃记为可恢复情形。没有更换系统已安装的 dnr/dnc，未提交或推送。
+构建与 runtime 日志保存在 `dist/validation-dual-20260925/`。
+
+产物 SHA-256：
+- dnr：`e41de78b03016f3a87d8e59b2d9f51956141d61fedde551bcb5a8757f2b8067a`
+- dnc：`a8820ba21772f1cb721d566d668afec0151eb36fe116953a55ce25f51b4c52fc`
+
+发布前补充：dnc 的 Linux 启动器现在将 desktop manifest 的后端显式传给
+`dnr --backend`，防止 WebView 应用在双后端 runtime 下默认选到 CEF。
+`cargo test --locked -p dnc`（4 通过、1 忽略）、格式检查及 dnc release 重建通过。
+该补充只改变 packager；上面 dnr runtime 的产物及验证不变。

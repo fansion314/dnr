@@ -474,8 +474,13 @@ fn linux_files(m: &Manifest, base: &Path, work: &Path) -> Result<()> {
     } else {
         ""
     };
+    let backend = if config.backend == Backend::SystemCef {
+        "system-cef"
+    } else {
+        "webview"
+    };
     let launcher = format!(
-        "#!/bin/sh\n# GUI sessions often omit /usr/local/bin from PATH.\nruntime=$(command -v dnr) || runtime=/usr/local/bin/dnr\nif [ ! -x \"$runtime\" ]; then\n  echo 'Shared dnr runtime not found; install dnr first.' >&2\n  exit 127\nfi\nexport LAUFEY_APP_ID={}\nexport LAUFEY_APP_NAME={}\nexport LAUFEY_APP_ICON={}\n{check}exec \"$runtime\" {} \"$@\"\n",
+        "#!/bin/sh\n# GUI sessions often omit /usr/local/bin from PATH.\nruntime=$(command -v dnr) || runtime=/usr/local/bin/dnr\nif [ ! -x \"$runtime\" ]; then\n  echo 'Shared dnr runtime not found; install dnr first.' >&2\n  exit 127\nfi\nexport LAUFEY_APP_ID={}\nexport LAUFEY_APP_NAME={}\nexport LAUFEY_APP_ICON={}\n{check}exec \"$runtime\" --backend {backend} {} \"$@\"\n",
         shell(&m.app_id),
         shell(&m.name),
         shell(&format!("/{icon_dest}")),
@@ -685,10 +690,15 @@ mod tests {
             assert!(result.status.success());
             let stdout = String::from_utf8(result.stdout).unwrap();
             assert!(stdout.starts_with(&format!("{}\n{}\n", m.name, m.app_id)));
+            let selected = if m.linux.as_ref().unwrap().backend == Backend::SystemCef {
+                "system-cef"
+            } else {
+                "webview"
+            };
             assert!(
-                stdout.ends_with(
-                    "/usr/lib/org.example.test/application.dnp\na b\n\n--literal\n'$()\n"
-                )
+                stdout.ends_with(&format!(
+                    "--backend\n{selected}\n/usr/lib/org.example.test/application.dnp\na b\n\n--literal\n'$()\n"
+                ))
             );
             assert!(!dir.path().join("INJECTED").exists());
             if m.linux.as_ref().unwrap().backend == Backend::SystemCef {

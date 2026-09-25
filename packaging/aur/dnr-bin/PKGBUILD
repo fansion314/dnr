@@ -2,15 +2,15 @@
 pkgname=dnr-bin
 pkgver=0.3.0
 pkgrel=1
-pkgdesc='Shared Deno runtime (system CEF, prebuilt)'
+pkgdesc='Shared Deno runtime (system CEF + WebView, prebuilt)'
 arch=('x86_64')
 url='https://github.com/fansion314/dnr'
 license=('MIT' 'Apache-2.0' 'BSD-3-Clause')
-depends=('glibc' 'gcc-libs' 'gtk3' 'glib2' 'cairo' 'zlib' 'libx11' 'libxi' 'cef')
+depends=('glibc' 'gcc-libs' 'gtk3' 'glib2' 'cairo' 'zlib' 'libx11' 'libxi' 'cef' 'webkit2gtk-4.1' 'libsoup3')
 optdepends=('libayatana-appindicator: system tray support'
             'libnotify: desktop notifications via notify-send')
 provides=("dnr=$pkgver")
-conflicts=('dnr' 'dnr-webview')
+conflicts=('dnr' 'dnr-cef' 'dnr-cef-bin' 'dnr-webview' 'dnr-webview-bin')
 options=('!strip' '!debug')
 _package="dnr-$pkgver-1-x86_64.pkg.tar.zst"
 _release="$url/releases/download/v$pkgver"

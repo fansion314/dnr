@@ -1,23 +1,30 @@
 # Arch Linux / CachyOS packages
 
-Six release-pinned recipes are provided for native x86_64 systems:
+Eight release-pinned recipes are provided for native x86_64 systems:
 
 | Package | Backend | Backend dependencies |
 | --- | --- | --- |
-| `dnr` (default) | system CEF | `cef`, `gtk3`, `libx11`, `libxi` |
+| `dnr` (default) | system CEF + WebView | `cef`, `webkit2gtk-4.1`, `libsoup3`, `gtk3`, `libx11`, `libxi` |
+| `dnr-cef` | system CEF only | `cef`, `gtk3`, `libx11`, `libxi` |
 | `dnr-webview` | WebKitGTK | `webkit2gtk-4.1`, `gtk3`, `libsoup3` |
-| `dnr-bin` | system CEF, GitHub Release binary | Same as `dnr` |
+| `dnr-bin` | Both backends, GitHub Release binary | Same as `dnr` |
+| `dnr-cef-bin` | system CEF only, GitHub Release binary | Same as `dnr-cef` |
 | `dnr-webview-bin` | WebKitGTK, GitHub Release binary | Same as `dnr-webview` |
 | `dnc` | Standalone packager | None; only `glibc` and `gcc-libs` |
 | `dnc-bin` | GitHub Release packager binary | Same as `dnc` |
 
-The four runtime recipes install only `/usr/bin/dnr`, licenses and documentation.
+The six runtime recipes install only `/usr/bin/dnr`, licenses and documentation.
 They conflict with each other; the alternative packages provide `dnr=0.3.0` so applications
 can depend on either runtime. The two packager recipes install only `/usr/bin/dnc`
 plus their own licenses and documentation. Choose `dnc` or `dnc-bin` independently
 of the runtime; they conflict only with each other, and `dnc-bin` provides `dnc=0.3.0`.
 The packager does not depend on an installed runtime. Applications requiring CEF
-must still check the backend.
+must explicitly select `--backend system-cef`.
+The default dual runtime uses `--backend auto`: system CEF first, then WebView if
+CEF ABI/resource checks or initialization fail. Use `--backend webview` to select
+WebView explicitly. Place this option before the application path. Both sets of
+linked system libraries are required even when selecting only one backend.
+See [Linux backend selection](../../docs/LINUX.md) for fallback boundaries.
 The source URL is `https://github.com/fansion314/dnr.git`, pinned to `v0.3.0`.
 For runtime builds, Deno and Laufey are downloaded separately at the full commits used by xtask.
 These are release packages, not moving `-git` packages.
@@ -27,7 +34,7 @@ These are release packages, not moving `-git` packages.
 To install prebuilt binaries without compiling Rust, Deno or V8:
 
 ```sh
-cd packaging/aur/dnr-bin         # or ../dnr-webview-bin
+cd packaging/aur/dnr-bin         # or ../dnr-cef-bin, ../dnr-webview-bin
 makepkg -si
 # For the standalone packager, use packaging/aur/dnc-bin instead.
 # Alternatively: paru -Bi .
@@ -47,7 +54,7 @@ Install `base-devel` and choose one recipe, then run as a normal user:
 ```sh
 sudo pacman -S --needed base-devel git
 # From this repository:
-cd packaging/aur/dnr             # or ../dnr-webview
+cd packaging/aur/dnr             # or ../dnr-cef, ../dnr-webview
 makepkg -si
 ```
 
@@ -69,7 +76,7 @@ notifications (`notify-send`). Install `base-devel` on the
 target machine if using `dnc --target archlinux`, which invokes system makepkg.
 Neither is needed for ordinary CLI scripts. The system-CEF recipe requires the
 Arch CEF headers, wrapper sources, `FindCEF.cmake` and resources under `/usr/lib/cef`.
-It checks CEF API 14900 during `check()`; a version number alone cannot guarantee
+Both CEF-capable recipes check CEF API 14900 during `check()`; a version number alone cannot guarantee
 ABI compatibility. After a system CEF update, run `dnr --check-system-cef` and
 rebuild if the compatibility check fails.
 
@@ -100,20 +107,20 @@ in GitHub does not itself register an AUR package.
 
 `.github/workflows/release-arch.yml` runs only when a `vMAJOR.MINOR.PATCH` tag
 is pushed. Branch pushes, pull requests and manual dispatch do not start it.
-The three matrix jobs use the official `ghcr.io/archlinux/archlinux:base-devel`
+The four matrix jobs use the official `ghcr.io/archlinux/archlinux:base-devel`
 image on x86_64 hosted runners. Each job installs its own declared dependencies,
 builds as an unprivileged user and runs its source recipe's checks. Only the runtime
 jobs check out pinned Deno/Laufey commits and run runtime/native tests; the dnc job
 uses a separate container with no GUI dependencies. Release compiler flags target
 generic x86_64; no `-march=native` or `target-cpu=native` is used.
 
-Only after all three builds succeed does the release job create/update the matching
-GitHub Release and upload three separate pacman packages, SHA-256 files and build
+Only after all four builds succeed does the release job create/update the matching
+GitHub Release and upload four separate pacman packages, SHA-256 files and build
 environment records. Failed builds retain their logs as workflow artifacts.
 The `dnc-VERSION-REL-x86_64.pkg.tar.zst` asset can be downloaded and installed
 independently; the runtime assets contain no dnc executable.
 An old run refuses to publish if its tag has since moved to another commit.
-Before pushing a new version tag, update the workspace version, all six recipes
+Before pushing a new version tag, update the workspace version, all eight recipes
 and their `.SRCINFO` files, the `-bin` archive names when changing `pkgrel`, and
 `docs/releases/vVERSION.md`. Existing published tags/assets are not changed by
 editing these recipes. When upgrading from an older combined runtime package,

@@ -2,6 +2,27 @@
 
 2026-09-18 已在用户的 CachyOS x86_64 / KDE Wayland / NVIDIA RTX 3080 主机完成 WebView 与 system-CEF 原生构建、原生测试和真实 GUI 自动验收，结果和具体版本见 [VALIDATION.md](../VALIDATION.md)。以下命令用于后续复验；保留已安装并配置的 sccache，未安装时直接构建。
 
+## 双后端（默认）
+
+需要同时安装下面两个单后端的开发包和运行库。两个 Laufey 后端静态链接进同一个 dnr，系统 CEF/WebKitGTK 仍为外部动态依赖。
+
+```sh
+cargo run -p xtask -- prepare --deno /path/to/deno --laufey /path/to/laufey
+cargo run -p xtask -- build --backend dual
+dist/dnr --check-system-cef
+dist/dnr examples/desktop/smoke.ts system-cef             # auto: CEF 优先
+dist/dnr --backend system-cef examples/desktop/smoke.ts system-cef
+dist/dnr --backend webview examples/desktop/smoke.ts webview
+bash scripts/test-backend-selection.sh
+python3 scripts/test-linux-backends.py --dnr dist/dnr --logs dist/validation-dual
+```
+
+`--backend` 位于脚本、包或安装目录之前，可写成 `--backend=webview`。省略即 `auto`。CEF ABI hash、必需资源检查或初始化返回失败时，自动模式尝试 WebView；显式选择不回退。应用只执行一次，GUI 初始化成功后不再切换后端。CEF 子进程始终使用 CEF，应用参数中的 `--type=` 不影响宿主分派。普通 CLI 不检查 CEF ABI 或启动 GUI；`--check-system-cef` 始终严格检查 ABI。
+
+GUI 回归脚本通过临时 `LD_PRELOAD` 测试库注入 CEF ABI、资源与初始化失败，验证页面引擎、绑定、回退及子进程清理，不修改系统 CEF。可用 `--package path/to/smoke.dnp` 对打包后的 smoke.ts 做同样验证。
+
+两套 ELF 依赖均须存在，否则系统加载器会在 dnr 启动前报错。进程级崩溃不通过重新运行应用来回退。单后端构建的 `auto` 使用唯一可用后端；显式请求未编译的后端返回错误。
+
 ## WebView
 
 需要原生 Linux x86_64、Rust、C/C++ 编译器、CMake，以及以下 pkg-config 项：
@@ -9,7 +30,7 @@
 ```sh
 pkg-config --modversion gtk+-3.0 webkit2gtk-4.1
 cargo run -p xtask -- prepare --deno /path/to/deno --laufey /path/to/laufey
-cargo run -p xtask -- build
+cargo run -p xtask -- build --backend webview
 DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime --test runtime_native --test runtime_groups -- --ignored
 dist/dnr examples/desktop/smoke.ts
 ```
@@ -30,7 +51,7 @@ DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime --test runtime_
 dist/dnr examples/desktop/smoke.ts
 ```
 
-确认 `libcef.so` 来自 `/usr/lib/cef`，没有缺失依赖；GUI 测试退出后检查 Chromium 子进程正常退出。WebView 和 system-CEF 是两个构建变体，后一次构建替换 `dist/dnr`。
+确认 `libcef.so` 来自 `/usr/lib/cef`，没有缺失依赖；GUI 测试退出后检查 Chromium 子进程正常退出。dual、WebView 和 system-CEF 是三个构建变体，后一次构建替换 `dist/dnr`。
 
 ## 共同检查
 
@@ -62,9 +83,9 @@ dist/dnr examples/desktop/native-close.ts
 程序调用 `win.close()` 和系统关闭按钮必须分别验证。原生关闭事件中的同步 `Deno.exit()` / Node `process.exit()` 应立即进入宿主清理；没有显式退出时，仍应完成应用的后台任务。KDE Wayland 可使用以下脚本发送真实 compositor 关闭请求，只匹配测试启动的进程：
 
 ```sh
-python3 scripts/test-linux-close.py --dnr dist/webview/dnr --repeat 3 \
+python3 scripts/test-linux-close.py --dnr dist/dnr --backend webview --repeat 3 \
   --logs dist/validation-linux/manual-close/webview
-python3 scripts/test-linux-close.py --dnr dist/system-cef/dnr --repeat 3 \
+python3 scripts/test-linux-close.py --dnr dist/dnr --backend system-cef --repeat 3 \
   --logs dist/validation-linux/manual-close/system-cef
 # 可加 --package /path/to/app.dnp，对未修改的应用包做相同验证。
 ```

@@ -11,7 +11,7 @@ makedepends=('git' 'rust' 'clang' 'cmake' 'python' 'pkgconf')
 optdepends=('libayatana-appindicator: system tray support'
             'libnotify: desktop notifications via notify-send')
 provides=("dnr=$pkgver")
-conflicts=('dnr')
+conflicts=('dnr' 'dnr-bin' 'dnr-cef' 'dnr-cef-bin' 'dnr-webview-bin')
 # xtask handles Rust LTO and stripping; avoid distro C/C++ LTO and debug packages.
 options=('!lto' '!debug')
 _deno_commit=abd22074e47c6a5cd14e9e4e84743f084aa5a575
@@ -36,7 +36,7 @@ check() {
     cd "$srcdir/dnr"
     cargo test --locked -p dnr-package -p xtask
     DNR_BIN="$srcdir/dnr/dist/dnr" cargo test --locked -p dnr-package \
-        --test runtime --test runtime_native --test runtime_groups --test runtime_cache -- --ignored
+        --test runtime --test runtime_native --test runtime_groups --test runtime_cache --test runtime_backend -- --ignored
 }
 
 package() {

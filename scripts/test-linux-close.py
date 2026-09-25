@@ -40,14 +40,14 @@ def close_window(pid, directory):
     return name
 
 
-def run_case(binary, app, args, expected, log_path, readiness=None, marker=None):
+def run_case(binary, app, args, expected, log_path, readiness=None, marker=None, backend="auto"):
     with tempfile.TemporaryDirectory(prefix="dnr-native-close-") as temporary:
         directory = Path(temporary)
         # Keep test app data separate from the user's normal application data.
         env = dict(os.environ, XDG_DATA_HOME=str(directory / "data"))
         with log_path.open("w") as log:
             process = subprocess.Popen(
-                [str(binary), str(app), *args],
+                [str(binary), "--backend", backend, str(app), *args],
                 env=env,
                 stdout=log,
                 stderr=subprocess.STDOUT,
@@ -114,6 +114,7 @@ def run_case(binary, app, args, expected, log_path, readiness=None, marker=None)
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dnr", required=True, type=Path)
+    parser.add_argument("--backend", choices=["auto", "system-cef", "webview"], default="auto")
     parser.add_argument("--package", type=Path, help="Also test an unmodified app package")
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--logs", required=True, type=Path)
@@ -132,10 +133,10 @@ def main():
             run_case(
                 binary, root / "examples/desktop/native-close.ts", [mode], code,
                 options.logs / f"{mode}-{repetition}.log",
-                readiness="DNR_NATIVE_CLOSE_READY", marker=marker,
+                readiness="DNR_NATIVE_CLOSE_READY", marker=marker, backend=options.backend,
             )
         if package:
-            run_case(binary, package, [], 0, options.logs / f"package-{repetition}.log")
+            run_case(binary, package, [], 0, options.logs / f"package-{repetition}.log", backend=options.backend)
     print("DNR_NATIVE_CLOSE_OK", flush=True)
 
 

@@ -1,5 +1,5 @@
-pkgbase = dnr-bin
-	pkgdesc = Shared Deno runtime (system CEF + WebView, prebuilt)
+pkgbase = dnr-cef
+	pkgdesc = Shared Deno runtime (system CEF)
 	pkgver = 0.3.0
 	pkgrel = 1
 	url = https://github.com/fansion314/dnr
@@ -7,6 +7,12 @@ pkgbase = dnr-bin
 	license = MIT
 	license = Apache-2.0
 	license = BSD-3-Clause
+	makedepends = git
+	makedepends = rust
+	makedepends = clang
+	makedepends = cmake
+	makedepends = python
+	makedepends = pkgconf
 	depends = glibc
 	depends = gcc-libs
 	depends = gtk3
@@ -16,22 +22,21 @@ pkgbase = dnr-bin
 	depends = libx11
 	depends = libxi
 	depends = cef
-	depends = webkit2gtk-4.1
-	depends = libsoup3
 	optdepends = libayatana-appindicator: system tray support
 	optdepends = libnotify: desktop notifications via notify-send
 	provides = dnr=0.3.0
 	conflicts = dnr
-	conflicts = dnr-cef
+	conflicts = dnr-bin
 	conflicts = dnr-cef-bin
 	conflicts = dnr-webview
 	conflicts = dnr-webview-bin
-	noextract = dnr-0.3.0-1-x86_64.pkg.tar.zst
-	options = !strip
+	options = !lto
 	options = !debug
-	source = https://github.com/fansion314/dnr/releases/download/v0.3.0/dnr-0.3.0-1-x86_64.pkg.tar.zst
-	source = https://github.com/fansion314/dnr/releases/download/v0.3.0/dnr-0.3.0-1-x86_64.pkg.tar.zst.sha256
+	source = dnr::git+https://github.com/fansion314/dnr.git#tag=v0.3.0
+	source = deno::git+https://github.com/denoland/deno.git#commit=abd22074e47c6a5cd14e9e4e84743f084aa5a575
+	source = laufey::git+https://github.com/littledivy/laufey.git#commit=1fe87874288e8359fa3de04d18cc14f56957b000
+	sha256sums = SKIP
 	sha256sums = SKIP
 	sha256sums = SKIP
 
-pkgname = dnr-bin
+pkgname = dnr-cef

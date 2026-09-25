@@ -20,8 +20,8 @@ dnr 将应用与运行时分开发行。安装一次运行时，就可以把 Jav
 | 平台 | 桌面后端 | 应用分发格式 |
 | --- | --- | --- |
 | macOS ARM64 | 系统 WebView（WebKit） | `.dnp`、薄 `.app` |
-| Linux x86_64 | GTK3 + WebKitGTK 4.1 | `.dnp`、Arch/CachyOS `.pkg.tar.zst` |
-| Linux x86_64，Arch/CachyOS system-CEF 变体 | 系统 CEF + GTK3 | `.dnp`、Arch/CachyOS `.pkg.tar.zst` |
+| Linux x86_64（默认） | 系统 CEF + WebKitGTK 4.1 + GTK3 | `.dnp`、Arch/CachyOS `.pkg.tar.zst` |
+| Linux x86_64，单后端变体 | 系统 CEF 或 WebKitGTK + GTK3 | `.dnp`、Arch/CachyOS `.pkg.tar.zst` |
 
 运行时静态包含定制 Deno runtime 和 Laufey 后端；系统 Framework、WebView/CEF 库仍由操作系统提供。目前不支持 Windows、macOS Intel 和 Linux ARM64。
 
@@ -140,9 +140,18 @@ macOS `.app` 使用原生启动器，并进行本地 ad-hoc 签名；Linux 软�
 则复制包并准备旁置文件。使用 `dnr cache info` 查看、`dnr cache clean --all` 清理。
 跨平台变体、路径兼容性及完整配置见[原生打包](docs/NATIVE-PACKAGING.md)。
 
+Linux 可在入口路径前传入 `--backend auto|system-cef|webview`，例如：
+
+```sh
+dnr --backend system-cef examples/desktop/smoke.ts
+dnr --backend=webview desktop.dnp
+```
+
+省略参数等同 `auto`：双后端优先 CEF，ABI/资源检查失败或初始化返回错误时回退 WebView；显式选择不回退。单后端的 `auto` 使用已有后端，显式选择未编译的后端报错。仍在首次 GUI API 调用时初始化，不重跑应用，后端初始化成功后不再切换。双后端需要安装两套链接的系统库；进程崩溃和 ELF 动态依赖缺失不属于可恢复的初始化错误。入口后的参数仍交给应用。
+
 ## Arch Linux / CachyOS 软件包
 
-固定发行版的 AUR 配方位于 [`packaging/aur`](packaging/aur/README.md)：默认 `dnr` 使用系统 CEF，`dnr-webview` 使用 WebKitGTK。选择 `dnr-bin` 或 `dnr-webview-bin` 可下载 GitHub Release 预编译包，无需编译运行时。四种运行时配方只安装 `dnr`，选择其一即可；需要打包器时另装 `dnc` 或 `dnc-bin`，它们不依赖 GUI 库或运行时。推送版本标签后，同一 Actions 工作流在三个独立 Arch 容器中并行构建两个运行时后端和独立 dnc，全部成功后统一发布三个可单独下载的包。依赖与安装方法见[打包说明](packaging/aur/README.md)。
+固定发行版的 AUR 配方位于 [`packaging/aur`](packaging/aur/README.md)：默认 `dnr`/`dnr-bin` 同时链接系统 CEF 与 WebView；`dnr-cef`/`dnr-cef-bin` 仅链接 CEF；`dnr-webview`/`dnr-webview-bin` 仅链接 WebView。六种运行时包互斥，选择其一；打包器另装 `dnc` 或 `dnc-bin`。发布工作流在四个独立 Arch 容器中构建三个运行时变体和独立 dnc，全部成功后统一发布。
 
 ## 从源码构建
 
@@ -168,14 +177,15 @@ cargo run --locked -p xtask -- build
 
 `prepare` 将上游源码复制到 `.upstream/` 并应用本地接入，不修改源仓库；`build` 生成 `dist/dnr` 和 `dist/dnc`。在根工作区直接执行普通 `cargo build` 不会构建完整运行时。
 
-Linux system-CEF 变体使用以下构建命令：
+Linux 默认构建 `dual` 双后端；macOS 默认构建 WebView。Linux 单后端使用以下构建命令：
 
 ```sh
 cargo run --locked -p xtask -- build --backend system-cef
+# 或：cargo run --locked -p xtask -- build --backend webview
 dist/dnr --check-system-cef
 ```
 
-两种后端会写入同一个 `dist/dnr`。需要同时保留时请分别复制产物；系统 CEF 更新后，应重新执行兼容性检查。
+三个构建变体会写入同一个 `dist/dnr`。需要同时保留时请分别复制产物；系统 CEF 更新后，应重新执行兼容性检查。
 
 如果只需要打包器：
 

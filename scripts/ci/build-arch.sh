@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-variant=${1:?usage: build-arch.sh dnr|dnr-webview|dnc tag commit}
+variant=${1:?usage: build-arch.sh dnr|dnr-cef|dnr-webview|dnc tag commit}
 tag=${2:?missing release tag}
 commit=${3:?missing commit}
-[[ $variant == dnr || $variant == dnr-webview || $variant == dnc ]]
+[[ $variant == dnr || $variant == dnr-cef || $variant == dnr-webview || $variant == dnc ]]
 [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
 [[ $commit =~ ^[0-9a-f]{40}$ ]]
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -92,7 +92,7 @@ ldd installed/usr/bin/"$binary" | tee "$output/$variant-libraries.txt"
 if grep -q 'not found' "$output/$variant-libraries.txt"; then
     exit 1
 fi
-if [[ $variant == dnr ]]; then
+if [[ $variant == dnr || $variant == dnr-cef ]]; then
     installed/usr/bin/dnr --check-system-cef
 fi
 cp "$package_file" "$output/"

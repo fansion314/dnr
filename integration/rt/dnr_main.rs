@@ -1,5 +1,11 @@
+mod dnr_backend;
+
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let backend = dnr_backend::take_backend(&mut args).unwrap_or_else(|error| {
+        eprintln!("dnr: {error}");
+        std::process::exit(2);
+    });
     if args.first().is_some_and(|s| s == "--version" || s == "-V") {
         println!(
             "dnr 0.3.0 (Deno 2.9.7; Laufey 0.7.0; format 3; backend {})",
@@ -9,7 +15,7 @@ fn main() {
     }
     if args.is_empty() || args.first().is_some_and(|s| s == "--help" || s == "-h") {
         println!(
-            "dnr [--no-code-cache] [--no-transpile-cache] <script.ts|application.dnp|installed-directory> [args...]\ndnr tree <application.dnp>\ndnr extract <application.dnp> <directory>\ndnr install <application.dnp> [directory] [--mode native|full] [--force]\ndnr cache <list|info|clean|rebuild> [options]\n\nShared Deno runtime. Local modules and prepared node_modules only.\nDesktop activates on GUI API use. Applications run with full permissions.\nTree includes ZIP metadata; extract requires a new or empty directory.\nNative groups: dnc scan and --package-config; see docs/NATIVE-PACKAGING.md.\nUse explicit paths (./tree, ./install, ./cache) for scripts with command names."
+            "dnr [--backend auto|system-cef|webview] [--no-code-cache] [--no-transpile-cache] <script.ts|application.dnp|installed-directory> [args...]\ndnr tree <application.dnp>\ndnr extract <application.dnp> <directory>\ndnr install <application.dnp> [directory] [--mode native|full] [--force]\ndnr cache <list|info|clean|rebuild> [options]\n\nShared Deno runtime. Local modules and prepared node_modules only.\nDesktop activates on GUI API use. Auto prefers system CEF, then WebView.\nPlace --backend before the script/package path. Explicit selection disables fallback. Applications run with full permissions.\nTree includes ZIP metadata; extract requires a new or empty directory.\nNative groups: dnc scan and --package-config; see docs/NATIVE-PACKAGING.md.\nUse explicit paths (./tree, ./install, ./cache) for scripts with command names."
         );
         return;
     }
@@ -28,7 +34,7 @@ fn main() {
             std::process::exit(1);
         }
     }
-    denort::dnr_desktop::main(args);
+    denort::dnr_desktop::main(args, &backend);
 }
 
 fn package_command(args: &[String]) -> deno_core::anyhow::Result<()> {

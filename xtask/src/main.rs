@@ -22,7 +22,7 @@ enum Task {
     },
     /// Build dnr from the prepared sources; system-cef requires native Linux.
     Build {
-        #[arg(long, default_value = "webview")]
+        #[arg(long, default_value = if cfg!(target_os = "linux") { "dual" } else { "webview" })]
         backend: String,
         #[arg(long)]
         debug: bool,
@@ -122,13 +122,12 @@ fn main() -> Result<()> {
             {
                 bail!("dnr supports native macOS ARM64 and Linux x86_64 builds");
             }
-            if !matches!(backend.as_str(), "webview" | "system-cef") {
+            if !matches!(backend.as_str(), "webview" | "system-cef" | "dual") {
                 bail!("unknown backend: {backend}");
             }
-            if backend == "system-cef"
-                && !(cfg!(target_os = "linux") && cfg!(target_arch = "x86_64"))
+            if backend != "webview" && !(cfg!(target_os = "linux") && cfg!(target_arch = "x86_64"))
             {
-                bail!("system-cef requires native Linux x86_64");
+                bail!("system-cef and dual require native Linux x86_64");
             }
             let manifest = root.join(".upstream/deno/Cargo.toml");
             if !manifest.exists() {
@@ -215,6 +214,7 @@ fn sync_integration(root: &Path) -> Result<()> {
         "dnr_cache.rs",
         "dnr_vfs.rs",
         "dnr_main.rs",
+        "dnr_backend.rs",
         "build.rs",
     ] {
         let source = fs::read(root.join("integration/rt").join(file))?;
@@ -269,3 +269,7 @@ fn sync_integration(root: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../../integration/rt/dnr_backend.rs"]
+mod dnr_backend;

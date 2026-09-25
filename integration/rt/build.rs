@@ -34,7 +34,7 @@ fn main() {
         "cargo:rustc-env=DNR_CACHE_BUILD_ID={:016x}",
         cache_id.finish()
     );
-    let backend = std::env::var("DNR_BACKEND").unwrap_or_else(|_| "webview".into());
+    let backend = std::env::var("DNR_BACKEND").expect("DNR_BACKEND set by xtask");
     println!("cargo:rustc-env=DNR_BACKEND={backend}");
     println!("cargo:rerun-if-env-changed=DNR_BACKEND");
     println!("cargo:rerun-if-env-changed=DNR_ROOT");
@@ -93,10 +93,10 @@ fn main() {
         }
         println!("cargo:rustc-link-lib=c++");
     } else {
-        let packages: &[&str] = if backend == "system-cef" {
-            &["gtk+-3.0", "xi", "x11"]
-        } else {
-            &["webkit2gtk-4.1", "gtk+-3.0"]
+        let packages: &[&str] = match backend.as_str() {
+            "system-cef" => &["gtk+-3.0", "xi", "x11"],
+            "dual" => &["webkit2gtk-4.1", "gtk+-3.0", "xi", "x11"],
+            _ => &["webkit2gtk-4.1", "gtk+-3.0"],
         };
         let out = Command::new("pkg-config")
             .arg("--libs")
@@ -115,7 +115,7 @@ fn main() {
         }
         println!("cargo:rustc-link-lib=stdc++");
         println!("cargo:rustc-link-arg-bin=dnr=-Wl,--exclude-libs,ALL");
-        if backend == "system-cef" {
+        if backend == "system-cef" || backend == "dual" {
             println!("cargo:rustc-link-search=native=/usr/lib/cef");
             println!("cargo:rustc-link-lib=cef");
             println!("cargo:rustc-link-arg-bin=dnr=-Wl,-rpath,/usr/lib/cef");

@@ -25,6 +25,10 @@ pkgbase = dnr-webview
 	optdepends = libnotify: desktop notifications via notify-send
 	provides = dnr=0.3.0
 	conflicts = dnr
+	conflicts = dnr-bin
+	conflicts = dnr-cef
+	conflicts = dnr-cef-bin
+	conflicts = dnr-webview-bin
 	options = !lto
 	options = !debug
 	source = dnr::git+https://github.com/fansion314/dnr.git#tag=v0.3.0

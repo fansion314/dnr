@@ -21,7 +21,16 @@ pub async fn pump_bindings() {
 
 unsafe extern "C" {
     fn dnr_native_main(argc: i32, argv: *mut *mut std::ffi::c_char) -> i32;
-    fn dnr_native_preflight(argc: i32, argv: *mut *mut std::ffi::c_char) -> i32;
+    fn dnr_native_preflight(
+        argc: i32,
+        argv: *mut *mut std::ffi::c_char,
+        backend: *const std::ffi::c_char,
+    ) -> i32;
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnr_runtime_is_initialized() -> bool {
+    laufey::is_initialized()
 }
 
 fn ensure_backend() {
@@ -165,16 +174,25 @@ pub fn options() -> RunOptions {
     }
 }
 
-pub fn main(args: Vec<String>) {
-    let mut native_args: Vec<CString> =
-        std::env::args().map(|s| CString::new(s).unwrap()).collect();
+pub fn main(args: Vec<String>, backend: &str) {
+    let backend = CString::new(backend).unwrap();
+    let mut native_args: Vec<CString> = std::env::args()
+        .take(1)
+        .chain(args.iter().cloned())
+        .map(|s| CString::new(s).unwrap())
+        .collect();
     let mut pointers: Vec<_> = native_args
         .iter_mut()
         .map(|s| s.as_ptr().cast_mut())
         .collect();
     pointers.push(std::ptr::null_mut());
-    let preflight =
-        unsafe { dnr_native_preflight((pointers.len() - 1) as i32, pointers.as_mut_ptr()) };
+    let preflight = unsafe {
+        dnr_native_preflight(
+            (pointers.len() - 1) as i32,
+            pointers.as_mut_ptr(),
+            backend.as_ptr(),
+        )
+    };
     if preflight >= 0 {
         std::process::exit(preflight);
     }

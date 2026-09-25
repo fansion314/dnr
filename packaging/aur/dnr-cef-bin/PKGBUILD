@@ -1,18 +1,18 @@
 # Maintainer: Peilin Fan <peilin.fan@foxmail.com>
-pkgname=dnr-webview-bin
+pkgname=dnr-cef-bin
 pkgver=0.3.0
 pkgrel=1
-pkgdesc='Shared Deno runtime (WebView, prebuilt)'
+pkgdesc='Shared Deno runtime (system CEF, prebuilt)'
 arch=('x86_64')
 url='https://github.com/fansion314/dnr'
 license=('MIT' 'Apache-2.0' 'BSD-3-Clause')
-depends=('glibc' 'gcc-libs' 'gtk3' 'glib2' 'cairo' 'zlib' 'webkit2gtk-4.1' 'libsoup3')
+depends=('glibc' 'gcc-libs' 'gtk3' 'glib2' 'cairo' 'zlib' 'libx11' 'libxi' 'cef')
 optdepends=('libayatana-appindicator: system tray support'
             'libnotify: desktop notifications via notify-send')
-provides=("dnr=$pkgver" "dnr-webview=$pkgver")
-conflicts=('dnr' 'dnr-bin' 'dnr-cef' 'dnr-cef-bin' 'dnr-webview')
+provides=("dnr=$pkgver" "dnr-cef=$pkgver")
+conflicts=('dnr' 'dnr-bin' 'dnr-cef' 'dnr-webview' 'dnr-webview-bin')
 options=('!strip' '!debug')
-_package="dnr-webview-$pkgver-1-x86_64.pkg.tar.zst"
+_package="dnr-cef-$pkgver-1-x86_64.pkg.tar.zst"
 _release="$url/releases/download/v$pkgver"
 source=("$_release/$_package" "$_release/$_package.sha256")
 noextract=("$_package")
@@ -26,13 +26,13 @@ prepare() {
     [[ $digest =~ ^[0-9a-f]{64}$ && $filename == "$_package" && -z $extra ]] || return 1
     printf '%s  %s\n' "$digest" "$_package" | sha256sum --check --status || return 1
     mkdir -p payload
-    bsdtar -xf "$_package" -C payload usr/bin/dnr usr/share/licenses/dnr-webview usr/share/doc/dnr-webview
+    bsdtar -xf "$_package" -C payload usr/bin/dnr usr/share/licenses/dnr-cef usr/share/doc/dnr-cef
 }
 
 package() {
     cd "$srcdir/payload"
     install -Dm755 usr/bin/dnr "$pkgdir/usr/bin/dnr"
     install -d "$pkgdir/usr/share/licenses/$pkgname" "$pkgdir/usr/share/doc/$pkgname"
-    cp -r --no-preserve=ownership usr/share/licenses/dnr-webview/. "$pkgdir/usr/share/licenses/$pkgname/"
-    cp -r --no-preserve=ownership usr/share/doc/dnr-webview/. "$pkgdir/usr/share/doc/$pkgname/"
+    cp -r --no-preserve=ownership usr/share/licenses/dnr-cef/. "$pkgdir/usr/share/licenses/$pkgname/"
+    cp -r --no-preserve=ownership usr/share/doc/dnr-cef/. "$pkgdir/usr/share/doc/$pkgname/"
 }
