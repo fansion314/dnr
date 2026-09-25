@@ -1026,3 +1026,33 @@ CEF 专用变体，共三个 runtime 加独立 dnc。八份 PKGBUILD 的 `bash -
 `dnr --backend`，防止 WebView 应用在双后端 runtime 下默认选到 CEF。
 `cargo test --locked -p dnc`（4 通过、1 忽略）、格式检查及 dnc release 重建通过。
 该补充只改变 packager；上面 dnr runtime 的产物及验证不变。
+
+
+### v0.3.0 GitHub 发布与本机升级（2026-09-25）
+
+- 发布提交 `8e1d882`，标签 `v0.3.0` 已推送 GitHub 与 origin。
+  [Actions 36115087620](https://github.com/fansion314/dnr/actions/runs/36115087620)
+  全部成功，发布 dual、CEF-only、WebView-only 和 dnc 四个 Arch 包及校验文件。
+- Pi 提交 `7d1a80aaf`、新标签 `pi-dnr-v0.87.1-2` 已推送两个远端。
+  [Actions 36118415944](https://github.com/fansion314/pi/actions/runs/36118415944)
+  成功，使用 dnc 0.3.0 生成 DNP v3。原 `0.87.1-1` 标签和资产未改动。
+- 两份 GitHub pacman 资产均通过其发布 SHA-256 校验，再由对应 `-bin` 配方
+  本地重打包。下载的 dnr 正式二进制通过 10 个真实 GUI/故障回退场景。
+  从最终 pi 安装包重新解出的文件通过 3 项结构、Node-API、缓存/旁置离线测试。
+  首次误用 makepkg 收尾后的 pkg/ 工作目录测试，原生文件权限被该目录的清理过程
+  调整而失败；最终归档中的权限正确，重新解包后全部通过，无需修改发布资产。
+- Songjian 提交 `79a9ede` 已推送 origin，新构建 `songjian-1.1.0-3` 使用 v3，
+  新包通过版本检查、前端/桌面测试和真实 KWin 原生关闭验证。
+- 使用 `paru --sudo /usr/bin/pkexec -U --noconfirm` 一次安装三个已验证的本地包。
+  当前为 `dnr-bin 0.3.0-1`、`pi-dnr-bin 0.87.1-2`、`songjian 1.1.0-3`。
+  `pacman -Qkk` 分别检查 24、44、11 个文件，全部 0 altered；命令均从 `/usr/bin` 解析。
+  `dnr --version` 报告 format 3 / backend dual，CEF API 14900 检查通过，
+  `PI_OFFLINE=1 PI_TELEMETRY=0 pi --version` 输出 0.87.1，退出 0。
+- 安装后的 runtime 和两个 DNP 均与已验证的正式/本地产物逐字节相同：
+  dnr SHA-256 `153cdc5f1f09ef66a30444b0ba843800df731f15ef958f993ebd7ef1022e856c`；
+  pi `dfcb70c40e07e7a11f00b3331928ec8f6ee9cb1ed3cbd28f3c1a40a647f08061`；
+  Songjian `18be8f7ecc4b442f6268d1659c632d64c044e0f1100020d8d2c2639c3f356904`。
+
+安装包保存在 `dist/release-install/`，正式 runtime GUI 日志在
+`dist/validation-release-v0.3.0/`。这里只发布 GitHub 资产并使用本地配方安装，
+未向 AUR 服务器提交仓库；未更改用户应用数据。
