@@ -76,6 +76,7 @@ Useful packaging options:
 | `--include source=destination` | Add an external file or directory at a package-relative path. |
 | `--exclude archive/path` | Exclude a file or directory and its descendants. |
 | `--app-id com.example.myapp` | Set a stable identity for application storage. |
+| `--window-icon icon.png` | Embed an optional window/Dock icon (PNG, reduced to at most 128×128). |
 | `--force` | Replace an existing output. |
 
 Without `--app-id`, the packager uses the name in `deno.json` or `package.json`, falling back to the input directory name. Use a unique, stable ID for distributed apps so unrelated applications do not share a storage identity.
@@ -87,22 +88,22 @@ dnr tree my-app.dnp
 dnr extract my-app.dnp ./my-app-unpacked
 ```
 
-Both commands include hidden entries and format metadata (`.dnr/meta.bin` in v3), and neither executes the app. `tree` reads the package index without decompressing ordinary files. `extract` requires a new or empty directory, verifies file contents before publishing the result, and preserves directories, symlinks, and ordinary Unix permissions. It extracts the ZIP contents, not the shell launcher header.
+Both commands include hidden entries and format metadata (`.dnr/meta.bin` in v4), and neither executes the app. `tree` reads the package index without decompressing ordinary files. `extract` requires a new or empty directory, verifies file contents before publishing the result, and preserves directories, symlinks, and ordinary Unix permissions. It extracts the ZIP contents, not the shell launcher header.
 
 Use `dnr tree --help`, `dnr extract --help`, or `dnc --help` for command help. To run a script named `tree` or `extract`, use an explicit path such as `dnr ./tree`.
 
-## Caching and installation (v0.3.0)
+## Caching and installation
 
-New packages use format v3: one uncompressed binary metadata entry and short native payload paths.
-Both tools support only v3. Repack v1/v2 applications from their prepared source directories with the new dnc; old packages are rejected with migration guidance.
-V3 applications and their extensions automatically cache V8 compilation and TS/JSX output in the
+New packages use format v4: one uncompressed binary metadata entry and short native payload paths.
+Both tools support only v4. Repack v1/v2/v3 applications from their prepared source directories with the new dnc; old packages are rejected with migration guidance.
+V4 applications and their extensions automatically cache V8 compilation and TS/JSX output in the
 user cache. Updating the same package path replaces its cache generation while active older
 processes retain their leases. Source code and normal initialization are still required.
 
 ```sh
 dnr install app.dnp ./installed             # dnp + native groups, no user-cache writes
 dnr install app.dnp ./source --mode full     # logical source/resources, no dnp
-dnr ./source                               # preserves appId and v3 compilation caches
+dnr ./source                               # preserves appId and v4 compilation caches
 dnc inspect app.dnp --json                  # no runtime/GUI required
 dnc install app.dnp ./staging               # headless installation for package builders
 dnr cache rebuild                          # rebuild the optional SQLite catalog
@@ -110,7 +111,7 @@ dnr cache rebuild                          # rebuild the optional SQLite catalog
 
 Runtime native loading prefers validated sidecars; V8 and transpilation caches always use the
 user cache. `--no-code-cache` and `--no-transpile-cache` disable the respective compilation caches.
-See [cache and installation semantics](docs/CACHE.md) and [format v3](docs/FORMAT.md).
+See [cache and installation semantics](docs/CACHE.md) and [format v4](docs/FORMAT.md).
 
 ## Desktop apps
 

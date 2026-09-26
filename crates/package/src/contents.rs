@@ -59,7 +59,7 @@ impl Package {
             size: 0,
         });
         let mut archive = self.archive.clone();
-        let metadata_name = crate::v3::META;
+        let metadata_name = crate::metadata::META;
         let index = archive
             .index_for_name(metadata_name)
             .context("missing manifest")?;
@@ -93,11 +93,11 @@ impl Package {
             );
             ensure!(
                 fs::read_dir(&destination)?.next().is_none()
-                    || (force && crate::v3::installed_manifest(&destination).is_ok()),
+                    || (force && crate::metadata::installed_manifest(&destination).is_ok()),
                 "full install needs an empty directory or --force on an existing full installation"
             );
         }
-        let install_lock = destination.join(crate::v3::INSTALL_LOCK);
+        let install_lock = destination.join(crate::metadata::INSTALL_LOCK);
         let lease = crate::persistent::lock_file(&install_lock)?;
         lease
             .try_lock()
@@ -130,10 +130,13 @@ impl Package {
         }
         fs::create_dir_all(stage.path().join(".dnr"))?;
         fs::write(
-            stage.path().join(crate::v3::INSTALL),
-            crate::v3::installation(&self.metadata_bytes, self.selected_target())?,
+            stage.path().join(crate::metadata::INSTALL),
+            crate::metadata::installation(&self.metadata_bytes, self.selected_target())?,
         )?;
-        fs::hard_link(&install_lock, stage.path().join(crate::v3::INSTALL_LOCK))?;
+        fs::hard_link(
+            &install_lock,
+            stage.path().join(crate::metadata::INSTALL_LOCK),
+        )?;
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(stage.path(), fs::Permissions::from_mode(0o755))?;
         let backup = tempfile::Builder::new()

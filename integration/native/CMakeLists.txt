@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.19)
 project(dnr_laufey LANGUAGES C CXX)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 if(APPLE)

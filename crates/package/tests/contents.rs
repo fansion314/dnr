@@ -1,5 +1,5 @@
 mod support;
-use dnr_package::{PackOptions, Package, pack, v3::META};
+use dnr_package::{PackOptions, Package, metadata::META, pack};
 use std::{fs, path::Path};
 
 fn archive(path: &Path, entries: &[(&str, &str, bool)]) {

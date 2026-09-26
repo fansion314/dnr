@@ -16,13 +16,13 @@ pub mod config;
 mod contents;
 mod index;
 mod materialize;
+pub mod metadata;
 pub mod persistent;
 mod reader;
-pub mod v3;
 pub use config::PackageConfig;
 pub use materialize::{NativeCacheStats, NativeUse, cache_directory};
 
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 pub const MARKER: &str = "# DNRZIP1\n";
 pub const DEFAULT_CACHE_BYTES: usize = 256 * 1024 * 1024;
 const MAX_HEADER: usize = 16 * 1024;
@@ -37,6 +37,49 @@ pub struct Manifest {
     pub targets: BTreeMap<String, config::Target>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop: Option<DesktopMetadata>,
+}
+
+/// Optional in-memory desktop identity; no files need to be extracted for an icon.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DesktopMetadata {
+    pub name: Option<String>,
+    pub window_icon: Option<WindowIcon>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WindowIcon {
+    pub width: u32,
+    pub height: u32,
+    /// Straight (unpremultiplied) RGBA8, row-major, with no padding.
+    pub rgba: Vec<u8>,
+}
+
+impl DesktopMetadata {
+    pub fn validate(&self) -> Result<()> {
+        if let Some(name) = &self.name {
+            ensure!(
+                !name.trim().is_empty()
+                    && name.len() <= 4096
+                    && !name.chars().any(char::is_control),
+                "invalid desktop name"
+            );
+        }
+        if let Some(icon) = &self.window_icon {
+            ensure!(
+                (1..=128).contains(&icon.width) && (1..=128).contains(&icon.height),
+                "window icon dimensions must be 1..128"
+            );
+            ensure!(
+                icon.rgba.len() == (icon.width * icon.height * 4) as usize,
+                "invalid window icon RGBA length"
+            );
+        }
+        Ok(())
+    }
 }
 
 pub fn normalized_name(name: &str) -> Result<String> {
@@ -229,13 +272,24 @@ fn identity(options: &PackOptions) -> String {
         .unwrap_or_else(|| "application".into())
 }
 
-/// Build a v3 package without native groups.
+/// Build a v4 package without native groups.
 pub fn pack(options: &PackOptions) -> Result<PackReport> {
     pack_with_config(options, &PackageConfig::default())
 }
 
-/// Build a v3 package using a reviewed native-group configuration.
+/// Build a v4 package using a reviewed native-group configuration.
 pub fn pack_with_config(options: &PackOptions, config: &PackageConfig) -> Result<PackReport> {
+    pack_with_desktop(options, config, None)
+}
+
+pub fn pack_with_desktop(
+    options: &PackOptions,
+    config: &PackageConfig,
+    desktop: Option<DesktopMetadata>,
+) -> Result<PackReport> {
+    if let Some(desktop) = &desktop {
+        desktop.validate()?;
+    }
     ensure!(options.directory.is_dir(), "input must be a directory");
     let entry = normalized_name(&options.entry)?;
     ensure!(!entry.starts_with(".dnr/"), "reserved entrypoint");
@@ -363,6 +417,7 @@ pub fn pack_with_config(options: &PackOptions, config: &PackageConfig) -> Result
         app_id,
         targets: config.targets.clone(),
         groups: config.groups.iter().map(|g| g.id.clone()).collect(),
+        desktop,
     };
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     let quoted_entry = entry.replace('\'', "'\\''");
@@ -378,13 +433,13 @@ pub fn pack_with_config(options: &PackOptions, config: &PackageConfig) -> Result
         .compression_level(Some(6))
         .unix_permissions(0o644);
     zip.start_file(
-        v3::META,
+        metadata::META,
         SimpleFileOptions::default()
             .compression_method(CompressionMethod::Stored)
             .unix_permissions(0o644),
     )?;
     let records = prepared.records.values().cloned().collect::<Vec<_>>();
-    zip.write_all(&v3::encode(&manifest, &records)?)?;
+    zip.write_all(&metadata::encode(&manifest, &records)?)?;
     let mut source_bytes = 0;
     for (name, source) in &entries {
         let meta = fs::symlink_metadata(source)?;
@@ -555,15 +610,16 @@ impl Package {
         let mut file = File::open(&path)?;
         let source_stamp = persistent::SourceStamp::from_metadata(&file.metadata()?);
         let offset = zip_offset(&mut file)?;
-        let manifest_bytes = v3::read_prefix(&mut file, offset)?
-            .context("unsupported DNP format: only v3 is supported; repack with dnc >= 0.3.0")?;
-        let metadata = v3::decode(&manifest_bytes)?;
+        let manifest_bytes = metadata::read_prefix(&mut file, offset)?.context(
+            "unsupported DNP format: only v4 is supported; repack with the matching dnc",
+        )?;
+        let metadata = metadata::decode(&manifest_bytes)?;
         let manifest = metadata.manifest.clone();
         let mut archive = ZipArchive::new(reader::PackageReader::new(file, offset)?)?;
         {
             let entry = archive.by_index(0)?;
             ensure!(
-                entry.name() == v3::META
+                entry.name() == metadata::META
                     && entry.compression() == CompressionMethod::Stored
                     && entry.size() == manifest_bytes.len() as u64
                     && entry.crc32() == crc32fast::hash(&manifest_bytes),
@@ -589,7 +645,7 @@ impl Package {
             modes.push(file.unix_mode().unwrap_or(0o644) & 0o777);
             let name = normalized_name(file.name().trim_end_matches('/'))?;
             ensure!(seen.insert(name.clone()), "duplicate archive path: {name}");
-            if name == v3::META {
+            if name == metadata::META {
                 continue;
             }
             ensure!(
@@ -764,9 +820,22 @@ impl Package {
         Ok(self.generation.get().unwrap().clone())
     }
     pub fn inspect(&self) -> Result<serde_json::Value> {
-        let records = serde_json::to_value(v3::decode(&self.metadata_bytes)?.records)?;
+        let records = serde_json::to_value(metadata::decode(&self.metadata_bytes)?.records)?;
+        let mut manifest = serde_json::to_value(&self.manifest)?;
+        if let Some(icon) = self
+            .manifest
+            .desktop
+            .as_ref()
+            .and_then(|d| d.window_icon.as_ref())
+        {
+            use sha2::{Digest, Sha256};
+            manifest["desktop"]["windowIcon"] = serde_json::json!({
+                "width": icon.width, "height": icon.height, "format": "rgba8",
+                "bytes": icon.rgba.len(), "sha256": format!("{:x}", Sha256::digest(&icon.rgba)),
+            });
+        }
         Ok(
-            serde_json::json!({"manifest": self.manifest, "records": records, "archiveEntries": self.archive_names()?, "contentHash": self.package_id(), "packageId": self.package_id()}),
+            serde_json::json!({"manifest": manifest, "records": records, "archiveEntries": self.archive_names()?, "contentHash": self.package_id(), "packageId": self.package_id()}),
         )
     }
     pub fn stats(&self) -> CacheStats {

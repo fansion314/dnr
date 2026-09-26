@@ -1,6 +1,6 @@
-# DNR application format v3
+# DNR application format v4
 
-新版 dnc 与 dnr 仅支持 v3。v1/v2 包在读取时明确拒绝，须用原始应用目录和新版 dnc 重新打包；不提供旧格式输出或自动迁移。历史格式见 Git 历史。
+新版 dnc 与 dnr 仅支持 v4。v1/v2/v3 包在读取时明确拒绝，须用原始应用目录和新版 dnc 重新打包；不提供旧格式输出或自动迁移。历史格式见 Git 历史。
 
 ## 封装与读取规则
 
@@ -26,7 +26,7 @@ ZIP 以包所在真实目录为根，ZIP 优先、目录合并、包内节点只
 
 `dnr tree` 与 `dnr extract` 展示、导出实际 ZIP（含 `.dnr/meta.bin` 与所有平台），不启动应用。extract 只接受新目录或空目录，校验后发布并保留权限和链接。`install --mode full` 导出当前平台逻辑视图，两者语义不同。
 
-格式不含运行时、签名、加密或依赖安装指令。[桌面打包](DESKTOP-PACKAGING.md) 在外层添加启动器、图标与平台身份，不改变 DNP 格式。
+格式不含运行时、签名、加密或依赖安装指令。[桌面打包](DESKTOP-PACKAGING.md) 在外层添加启动器、图标与平台身份；可选窗口图标也保存在 DNP 元数据内。
 
 ## 二进制元数据与短载荷路径
 
@@ -37,7 +37,7 @@ local header 定位元数据并校验 CRC，再核对中央目录名称、尺寸
 
 所有整数为小端；字符串为 u32 字节长度＋UTF-8；可选字符串为 u8 存在标志（0/1）
 及存在时的字符串。序列以 u32 项数开头。读取必须有界，拒绝截断、无效标志和尾随数据。
-头部顺序为 `DNRMETA3`（8 字节）、u64 body 长度、32 字节 body SHA-256，再接 body：
+头部顺序为 `DNRMETA4`（8 字节）、u64 body 长度、32 字节 body SHA-256，再接 body：
 
 1. entry、appId 两个字符串。
 2. targets 序列：每项为 id、os、arch、可选 libc；按 id 排序。
@@ -46,6 +46,15 @@ local header 定位元数据并校验 CRC，再核对中央目录名称、尺寸
    u8 kind（0=file、1=directory、2=symlink）、u64 size、u32 mode、u8 摘要存在标志
    及存在时的 32 字节 SHA-256、可选 link/group/target/native 四个字符串、u32 napi
    （0 表示不存在）。native 为 addon、library 或 executable，且必须属于声明组。
+
+5. desktop 存在标志 u8（0/1）。存在时依次为可选 name 字符串、windowIcon
+   存在标志 u8；图标存在时接 u32 width、u32 height 和 `width × height × 4`
+   字节 RGBA8（逐行，无 padding，非预乘 alpha）。尺寸各为 1–128，最多 64 KiB。
+   name 非空、无控制字符，最多 4096 UTF-8 字节。无 desktop 的 CLI 包只写一个 0。
+
+图标只用于原生窗口/Dock，不进入逻辑 VFS，不触发资源解压或落盘。dnc 在打包时
+解码 PNG 并缩小；运行时只在启用桌面后端后创建原生图像。v4 不读取旧版包或完整
+安装描述；旧应用需要重新打包/安装。工具版本与包格式版本独立。
 
 body 摘要即 `contentHash`，不包括自身、ZIP 时间戳、压缩方式或物理偏移。它绑定全部
 记录及内容摘要；不是整包字节摘要或发行者签名。普通文件仍在实际读取时验证 CRC/SHA。
@@ -56,6 +65,6 @@ body 摘要即 `contentHash`，不包括自身、ZIP 时间戳、压缩方式或
 archiveEntries（含工具合成的目录名称）。`dnc cat <包> <ZIP路径>` 输出经校验的原始条目，
 不应用磁盘回退。它们不启动 V8/GUI，也不要求系统 tar 支持 ZIP93。
 
-完整安装描述 `.dnr/install.bin` 以 `DNRINST3` 开头，随后是选定 target 字符串与原始
+完整安装描述 `.dnr/install.bin` 以 `DNRINST4` 开头，随后是选定 target 字符串与原始
 meta.bin。它仅提供安装身份，磁盘源码可变，不能凭描述内的文件摘要跳过源码校验。
 原生旁置、路径分代与编译缓存详见 [缓存与安装](CACHE.md)。

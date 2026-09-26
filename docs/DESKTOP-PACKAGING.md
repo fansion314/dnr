@@ -15,6 +15,7 @@ x86_64 `.pkg.tar.zst`。不携带或安装 dnr，不构建前端、不安装依�
   "version": "1.1.0",
   "description": "专注计时、待办与环境声",
   "entry": "desktop/main.js",
+  "windowIcon": "desktop/icon.png",
   "macos": {
     "icon": "desktop/icon.icns",
     "runtimePath": "/usr/local/bin/dnr",
@@ -57,6 +58,25 @@ dnc prepared --desktop-manifest desktop.json --target archlinux -o release/songj
 `name` 支持中文、空格和引号；`version` 使用点分十进制数字，例如 `1.1.0`。
 只需提供当前目标的 `macos` 或 `linux` 部分。
 
+## 可选窗口图标（格式 v4）
+
+普通 CLI 包无需图标。给独立 DNP 设置图标：
+
+```sh
+dnc prepared --entry main.ts --app-id com.example.app --window-icon icon.png -o app.dnp
+```
+
+桌面 manifest 的可选 `windowIcon`（PNG，相对 manifest）可覆盖窗口/Dock 图标；
+命令行 `--window-icon`（相对 cwd）优先。省略时自动使用 `linux.icon` 的 PNG，
+或 `macos.icon`（ICNS 在 macOS 打包时通过 sips 转为 PNG）。SVG 仍用于 Linux
+桌面入口；需要内嵌图标时另提供 PNG。PNG 最大 8 MiB、4096×4096，拒绝动画，
+打包时等比缩小至最多 128×128 RGBA，元数据最多增加约 64 KiB。
+
+CEF 分别设置标题栏小图标和应用图标，WebView 设置 GTK 窗口默认图标，macOS
+直接设置 NSApplication 的 Dock 图标。GTK3/Wayland 的窗口管理器仍通过 appId
+匹配已安装的 `<appId>.desktop` 获取图标；单独 DNP 的内嵌图标不能代替该匹配。
+图标与名称在首次启用 GUI 时应用；纯 CLI 不加载 GUI 或显示 Dock 图标。
+
 ## macOS
 
 输出结构：
@@ -79,8 +99,9 @@ dnc prepared --desktop-manifest desktop.json --target archlinux -o release/songj
 该文件，也不要求构建时已安装在该位置；运行时缺失时启动器显示错误对话框。
 共享 runtime 的更新和版本兼容由安装者管理。
 
-原生 ARM64 启动器从自身 bundle 定位 `.dnp`、图标，设置 Laufey 应用名称与身份，
-随后 `exec` 共享 dnr，保留参数和调用者 cwd。无需 Finder 的 PATH 包含 dnr。
+原生 ARM64 启动器从自身 bundle 定位 `.dnp`，随后 `exec` 共享 dnr，
+保留 LaunchServices 原生入口、参数和调用者 cwd。应用名称、身份和 Dock 图标
+由 dnr 从包元数据读取，直接运行 DNP 也能设置 Dock 图标。无需 Finder 的 PATH 包含 dnr。
 `minimumSystemVersion` 默认 `11.0`，只设置 launcher/Info.plist 的最低版本；
 实际最低系统版本还取决于共享 dnr 自身。
 

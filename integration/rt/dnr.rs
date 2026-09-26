@@ -23,6 +23,22 @@ use std::{
 };
 
 static PACKAGE: OnceLock<Arc<Package>> = OnceLock::new();
+pub static WINDOW_ICON: OnceLock<dnr_package::WindowIcon> = OnceLock::new();
+
+// Called while loading the application, before the JS/native threads start.
+fn desktop_identity(manifest: &dnr_package::Manifest) {
+    unsafe {
+        std::env::set_var("LAUFEY_APP_ID", &manifest.app_id);
+        if let Some(desktop) = &manifest.desktop {
+            if let Some(name) = &desktop.name {
+                std::env::set_var("LAUFEY_APP_NAME", name);
+            }
+            if let Some(icon) = &desktop.window_icon {
+                let _ = WINDOW_ICON.set(icon.clone());
+            }
+        }
+    }
+}
 
 struct PackageCommands(Arc<Package>);
 impl deno_runtime::deno_process::NativeCommandResolver for PackageCommands {
@@ -167,8 +183,8 @@ pub fn application(mut args: Vec<String>) -> Result<StandaloneData, AnyError> {
         args.remove(0);
     }
     let installed = if input.is_dir() {
-        let _ = INSTALLED_LEASE.set(dnr_package::v3::installed_lease(&input)?);
-        Some(dnr_package::v3::installed_manifest(&input)?)
+        let _ = INSTALLED_LEASE.set(dnr_package::metadata::installed_lease(&input)?);
+        Some(dnr_package::metadata::installed_manifest(&input)?)
     } else {
         None
     };
@@ -181,6 +197,7 @@ pub fn application(mut args: Vec<String>) -> Result<StandaloneData, AnyError> {
     let (root, entry, app_id, mut vfs) = if is_package {
         let package = Arc::new(Package::open(&input, DEFAULT_CACHE_BYTES)?);
         package.check_platform()?;
+        desktop_identity(&package.manifest);
         if code_cache || transpile_cache {
             if let Ok(generation) = package.cache_generation() {
                 crate::dnr_cache::init(generation, code_cache, transpile_cache);
@@ -212,10 +229,11 @@ pub fn application(mut args: Vec<String>) -> Result<StandaloneData, AnyError> {
         (root, entry, id, vfs)
     } else {
         let (root, entry, id) = if let Some((manifest, content)) = installed {
+            desktop_identity(&manifest);
             if code_cache || transpile_cache {
                 let open = || -> Result<_, AnyError> {
                     let stamp = dnr_package::persistent::SourceStamp::read(
-                        &input.join(dnr_package::v3::INSTALL),
+                        &input.join(dnr_package::metadata::INSTALL),
                     )?;
                     dnr_package::persistent::Generation::open(
                         &dnr_package::cache_directory()?,

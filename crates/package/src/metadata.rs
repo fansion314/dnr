@@ -1,5 +1,5 @@
-//! Portable, bounded v3 metadata. All integers are little endian; no native struct layout.
-use crate::{Manifest, config::Target, index::Record};
+//! Portable, bounded v4 metadata. All integers are little endian; no native struct layout.
+use crate::{DesktopMetadata, Manifest, WindowIcon, config::Target, index::Record};
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -8,7 +8,7 @@ pub const META: &str = ".dnr/meta.bin";
 pub const INSTALL: &str = ".dnr/install.bin";
 pub const INSTALL_LOCK: &str = ".dnr/install.lock";
 pub const LIMIT: u64 = 64 * 1024 * 1024;
-const MAGIC: &[u8; 8] = b"DNRMETA3";
+const MAGIC: &[u8; 8] = b"DNRMETA4";
 
 pub(crate) fn read_prefix(file: &mut std::fs::File, offset: u64) -> Result<Option<Vec<u8>>> {
     use std::io::{Read, Seek, SeekFrom};
@@ -25,7 +25,7 @@ pub(crate) fn read_prefix(file: &mut std::fs::File, offset: u64) -> Result<Optio
     }
     ensure!(
         u16::from_le_bytes(header[6..8].try_into()?) & 9 == 0 && header[8..10] == [0, 0],
-        "v3 metadata must be stored without encryption or data descriptor"
+        "v4 metadata must be stored without encryption or data descriptor"
     );
     let size = u32::from_le_bytes(header[22..26].try_into()?);
     ensure!(
@@ -43,7 +43,7 @@ pub(crate) fn read_prefix(file: &mut std::fs::File, offset: u64) -> Result<Optio
 }
 
 pub(crate) fn installation(bytes: &[u8], target: &str) -> Result<Vec<u8>> {
-    let mut out = b"DNRINST3".to_vec();
+    let mut out = b"DNRINST4".to_vec();
     string(&mut out, target)?;
     out.extend(bytes);
     Ok(out)
@@ -110,6 +110,17 @@ pub(crate) fn encode(manifest: &Manifest, records: &[Record]) -> Result<Vec<u8>>
         }
         body.extend(r.napi.unwrap_or(0).to_le_bytes());
     }
+    body.push(u8::from(manifest.desktop.is_some()));
+    if let Some(desktop) = &manifest.desktop {
+        desktop.validate()?;
+        optional(&mut body, desktop.name.as_deref())?;
+        body.push(u8::from(desktop.window_icon.is_some()));
+        if let Some(icon) = &desktop.window_icon {
+            body.extend(icon.width.to_le_bytes());
+            body.extend(icon.height.to_le_bytes());
+            body.extend(&icon.rgba);
+        }
+    }
     ensure!(body.len() as u64 <= LIMIT - 48, "oversized metadata");
     let mut out = Vec::with_capacity(body.len() + 48);
     out.extend(MAGIC);
@@ -131,7 +142,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 impl<'a> Reader<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        ensure!(n <= self.0.len(), "truncated v3 metadata");
+        ensure!(n <= self.0.len(), "truncated v4 metadata");
         let (bytes, rest) = self.0.split_at(n);
         self.0 = rest;
         Ok(bytes)
@@ -165,7 +176,10 @@ impl<'a> Reader<'a> {
 pub(crate) fn decode(bytes: &[u8]) -> Result<Metadata> {
     ensure!(bytes.len() as u64 <= LIMIT, "oversized metadata");
     let mut r = Reader(bytes);
-    ensure!(r.take(8)? == MAGIC, "unsupported metadata format");
+    ensure!(
+        r.take(8)? == MAGIC,
+        "unsupported DNP format: only v4 is supported; repack with the matching dnc"
+    );
     let len = r.u64()?;
     let hash = r.take(32)?;
     ensure!(
@@ -230,14 +244,42 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Metadata> {
             napi,
         });
     }
+    let desktop = match r.byte()? {
+        0 => None,
+        1 => {
+            let name = r.optional()?;
+            let window_icon = match r.byte()? {
+                0 => None,
+                1 => {
+                    let width = r.u32()?;
+                    let height = r.u32()?;
+                    ensure!(
+                        (1..=128).contains(&width) && (1..=128).contains(&height),
+                        "window icon dimensions must be 1..128"
+                    );
+                    Some(WindowIcon {
+                        width,
+                        height,
+                        rgba: r.take((width * height * 4) as usize)?.to_vec(),
+                    })
+                }
+                _ => anyhow::bail!("invalid window icon flag"),
+            };
+            let desktop = DesktopMetadata { name, window_icon };
+            desktop.validate()?;
+            Some(desktop)
+        }
+        _ => anyhow::bail!("invalid desktop metadata flag"),
+    };
     ensure!(r.0.is_empty(), "trailing metadata bytes");
     Ok(Metadata {
         manifest: Manifest {
-            format_version: 3,
+            format_version: crate::FORMAT_VERSION,
             entry,
             app_id,
             targets,
             groups,
+            desktop,
         },
         records,
         content_hash,
@@ -266,7 +308,7 @@ pub fn installed_manifest(directory: &std::path::Path) -> Result<(Manifest, Stri
     );
     let bytes = std::fs::read(path)?;
     let mut reader = Reader(&bytes);
-    ensure!(reader.take(8)? == b"DNRINST3", "invalid full installation");
+    ensure!(reader.take(8)? == b"DNRINST4", "invalid full installation");
     let target = reader.string()?;
     let decoded = decode(reader.0).context("reading full installation")?;
     let host = Target::host();
@@ -286,4 +328,65 @@ pub fn installed_manifest(directory: &std::path::Path) -> Result<(Manifest, Stri
         "invalid installed appId"
     );
     Ok((decoded.manifest, decoded.content_hash))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> Vec<u8> {
+        encode(
+            &Manifest {
+                format_version: crate::FORMAT_VERSION,
+                entry: "main.ts".into(),
+                app_id: "test.icon".into(),
+                targets: Default::default(),
+                groups: vec![],
+                desktop: Some(DesktopMetadata {
+                    name: None,
+                    window_icon: Some(WindowIcon {
+                        width: 1,
+                        height: 1,
+                        rgba: vec![255, 0, 0, 128],
+                    }),
+                }),
+            },
+            &[],
+        )
+        .unwrap()
+    }
+
+    fn rehash(bytes: &mut [u8]) {
+        let len = (bytes.len() - 48) as u64;
+        bytes[8..16].copy_from_slice(&len.to_le_bytes());
+        let hash = Sha256::digest(&bytes[48..]);
+        bytes[16..48].copy_from_slice(&hash);
+    }
+
+    #[test]
+    fn rejects_malformed_icons_even_with_valid_body_hash() {
+        let bytes = sample();
+        assert!(decode(&bytes).is_ok());
+        for width in [0u32, 129, u32::MAX] {
+            let mut malformed = bytes.clone();
+            let offset = malformed.len() - 12;
+            malformed[offset..offset + 4].copy_from_slice(&width.to_le_bytes());
+            rehash(&mut malformed);
+            assert!(decode(&malformed).is_err());
+        }
+        for length in [bytes.len() - 1, bytes.len() + 1] {
+            let mut malformed = bytes.clone();
+            malformed.resize(length, 0);
+            rehash(&mut malformed);
+            assert!(decode(&malformed).is_err());
+        }
+        let mut malformed = bytes.clone();
+        let flag = malformed.len() - 13;
+        malformed[flag] = 2;
+        rehash(&mut malformed);
+        assert!(decode(&malformed).is_err());
+        let mut old = bytes;
+        old[..8].copy_from_slice(b"DNRMETA3");
+        assert!(decode(&old).err().unwrap().to_string().contains("repack"));
+    }
 }

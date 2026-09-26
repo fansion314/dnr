@@ -48,7 +48,7 @@ fn lazy_group_is_complete_readonly_and_reused_between_instances() {
     pack_with_config(&options, &config).unwrap();
     let cache = temp.path().join("cache");
     let package = open(&options, &cache);
-    assert_eq!(package.manifest.format_version, 3);
+    assert_eq!(package.manifest.format_version, 4);
     assert_eq!(
         &*package.read("plugin/data/a").unwrap().unwrap(),
         b"resource"
@@ -280,7 +280,7 @@ fn valid_zip_crc_does_not_replace_the_content_checksum() {
         let name = source.name().to_owned();
         let mode = source.unix_mode().unwrap_or(0o644);
         let opt = SimpleFileOptions::default()
-            .compression_method(if name == dnr_package::v3::META {
+            .compression_method(if name == dnr_package::metadata::META {
                 zip::CompressionMethod::Stored
             } else {
                 zip::CompressionMethod::Zstd

@@ -19,7 +19,7 @@ dnr 将运行时与应用内容分开发行，避免每个 Deno CLI/桌面应用
 3. 应用格式是 shell 启动头 + ZIP；普通文件按条目使用 Zstd level 6。启动头转发参数，manifest 保存入口、格式版本和 appId。
 4. dnc 只打包目录与显式 include/exclude 的资源，不执行前端构建、依赖安装、依赖图收集、转译或 minify。
 5. dnr 支持本地模块和准备好的 `node_modules`，运行时转译 TS/TSX/JSX；不在线获取 npm、JSR、HTTP 模块。应用自己的 `fetch`、HTTP 服务等网络 API 不受此范围限制。
-6. 应用默认全权限运行，不是沙箱。新版仅支持 v3，v1/v2 包必须重新打包。包内 Node-API / FFI 库和程序必须在元数据 group 中声明；首次原生加载/执行时整组准备，优先复用包旁预解压内容，其次复用用户持久缓存，否则校验后解压。普通读取不触发原生落盘；ZIP 外的原生库继续从磁盘加载。v3 默认启用用户 V8/转译缓存，同路径内容换代；完整安装可用 `dnr <目录>` 启动。详见 docs/NATIVE-PACKAGING.md 和 docs/CACHE.md。
+6. 应用默认全权限运行，不是沙箱。新版仅支持 v4，v1/v2/v3 包必须重新打包。包内 Node-API / FFI 库和程序必须在元数据 group 中声明；首次原生加载/执行时整组准备，优先复用包旁预解压内容，其次复用用户持久缓存，否则校验后解压。普通读取不触发原生落盘；ZIP 外的原生库继续从磁盘加载。v4 默认启用用户 V8/转译缓存，同路径内容换代；完整安装可用 `dnr <目录>` 启动。详见 docs/NATIVE-PACKAGING.md 和 docs/CACHE.md。
 7. Linux 用 `--backend auto|system-cef|webview`（入口前）选择桌面后端，默认 auto 优先 CEF，ABI/资源检查或初始化返回失败时回退 WebView；显式选择不回退，初始化成功后不切换或重跑应用。实际调用需要 GUI 的桌面 API 时才启动后端。普通脚本、HTTP 服务和 CLI 异常不应打开窗口。
 8. 页面通过 `window.bindings.<name>()` 调用 `BrowserWindow.bind()`。窗口、托盘、后台 JS 任务和退出事件共同决定生命周期；不能在最后一个窗口关闭时直接终止仍有工作的应用。
 9. 按用户要求，dnc 支持 desktop manifest 驱动的 macOS ARM64 薄 `.app` 和 Arch/CachyOS x86_64 pacman 包；两者不携带运行时。macOS 原生启动器保留 bundle 身份；Linux 使用系统 makepkg。仍不包含 DMG/PKG 安装器、深链注册或自动更新。用法见 `docs/DESKTOP-PACKAGING.md`。

@@ -14,10 +14,10 @@ Eight release-pinned recipes are provided for native x86_64 systems:
 | `dnc-bin` | GitHub Release packager binary | Same as `dnc` |
 
 The six runtime recipes install only `/usr/bin/dnr`, licenses and documentation.
-They conflict with each other; the alternative packages provide `dnr=0.3.1` so applications
+They conflict with each other; the alternative packages provide `dnr=0.4.0` so applications
 can depend on either runtime. The two packager recipes install only `/usr/bin/dnc`
 plus their own licenses and documentation. Choose `dnc` or `dnc-bin` independently
-of the runtime; they conflict only with each other, and `dnc-bin` provides `dnc=0.3.1`.
+of the runtime; they conflict only with each other, and `dnc-bin` provides `dnc=0.4.0`.
 The packager does not depend on an installed runtime. Applications requiring CEF
 must explicitly select `--backend system-cef`.
 The default dual runtime uses `--backend auto`: system CEF first, then WebView if
@@ -28,7 +28,7 @@ install `cef` and `gtk3`; the system CEF package does not depend on GTK. WebView
 desktop operation needs them; CLI/HTTP apps require neither backend. The two single-
 backend variants retain direct linking and mandatory backend dependencies.
 See [Linux backend selection](../../docs/LINUX.md) for fallback boundaries.
-The source URL is `https://github.com/fansion314/dnr.git`, pinned to `v0.3.1`.
+The source URL is `https://github.com/fansion314/dnr.git`, pinned to `v0.4.0`.
 For runtime builds, Deno and Laufey are downloaded separately at the full commits used by xtask.
 These are release packages, not moving `-git` packages.
 

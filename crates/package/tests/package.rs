@@ -324,7 +324,7 @@ fn legacy_packages_are_rejected_with_repack_guidance() {
         zip.finish().unwrap();
         let error = Package::open(&path, 0).unwrap_err().to_string();
         assert!(
-            error.contains("only v3") && error.contains("repack"),
+            error.contains("only v4") && error.contains("repack"),
             "{error}"
         );
     }

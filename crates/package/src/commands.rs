@@ -144,7 +144,7 @@ struct Cached {
 }
 fn scan(base: &Path) -> Result<Vec<Cached>> {
     let mut result = Vec::new();
-    let mut queue = vec![(base.join("v3"), 0)];
+    let mut queue = vec![(base.join("v4"), 0)];
     let max_depth = 3;
     while let Some((path, depth)) = queue.pop() {
         let meta = match fs::symlink_metadata(&path) {
@@ -174,7 +174,7 @@ fn scan(base: &Path) -> Result<Vec<Cached>> {
                         .package_id
                         .bytes()
                         .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
-                if receipt.format == 3
+                if receipt.format == crate::FORMAT_VERSION
                     && valid_id
                     && crate::config::identifier(&receipt.group).is_ok()
                     && crate::config::identifier(&receipt.target).is_ok()

@@ -3,6 +3,84 @@ use std::{fs, path::PathBuf, process::Command};
 
 #[test]
 #[ignore = "requires a built native dnr; set DNR_BIN and pass --ignored"]
+fn desktop_metadata_does_not_activate_gui() {
+    use dnr_package::{DesktopMetadata, PackOptions, PackageConfig, WindowIcon};
+    let binary = PathBuf::from(std::env::var_os("DNR_BIN").expect("DNR_BIN"));
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(
+        source.join("main.ts"),
+        r#"
+      console.log(JSON.stringify([Deno.env.get('LAUFEY_APP_ID'), Deno.env.get('LAUFEY_APP_NAME')]));
+      if (Deno.build.os === 'linux' && Deno.args.includes('dual')) {
+        const maps = Deno.readTextFileSync('/proc/self/maps');
+        if (/libcef|libwebkit2gtk|libgtk-3/.test(maps)) throw Error('GUI loaded by metadata');
+      }
+    "#,
+    )
+    .unwrap();
+    let package = temp.path().join("app.dnp");
+    dnr_package::pack_with_desktop(
+        &PackOptions {
+            directory: source,
+            entry: "main.ts".into(),
+            output: package.clone(),
+            includes: vec![],
+            excludes: vec![],
+            app_id: Some("test.desktop.identity".into()),
+            force: false,
+        },
+        &PackageConfig::default(),
+        Some(DesktopMetadata {
+            name: Some("图标测试".into()),
+            window_icon: Some(WindowIcon {
+                width: 1,
+                height: 1,
+                rgba: vec![255, 0, 0, 255],
+            }),
+        }),
+    )
+    .unwrap();
+    let full = temp.path().join("installed");
+    dnr_package::commands::install(
+        &[
+            package.display().to_string(),
+            full.display().to_string(),
+            "--mode".into(),
+            "full".into(),
+        ],
+        true,
+    )
+    .unwrap();
+    let version = Command::new(&binary).arg("--version").output().unwrap();
+    for input in [package, full] {
+        let output = Command::new(&binary)
+            .arg(input)
+            .arg(
+                if String::from_utf8_lossy(&version.stdout).contains("backend dual") {
+                    "dual"
+                } else {
+                    "single"
+                },
+            )
+            .env("XDG_CACHE_HOME", temp.path().join("cache"))
+            .env("LAUFEY_APP_ID", "wrong.inherited.identity")
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_DISPLAY")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            r#"["test.desktop.identity","图标测试"]"#
+        );
+        assert!(output.stderr.is_empty(), "{output:?}");
+    }
+}
+
+#[test]
+#[ignore = "requires a built native dnr; set DNR_BIN and pass --ignored"]
 fn backend_selection_preserves_cli_and_package_arguments() {
     let binary = PathBuf::from(std::env::var_os("DNR_BIN").expect("set DNR_BIN"))
         .canonicalize()

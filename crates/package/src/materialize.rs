@@ -75,7 +75,7 @@ impl Groups {
                 .collect(),
             sidecar_target: state
                 .has_groups()
-                .then(|| sidecar(path).join("v3").join(&state.id).join(&state.target)),
+                .then(|| sidecar(path).join("v4").join(&state.id).join(&state.target)),
             sidecar_present: OnceLock::new(),
             cache: OnceLock::new(),
             cache_target: OnceLock::new(),
@@ -233,7 +233,7 @@ impl Package {
     }
     pub(crate) fn group_directory(&self, base: &Path, group: &str) -> Result<PathBuf> {
         let v = &self.index;
-        Ok(base.join("v3").join(&v.id).join(&v.target).join(group))
+        Ok(base.join("v4").join(&v.id).join(&v.target).join(group))
     }
     pub(crate) fn group_records(&self, group: &str) -> Result<Vec<&Record>> {
         let v = &self.index;
@@ -685,7 +685,7 @@ impl Package {
             }
             let attempt = || -> Result<(PathBuf, File, File)> {
                 ensure!(
-                    directory.starts_with(generation.base.join("v3"))
+                    directory.starts_with(generation.base.join("v4"))
                         && directory.canonicalize()? == directory,
                     "invalid catalog path"
                 );

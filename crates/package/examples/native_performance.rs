@@ -73,7 +73,7 @@ if(Deno.args[1]==='stat') {
     let output = base.join(format!("groups-{group_count}.dnp"));
     package(&source, &output, groups)?;
     if group_count == 0 {
-        pack(&options(&source, &base.join("plain-v3.dnp")))?;
+        pack(&options(&source, &base.join("plain-v4.dnp")))?;
     }
     Ok(output)
 }
@@ -200,10 +200,10 @@ fn main() -> Result<()> {
         }
     }
     metrics.insert(
-        "open_plain_v3_ms".into(),
+        "open_plain_v4_ms".into(),
         median(
             |_| {
-                black_box(Package::open(&base.join("plain-v3.dnp"), 0)?);
+                black_box(Package::open(&base.join("plain-v4.dnp"), 0)?);
                 Ok(())
             },
             5,

@@ -146,15 +146,47 @@
  
 --- a/webview/src/main_linux.cc
 +++ b/webview/src/main_linux.cc
-@@ -12,7 +12,7 @@
+@@ -3,6 +3,7 @@
+ #include "runtime_loader.h"
+ 
+ #include <gtk/gtk.h>
++#include "desktop_icon.h"
+ 
+ #include <unistd.h>
+ 
+@@ -12,7 +13,6 @@
  #include <string>
  
  int main(int argc, char* argv[]) {
 -  gtk_init(&argc, &argv);
-+  if (!gtk_init_check(&argc, &argv)) { std::cerr << "dnr: no usable graphical display" << std::endl; return 1; }
  
    // Application identity for the window manager. The embedder (e.g. deno
    // desktop) passes LAUFEY_APP_ID (the reverse-DNS identifier it also uses for
+@@ -39,20 +39,10 @@
+     gdk_set_program_class(appId.c_str());
+   }
+ 
+-  // Default icon for all windows. Wayland ignores client-set window icons (it
+-  // relies on the app_id → `.desktop` match above), but X11 honors this, so a
+-  // dev run under X11 shows the configured icon directly.
+-  if (const char* iconPath = getenv("LAUFEY_APP_ICON")) {
+-    if (*iconPath) {
+-      GError* error = nullptr;
+-      if (!gtk_window_set_default_icon_from_file(iconPath, &error)) {
+-        if (error) {
+-          std::cerr << "Failed to load app icon '" << iconPath
+-                    << "': " << error->message << std::endl;
+-          g_error_free(error);
+-        }
+-      }
+-    }
++  if (!gtk_init_check(&argc, &argv)) { std::cerr << "dnr: no usable graphical display" << std::endl; return 1; }
++  if (auto* icon = dnr_load_window_icon()) {
++    gtk_window_set_default_icon(icon);
++    g_object_unref(icon);
+   }
+ 
+   std::string runtimePath;
 --- a/cef/src/main_linux.cc
 +++ b/cef/src/main_linux.cc
 @@ -21,6 +21,7 @@
@@ -175,10 +207,16 @@
        command_line->AppendSwitch("disable-background-networking");
      }
    }
-@@ -813,7 +817,16 @@
+@@ -813,7 +817,22 @@
      return run_headless(g_runtime_path);
    }
  
++  // Set GTK identity before opening its display, including an auto fallback
++  // to WebView after CEF initialization fails.
++  if (!g_app_id.empty()) {
++    g_set_prgname(g_app_id.c_str());
++    gdk_set_program_class(g_app_id.c_str());
++  }
 +  // Native menus, trays and dialogs use GTK even when CEF uses Ozone/Wayland.
 +  // Renderer/subprocess and headless paths above must not initialize a display.
 +  if (!gtk_init_check(nullptr, nullptr)) {
@@ -215,7 +253,47 @@
  }
  
  - (NSMenu*)applicationDockMenu:(NSApplication*)sender {
-@@ -264,6 +265,14 @@
+@@ -213,6 +214,8 @@
+   return getenv("NODE_CHANNEL_FD") != nullptr ||
+          getenv("NEXT_PRIVATE_WORKER") != nullptr;
+ }
++
++extern "C" const unsigned char* dnr_window_icon(uint32_t*, uint32_t*);
+ 
+ int main(int argc, char* argv[]) {
+   NSString* runtimePathArg = nil;
+@@ -243,15 +246,23 @@
+     [NSApplication sharedApplication];
+     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+ 
+-    // Allow the host to override the dock icon at launch (e.g. a project's
+-    // favicon during `deno desktop --hmr`). Setting it programmatically
+-    // bypasses LaunchServices' icon cache and the bundle's CFBundleIconFile.
+-    if (const char* icon_path = getenv("LAUFEY_APP_ICON")) {
++    uint32_t iconWidth = 0, iconHeight = 0;
++    if (const auto* rgba = dnr_window_icon(&iconWidth, &iconHeight)) {
++      NSBitmapImageRep* bitmap = [[NSBitmapImageRep alloc]
++          initWithBitmapDataPlanes:nullptr pixelsWide:iconWidth pixelsHigh:iconHeight
++          bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO
++          colorSpaceName:NSDeviceRGBColorSpace bitmapFormat:NSBitmapFormatAlphaNonpremultiplied
++          bytesPerRow:iconWidth * 4 bitsPerPixel:32];
++      if (bitmap) {
++        memcpy(bitmap.bitmapData, rgba, iconWidth * iconHeight * 4);
++        NSImage* icon = [[NSImage alloc] initWithSize:NSMakeSize(iconWidth, iconHeight)];
++        [icon addRepresentation:bitmap];
++        [NSApp setApplicationIconImage:icon];
++      }
++    } else if (const char* icon_path = getenv("LAUFEY_APP_ICON")) {
+       NSImage* icon = [[NSImage alloc]
+           initWithContentsOfFile:[NSString stringWithUTF8String:icon_path]];
+-      if (icon) {
+-        [NSApp setApplicationIconImage:icon];
+-      }
++      if (icon) [NSApp setApplicationIconImage:icon];
+     }
+ 
+     AppDelegate* delegate = [[AppDelegate alloc] init];
+@@ -264,6 +275,14 @@
      [menubar addItem:appMenuItem];
  
      NSMenu* appMenu = [[NSMenu alloc] init];
@@ -249,7 +327,54 @@
  // "delete-event" fires when the user requests a close (e.g. clicks the
 --- a/cef/src/app.cc
 +++ b/cef/src/app.cc
-@@ -212,14 +212,29 @@
+@@ -10,6 +10,10 @@
+ 
+ #ifdef __linux__
+ #include <gtk/gtk.h>
++#include "desktop_icon.h"
++#include "include/cef_image.h"
++#include <vector>
++#include <algorithm>
+ #endif
+ 
+ #ifdef __APPLE__
+@@ -37,10 +41,35 @@
+ LaufeyHandler* g_handler = nullptr;
+ }
+ 
++#ifdef __linux__
++static CefRefPtr<CefImage> DnrCefIcon(GdkPixbuf* source, int size) {
++  auto* scaled = gdk_pixbuf_scale_simple(source, size, size, GDK_INTERP_BILINEAR);
++  auto* rgba = gdk_pixbuf_add_alpha(scaled, FALSE, 0, 0, 0);
++  g_object_unref(scaled);
++  const auto* pixels = gdk_pixbuf_read_pixels(rgba);
++  const int stride = gdk_pixbuf_get_rowstride(rgba);
++  std::vector<unsigned char> packed(size * size * 4);
++  for (int y = 0; y < size; ++y)
++    std::copy_n(pixels + y * stride, size * 4, packed.data() + y * size * 4);
++  auto image = CefImage::CreateImage();
++  image->AddBitmap(1.0f, size, size, CEF_COLOR_TYPE_RGBA_8888,
++                   CEF_ALPHA_TYPE_POSTMULTIPLIED, packed.data(), packed.size());
++  g_object_unref(rgba);
++  return image;
++}
++#endif
++
+ // LaufeyWindowDelegate implementation
+ 
+ void LaufeyWindowDelegate::OnWindowCreated(CefRefPtr<CefWindow> window) {
+   window->AddChildView(browser_view_);
++#ifdef __linux__
++  if (auto* icon = dnr_load_window_icon()) {
++    window->SetWindowIcon(DnrCefIcon(icon, 16));
++    window->SetWindowAppIcon(DnrCefIcon(icon, 128));
++    g_object_unref(icon);
++  }
++#endif
+ 
+   // Register native window for event routing. Non-activating panels
+   // (LAUFEY_WINDOW_FLAG_NO_ACTIVATE) are reconfigured before the first Show()
+@@ -212,14 +241,29 @@
        break;
      }
    }
@@ -286,7 +411,7 @@
  }
  
  void LaufeyHandler::OnTitleChange(CefRefPtr<CefBrowser> browser,
-@@ -395,6 +410,17 @@
+@@ -395,6 +439,17 @@
      bool is_reload, CefRefPtr<CefJSDialogCallback> callback) {
    callback->Continue(true, "");
    return true;

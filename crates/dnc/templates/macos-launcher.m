@@ -20,19 +20,13 @@ int main(int argc, char **argv) {
   @autoreleasepool {
     NSBundle *bundle = NSBundle.mainBundle;
     NSString *runtime = [bundle objectForInfoDictionaryKey:@"DNRRuntimePath"];
-    NSString *name = [bundle objectForInfoDictionaryKey:@"CFBundleDisplayName"];
-    NSString *identity = [bundle objectForInfoDictionaryKey:@"CFBundleIdentifier"];
     NSString *package = [bundle pathForResource:@"application" ofType:@"dnp"];
-    NSString *icon = [bundle pathForResource:@"AppIcon" ofType:@"icns"];
-    if (!package || !icon || ![runtime isKindOfClass:NSString.class])
+    if (!package || ![runtime isKindOfClass:NSString.class])
       return fail(@"应用资源不完整，请重新安装应用。");
     if (![[NSFileManager defaultManager] isExecutableFileAtPath:runtime])
       return fail([NSString stringWithFormat:@"找不到共享 dnr 运行时，请安装到：\n%@", runtime]);
-    // Preserve LaunchServices identity across exec; the backend reads these
-    // before creating NSApp. No shell expansion or working-directory change.
-    setenv("LAUFEY_APP_NAME", name.UTF8String, 1);
-    setenv("LAUFEY_APP_ID", identity.UTF8String, 1);
-    setenv("LAUFEY_APP_ICON", icon.fileSystemRepresentation, 1);
+    // Keep the native bundle entry point for LaunchServices. The runtime reads
+    // the display name, appId and Dock icon directly from package metadata.
     char **args = calloc((size_t)argc + 2, sizeof(char *));
     if (!args) return fail(@"无法分配启动参数。");
     args[0] = (char *)runtime.fileSystemRepresentation;

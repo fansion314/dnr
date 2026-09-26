@@ -33,7 +33,7 @@ fn v3_dnp_and_desktop_cli_contract() {
     );
     let package = dnr_package::Package::open(&output, 1024).unwrap();
     assert_eq!(package.manifest.entry, "main.ts");
-    assert_eq!(package.manifest.format_version, 3);
+    assert_eq!(package.manifest.format_version, 4);
     for version in ["1", "2"] {
         let rejected = dnc()
             .arg(&input)

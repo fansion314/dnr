@@ -16,3 +16,4 @@ dnr-package.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+png = "0.18.1"

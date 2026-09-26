@@ -32,7 +32,7 @@ fn stored_metadata_content_identity_and_logical_full_install() {
     build(&src, &a);
     build(&src, &b);
     let package = Package::open(&a, 0).unwrap();
-    assert_eq!(package.manifest.format_version, 3);
+    assert_eq!(package.manifest.format_version, 4);
     assert_eq!(
         package.package_id(),
         Package::open(&b, 0).unwrap().package_id()
@@ -67,7 +67,7 @@ fn stored_metadata_content_identity_and_logical_full_install() {
     );
     assert!(full.join("empty").is_dir());
     assert!(full.join("alias.ts").is_symlink());
-    let (manifest, content) = dnr_package::v3::installed_manifest(&full).unwrap();
+    let (manifest, content) = dnr_package::metadata::installed_manifest(&full).unwrap();
     assert_eq!(manifest.app_id, "test.v3");
     assert_eq!(content.as_str(), package.package_id());
     assert!(!full.join("a.dnp").exists());
@@ -77,7 +77,7 @@ fn stored_metadata_content_identity_and_logical_full_install() {
         package.package_id(),
         Package::open(&b, 0).unwrap().package_id()
     );
-    let lease = dnr_package::v3::installed_lease(&full).unwrap();
+    let lease = dnr_package::metadata::installed_lease(&full).unwrap();
     let update = vec![
         b.display().to_string(),
         full.display().to_string(),
@@ -213,7 +213,7 @@ fn corrupt_metadata_is_rejected_before_payload_loading() {
     let output = t.path().join("app");
     build(&src, &output);
     let mut bytes = fs::read(&output).unwrap();
-    let magic = bytes.windows(8).position(|b| b == b"DNRMETA3").unwrap();
+    let magic = bytes.windows(8).position(|b| b == b"DNRMETA4").unwrap();
     bytes[magic + 20] ^= 1;
     fs::write(&output, bytes).unwrap();
     assert!(Package::open(&output, 0).is_err());

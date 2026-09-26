@@ -3,7 +3,7 @@ use dnr_package::Package;
 use std::{path::Path, time::Instant};
 fn main() -> anyhow::Result<()> {
     let paths: Vec<_> = std::env::args().skip(1).collect();
-    anyhow::ensure!(paths.len() == 2, "usage: open_performance <v3-a> <v3-b>");
+    anyhow::ensure!(paths.len() == 2, "usage: open_performance <v4-a> <v4-b>");
     let mut samples = [Vec::new(), Vec::new()];
     for round in 0..110 {
         for which in if round % 2 == 0 { [0, 1] } else { [1, 0] } {

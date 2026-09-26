@@ -33,6 +33,17 @@ pub extern "C" fn dnr_runtime_is_initialized() -> bool {
     laufey::is_initialized()
 }
 
+// Borrowed for the process lifetime. GUI libraries remain unloaded until activation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dnr_window_icon(width: *mut u32, height: *mut u32) -> *const u8 {
+    if let Some(icon) = crate::dnr::WINDOW_ICON.get() {
+        unsafe { *width = icon.width; *height = icon.height; }
+        icon.rgba.as_ptr()
+    } else {
+        std::ptr::null()
+    }
+}
+
 fn ensure_backend() {
     let _lock = INITIALIZING.lock().unwrap();
     if laufey::is_initialized() {

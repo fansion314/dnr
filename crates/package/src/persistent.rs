@@ -98,7 +98,7 @@ impl Generation {
             content_hash: content.into(),
             app_id: app_id.into(),
         };
-        let root = base.join("v3").join(&receipt.path_hash);
+        let root = base.join("v4").join(&receipt.path_hash);
         let gate = lock_file(&root.join(".gate"))?;
         gate.lock()?;
         let directory = root.join("generations").join(content);
@@ -119,7 +119,7 @@ impl Generation {
             atomic_write(&receipt_path, &expected)?;
         }
         let source = if receipt.path.is_dir() {
-            receipt.path.join(crate::v3::INSTALL)
+            receipt.path.join(crate::metadata::INSTALL)
         } else {
             receipt.path.clone()
         };
@@ -301,7 +301,7 @@ impl CompileCache {
         });
         for directory in candidates {
             if directory == &self.generation.directory
-                || !directory.starts_with(self.generation.base.join("v3"))
+                || !directory.starts_with(self.generation.base.join("v4"))
                 || directory.canonicalize().ok().as_ref() != Some(directory)
             {
                 continue;
@@ -510,7 +510,7 @@ pub mod catalog {
     }
     pub fn directories(base: &Path) -> Result<Vec<PathBuf>> {
         let mut result = Vec::new();
-        let Ok(paths) = fs::read_dir(base.join("v3")) else {
+        let Ok(paths) = fs::read_dir(base.join("v4")) else {
             return Ok(result);
         };
         for path in paths {

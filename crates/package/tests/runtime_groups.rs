@@ -163,7 +163,7 @@ fn native_directory(package: &Path, cache: &Path) -> PathBuf {
     let package = dnr_package::Package::open(package, 0).unwrap();
     let path_hash = dnr_package::persistent::hash(package.source_path.to_str().unwrap().as_bytes());
     cache
-        .join("v3")
+        .join("v4")
         .join(path_hash)
         .join("generations")
         .join(package.package_id())
@@ -315,7 +315,7 @@ fn v3_native_groups_ffi_subprocesses_and_sidecar() {
         sidecar["addon"]
             .as_str()
             .unwrap()
-            .contains("application.dnp.unpacked/v3/")
+            .contains("application.dnp.unpacked/v4/")
     );
     let full = temp.path().join("full");
     successful(

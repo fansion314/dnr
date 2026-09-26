@@ -1,4 +1,4 @@
-//! Independent v3 wire fixture writer for malformed-archive and CRC tests.
+//! Independent v4 wire fixture writer for malformed-archive and CRC tests.
 use dnr_package::{MARKER, Region};
 use sha2::{Digest, Sha256};
 use std::{fs, io::Write, path::Path};
@@ -30,7 +30,8 @@ pub fn archive(path: &Path, entries: &[(&str, &str, bool)]) {
         body.extend([0, 0, 0]); // group, target, native
         body.extend(0u32.to_le_bytes()); // napi
     }
-    let mut metadata = b"DNRMETA3".to_vec();
+    body.push(0); // optional desktop metadata
+    let mut metadata = b"DNRMETA4".to_vec();
     metadata.extend((body.len() as u64).to_le_bytes());
     metadata.extend(Sha256::digest(&body));
     metadata.extend(body);
@@ -41,7 +42,8 @@ pub fn archive(path: &Path, entries: &[(&str, &str, bool)]) {
     let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Stored)
         .unix_permissions(0o644);
-    zip.start_file(dnr_package::v3::META, options).unwrap();
+    zip.start_file(dnr_package::metadata::META, options)
+        .unwrap();
     zip.write_all(&metadata).unwrap();
     for &(name, value, link) in entries {
         if link {

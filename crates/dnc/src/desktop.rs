@@ -22,6 +22,9 @@ struct Manifest {
     name: String,
     version: String,
     entry: String,
+    /// Optional PNG override for the embedded window/Dock icon.
+    #[serde(default)]
+    window_icon: Option<PathBuf>,
     #[serde(default)]
     description: String,
     #[serde(default)]
@@ -218,8 +221,43 @@ pub fn build(args: &Args, path: &Path, target: Target) -> Result<()> {
         .map(PackageConfig::load)
         .transpose()?
         .unwrap_or_default();
-    let report = dnr_package::pack_with_config(&options, &config)?;
     let base = path.parent().unwrap_or(Path::new("."));
+    let window_icon = if let Some(path) = &args.window_icon {
+        Some(crate::icon::load(path)?)
+    } else if let Some(path) = &m.window_icon {
+        Some(crate::icon::load(&base.join(path))?)
+    } else {
+        match target {
+            Target::Archlinux => {
+                let linux = m.linux.as_ref().context("manifest needs linux settings")?;
+                if linux.icon.extension().is_some_and(|ext| ext == "png") {
+                    Some(crate::icon::load(&base.join(&linux.icon))?)
+                } else {
+                    None
+                }
+            }
+            Target::Macos => {
+                let macos = m.macos.as_ref().context("manifest needs macos settings")?;
+                let icon = icon_path(base, &macos.icon, &["icns", "png"])?;
+                if icon.extension().is_some_and(|ext| ext == "png") {
+                    Some(crate::icon::load(&icon)?)
+                } else {
+                    let png = work.path().join("window-icon.png");
+                    run(Command::new("sips")
+                        .args(["-s", "format", "png", "-Z", "128"])
+                        .arg(&icon)
+                        .arg("--out")
+                        .arg(&png))?;
+                    Some(crate::icon::load(&png)?)
+                }
+            }
+        }
+    };
+    let desktop = Some(dnr_package::DesktopMetadata {
+        name: Some(m.name.clone()),
+        window_icon,
+    });
+    let report = dnr_package::pack_with_desktop(&options, &config, desktop)?;
     // The final staging directory is a sibling, allowing same-filesystem rename.
     let stage = tempfile::Builder::new()
         .prefix(".dnc-")

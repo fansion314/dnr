@@ -1215,3 +1215,58 @@ CEF/GTK3/WebKitGTK 均在 optdepend。此处复用本机源码与二进制，只
 已安装程序 SHA-256：dnr `2933a938257c3bbe0ec7c420987bce61120fffaf330e5e4e1617ad2dee14bc7a`，
 dnc `2f1ab863afe4ded00be91315d0904cf0a5f4c2664ef1f53f15e17f92bfe22a52`。
 资产、安装包、Actions 成功页面与正式产物复验日志保存在 `dist/release-v0.3.1/`。
+
+## 2026-09-26：v4 可选窗口/Dock 图标（未发布）
+
+环境：CachyOS x86_64、KDE Wayland / KWin `6.7.5-1.1`、NVIDIA
+`615.71.09`，Rust `1.98.1`、GCC `16.2.1`、GTK `3.24.52`、WebKitGTK
+`2.52.6`、CEF `152.0.6-1` / API 14900。保留 sccache、clang/mold。
+
+- 包格式升级为 v4（`DNRMETA4` / `DNRINST4`），图标为可选元数据；普通 CLI
+  不需要配置图标。PNG 在打包时解码并缩小为最多 128×128 的 RGBA8，窗口端直接
+  读取内存。旧包和旧完整安装须重打包，不新增兼容层。
+- CEF 分别设置窗口小图标和应用图标；GTK 在打开显示连接前设置应用身份，并设置
+  默认图标。CEF 初始化失败后的 WebView 回退也保留该身份。macOS 增加从元数据
+  设置 Dock 图标的代码，原生 launcher 保留 bundle 入口/定位/错误提示，移除图标
+  环境变量传递。**macOS 本轮没有原生编译或 Dock 实机验收。**
+- `cargo fmt --all -- --check`、workspace/all-targets Clippy（拒绝警告）通过。
+  `cargo test --locked --workspace`：61 项通过、22 项显式测试忽略；覆盖 PNG
+  解码/透明缩放、无图标包、元数据边界/损坏、图标参与内容身份和完整安装往返。
+  固定上游独立 Git 快照的两份补丁 apply/reverse 检查通过，没有修改 mirror。
+- 从已安装 Songjian v3 导出准备好的内容，用新 dnc 和原
+  `../Songjian/desktop/dnc.json` 执行真实 Arch 打包，退出 0；未改 Songjian 源码。
+  最终 pacman 归档中的 DNP 为 v4，appId 为 `world.fansionia.songjian`，名称为
+  “松间”，内嵌图标 128×128 / 65,536 字节，DNP 共 112,270 字节。
+- 在隔离的数据/缓存目录中，从最终归档取出的 DNP 分别用 CEF 和 WebView 启动，
+  刻意移除 `LAUFEY_APP_ID/NAME/ICON`。KWin 两个窗口的 resourceClass 与
+  desktopFileName 均为 `world.fansionia.songjian`。用户授权的一次桌面截图中，
+  左侧 CEF、右侧 WebView 的标题栏左上角均显示松间树形图标。两个实例随后通过
+  KWin 原生关闭正常退出，没有遗留进程组。GTK3/Wayland 此项复验使用已安装的
+  Songjian `.desktop` / 图标；不声称独立 DNP 能绕过 compositor 的桌面文件匹配。
+- `CARGO_BUILD_JOBS=6 CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_CACHE_RUSTC_INFO=0 cargo run
+  --locked -p xtask -- build --backend dual` 首次构建和最终增量构建均退出 0
+  （约 8m12s / 3m08s），保留上游 unused-variable 警告。最终 ELF 通过 xtask 的
+  Node-API 导出和 GUI 按需链接检查。新 Laufey 干净副本执行 `xtask prepare`
+  成功，所有补丁文件与已构建源码逐字节一致。
+- 最终二进制执行 `runtime`、`runtime_native`、`runtime_groups`、`runtime_cache`、
+  `runtime_backend` 的 21 项显式测试，全部通过（退出 0）。新增测试在 DNP 和
+  完整安装两条路径核对元数据名称/appId，同时确认有图标的 CLI 不加载 GUI 库。
+- `test-linux-backends.py` 使用有内嵌图标的 v4 smoke 包，10 个场景全部通过
+  （退出 0），含实际页面引擎、绑定和 ABI/资源/初始化失败回退。额外 KWin
+  windowAdded 监听捕获了 5 个 WebView 场景，三个回退的窗口身份均正确。
+  初次辅助检查预期 7 条而只得到 5 条，断言失败；没有采集到两个短暂 CEF
+  smoke 窗口，不能用该监听证明它们的身份。CEF 身份使用上面的真实 Songjian
+  长驻窗口单独核对，不把辅助采集缺口记为通过。
+- `test-linux-close.py` 在两个后端分别通过 4 项 KWin 原生关闭回归，退出状态
+  0/9 和异步收尾均正确，全部进程组约 0.07–0.18 秒内退出。测试会话存在
+  AT-SPI bus connection refused 警告；没有修改辅助功能设置，视觉验收使用了
+  经用户明确授权的一次桌面截图。
+
+最终 SHA-256：dnr `1761c86bba80839654ce1c00a5e1bc118797c0e3c651cb69dafae1b3436e7474`；
+dnc `98bf15280c568801f1270302f3ac273d55f512d3543a3310986aa6ab3b836077`；
+验证用 Songjian DNP `9e27b6989b11da99408dcbeadfd70af01c7f393f933e852558d5042e583dbb8c`。
+
+本轮产物和日志位于 `dist/validation-icons-20260926/`，真实截图为
+`backends-desktop.png`（只保留本地，未发布）。系统已安装 dnr/dnc、Pi、Songjian
+及用户数据均未替换；没有提交、推送或发布。普通源码版本号仍为 0.3.1，运行时
+明确报告 `format 4`；这不是兼容已发布 v0.3.1 包的新发行版。

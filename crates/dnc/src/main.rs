@@ -1,7 +1,8 @@
 mod desktop;
+mod icon;
 
 use clap::Parser;
-use dnr_package::{Include, PackOptions, PackageConfig, pack_with_config};
+use dnr_package::{DesktopMetadata, Include, PackOptions, PackageConfig, pack_with_desktop};
 use std::path::PathBuf;
 
 /// Package a prepared JS/TS application as .dnp or a thin desktop app.
@@ -24,6 +25,9 @@ struct Args {
     /// Stable identity used for application storage.
     #[arg(long)]
     app_id: Option<String>,
+    /// PNG window icon embedded in metadata (reduced to at most 128x128).
+    #[arg(long)]
+    window_icon: Option<PathBuf>,
     #[arg(long)]
     force: bool,
     /// Reviewed native groups and platform mappings (JSON).
@@ -113,7 +117,17 @@ fn main() -> anyhow::Result<()> {
         app_id: args.app_id,
         force: args.force,
     };
-    let report = pack_with_config(&options, &config)?;
+    let desktop = args
+        .window_icon
+        .as_deref()
+        .map(|path| {
+            Ok::<_, anyhow::Error>(DesktopMetadata {
+                name: None,
+                window_icon: Some(icon::load(path)?),
+            })
+        })
+        .transpose()?;
+    let report = pack_with_desktop(&options, &config, desktop)?;
     eprintln!(
         "{}: {} files, {} bytes → {} bytes",
         options.output.display(),

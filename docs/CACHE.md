@@ -1,7 +1,7 @@
-# v3 用户缓存和安装
+# v4 用户缓存和安装
 
-dnr 0.3.0 默认对 v3 包、包内代码和包外扩展启用 V8 code cache 与 TS/TSX/JSX
-转译缓存。v1/v2 包不再支持；普通磁盘脚本不使用持久编译缓存。缓存减少编译工作，不保存应用运行状态，
+当前 dnr 默认对 v4 包、包内代码和包外扩展启用 V8 code cache 与 TS/TSX/JSX
+转译缓存。v1/v2/v3 包不再支持；普通磁盘脚本不使用持久编译缓存。缓存减少编译工作，不保存应用运行状态，
 不跳过顶层初始化，也不取代源码。完整解包安装通过 `dnr <安装目录>` 保留同样能力。
 
 ## 身份与目录
@@ -12,7 +12,7 @@ Linux `${XDG_CACHE_HOME:-$HOME/.cache}/dnr`。应用数据仍按 appId 隔离，
 ```text
 <cache>/
   index.sqlite3                    # 可重建的异步索引
-  v3/<pathHash>/
+  v4/<pathHash>/
     current                        # 当前 contentHash
     .gate
     .leases/<contentHash>
@@ -56,13 +56,13 @@ dnr install app.dnp                         # 只预热当前平台原生组
 dnr install app.dnp ./installed             # 默认 native：dnp + 包旁原生组
 dnr install app.dnp ./installed --force      # 更新 native 安装
 dnr install app.dnp ./source --mode full     # 逻辑完整解包，不保留 dnp
-dnr ./source                               # 保留 appId 和 v3 缓存上下文
+dnr ./source                               # 保留 appId 和 v4 缓存上下文
 dnc install app.dnp ./staging --target linux_x64_glibc
 ```
 
 指定目录安装只写目标安装内容，不预编译代码、不访问用户缓存中心。运行时先选择完整
 有效的包旁原生组，再回退用户原生缓存；不会混合两个来源，也不会自动修改包旁副本。
-包旁布局为 `<package>.unpacked/v3/<contentHash>/<target>/<group>/root/...`。
+包旁布局为 `<package>.unpacked/v4/<contentHash>/<target>/<group>/root/...`。
 V8/转译缓存始终在用户缓存中心生成，安装目录只读也不改变这一规则。
 
 `full` 恢复所有公共文件和选定平台文件的逻辑路径，保留资源、权限和符号链接，写入
@@ -95,7 +95,7 @@ SQLite。默认 list/info 使用近似索引统计，指定路径时检查该路
 独立于 dnr 生命周期的外部进程不继承租约，清理前应停止这类程序。
 
 运行测试见 `VALIDATION.md`；同内容启动对照工具为 `scripts/bench-startup-cache.py`，
-独立包打开对照为 `cargo run --release -p dnr-package --example open_performance -- <v3包A> <v3包B>`。
+独立包打开对照为 `cargo run --release -p dnr-package --example open_performance -- <v4包A> <v4包B>`。
 
 `DNR_PROFILE` 默认关闭；打开时只计时本地 AST 转译和缓存写入调用，
 日志输出不计入这些计时。上游 V8 core 编译探针已移除，以减少升级冲突；历史测量保留在验证记录中。
