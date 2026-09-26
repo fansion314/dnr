@@ -1270,3 +1270,40 @@ dnc `98bf15280c568801f1270302f3ac273d55f512d3543a3310986aa6ab3b836077`；
 `backends-desktop.png`（只保留本地，未发布）。系统已安装 dnr/dnc、Pi、Songjian
 及用户数据均未替换；没有提交、推送或发布。普通源码版本号仍为 0.3.1，运行时
 明确报告 `format 4`；这不是兼容已发布 v0.3.1 包的新发行版。
+
+
+### v0.4.0 正式发布与本机升级（2026-09-26）
+
+- 发布提交 `363e13a`、标签 `v0.4.0` 已推送 GitHub 与 origin。
+  [Actions 36212803104](https://github.com/fansion314/dnr/actions/runs/36212803104)
+  三个 runtime、独立 dnc 构建和发布任务全部成功；
+  [v0.4.0 Release](https://github.com/fansion314/dnr/releases/tag/v0.4.0)
+  包含四个 Arch 包、摘要和构建环境记录。源码版本已升为 0.4.0，包格式为 v4。
+- Pi 提交 `2563e49c4` 与新标签 `pi-dnr-v0.87.1-3` 已推送两个远程。
+  [Actions 36214598692](https://github.com/fansion314/pi/actions/runs/36214598692)
+  成功，使用正式独立 dnc 0.4.0 生成 v4 DNP 与 Arch 包；CLI 不含图标元数据。
+  旧标签与发布资产未移动或覆盖。
+- Songjian 提交 `d96ae18` 已推送 origin；新修订 `1.1.0-4` 要求 dnr>=0.4.0，
+  独立 DNP 和桌面包均内嵌窗口图标。最终安装包由正式 dnc 0.4.0 生成。
+  前端/脚本 31 项测试、桌面 4 项测试、类型与格式检查通过，旧布局 10 项跳过。
+- 正式 dnr/dnc 和 Pi 发行资产逐一通过 SHA-256，dnr/dnc 同时通过统一摘要校验。
+  本机 `-bin` 配方真实运行 prepare/package；最终归档中的程序与正式资产相同。
+  正式 dual 通过全部 21 项 runtime/原生测试及 10 个真实 GUI/故障回退场景。
+  最终 Pi 安装归档重新解包后通过 3 项结构/Node-API/冷暖缓存/旁置离线测试；
+  正式 runtime 与 Songjian 新包的两个后端均通过真实启动和 KWin 原生关闭。
+- `paru --sudo /usr/bin/pkexec -U --noconfirm` 一次升级四个本地包，退出 0：
+  `dnr-bin 0.4.0-1`、`dnc-bin 0.4.0-1`、`pi-dnr-bin 0.87.1-3`、`songjian 1.1.0-4`。
+  `pacman -Qkk` 分别检查 24/20/44/11 个文件，全部 0 altered。四个命令均从
+  `/usr/bin` 解析，已安装的 runtime、packager、两个 DNP 与验证产物逐字节相同。
+- 安装后 CEF API 14900 检查通过，Pi `--version` 输出 0.87.1，三项完整离线烟雾
+  再次通过。已安装 Songjian 在两个后端启动和原生关闭均退出 0，无遗留进程组；
+  这些应用测试使用隔离数据目录，不改用户设置和会话。本轮仍未新增 macOS 验收。
+
+已安装产物 SHA-256：
+- dnr: `aefdfc8304a345fc055cd9946084c9d9eb57f78afcd46624295c6243b7789728`
+- dnc: `e4152ba6290f4c117ede805bf73751c9d2b6820382c9c5c4ac54e737e63cbf0c`
+- pi: `4e77e4d6694b19418579c1ca3d5d6c1b50a8303951ccb33aacefcf8506cfb51a`
+- songjian: `9e27b6989b11da99408dcbeadfd70af01c7f393f933e852558d5042e583dbb8c`
+
+正式资产、安装归档、Actions 成功记录与复验日志保存在 `dist/release-v0.4.0/`。
+本轮发布 GitHub 并更新已配置的 Git 远程，没有向 AUR 服务器提交配方。
