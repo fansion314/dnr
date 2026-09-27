@@ -26,13 +26,15 @@ brew upgrade fansion314/dnr/dnr
 ```
 
 tap 统一放在 [`fansion314/homebrew-dnr`](https://github.com/fansion314/homebrew-dnr)，
-包含 dnr、pi-dnr、etcher-dnr 和 songjian。信任整个 tap 后可使用短名称安装。
-旧 tap 用户保持名称不变，只迁移远端：
+包含 dnr、pi-dnr 和 etcher-dnr。松间只做本地安装，不发布到 tap。信任整个 tap 后可使用短名称安装。
+旧 tap 用户先退出使用 dnr 的应用，再重新添加 tap。Homebrew 7 的 `untap --force`
+会卸载旧 tap 的软件，最后一条命令重新安装 runtime：
 
 ```sh
-brew tap --custom-remote fansion314/dnr https://github.com/fansion314/homebrew-dnr.git
-brew update
+brew untap --force fansion314/dnr
+brew tap fansion314/dnr
 brew trust fansion314/dnr
+brew install fansion314/dnr/dnr
 ```
 
 源码仓库的 `Formula/dnr.rb` 仅保留旧安装入口；最新配方以统一 tap 为准。
