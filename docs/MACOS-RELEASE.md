@@ -77,9 +77,9 @@ job 日志中，不追加源码仓库验收提交。
 ```sh
 python3 -m unittest discover -s scripts/ci/tests -v
 # 使用已构建的 dist/dnr、dist/dnc；不会重新编译，也不是发布操作。
-bash scripts/ci/package-macos.sh 0.4.2 dist/macos-local-validation
+bash scripts/ci/package-macos.sh 0.4.3 dist/macos-local-validation
 bash scripts/ci/test-homebrew.sh dist/macos-local-validation/dnr.rb \
-  dist/macos-local-validation/dnr-0.4.2-macos-arm64.tar.gz
+  dist/macos-local-validation/dnr-0.4.3-macos-arm64.tar.gz
 ```
 
 本地生成的配方仅用于验证，正式配方以 Actions 发布的实际包校验和为准。

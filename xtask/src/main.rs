@@ -67,6 +67,31 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+fn apply_upstream_patch(dest: &Path, patch: &Path) -> Result<()> {
+    // copy_tree deliberately excludes .git. Without a local repository, Git
+    // discovers dnr's parent checkout and can silently skip every patch path
+    // when invoked from this subdirectory, even for --reverse --check.
+    run(Command::new("git").args(["init", "--quiet"]).arg(dest))?;
+    let already_applied = Command::new("git")
+        .current_dir(dest)
+        .args(["apply", "--reverse", "--check"])
+        .arg(patch)
+        .output()?
+        .status
+        .success();
+    if !already_applied {
+        run(Command::new("git")
+            .current_dir(dest)
+            .args(["apply", "--check"])
+            .arg(patch))?;
+        run(Command::new("git")
+            .current_dir(dest)
+            .arg("apply")
+            .arg(patch))?;
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -94,23 +119,7 @@ fn main() -> Result<()> {
             for name in ["deno", "laufey"] {
                 let dest = root.join(".upstream").join(name);
                 let patch = root.join("integration").join(format!("{name}.patch"));
-                let already_applied = Command::new("git")
-                    .current_dir(&dest)
-                    .args(["apply", "--reverse", "--check"])
-                    .arg(&patch)
-                    .output()?
-                    .status
-                    .success();
-                if !already_applied {
-                    run(Command::new("git")
-                        .current_dir(&dest)
-                        .args(["apply", "--check"])
-                        .arg(&patch))?;
-                    run(Command::new("git")
-                        .current_dir(&dest)
-                        .arg("apply")
-                        .arg(&patch))?;
-                }
+                apply_upstream_patch(&dest, &patch)?;
             }
             sync_integration(&root)?;
         }
@@ -283,3 +292,29 @@ mod dnr_backend;
 #[allow(dead_code)]
 #[path = "../../integration/rt/dnr_zoom_config.rs"]
 mod dnr_zoom_config;
+
+#[cfg(test)]
+mod prepare_tests {
+    use super::*;
+
+    #[test]
+    fn applies_inside_parent_checkout_and_is_idempotent() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        run(Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(temp.path()))?;
+        let dest = temp.path().join(".upstream/source");
+        fs::create_dir_all(&dest)?;
+        fs::write(dest.join("value.txt"), "before\n")?;
+        let patch = temp.path().join("change.patch");
+        fs::write(
+            &patch,
+            "diff --git a/value.txt b/value.txt\n--- a/value.txt\n+++ b/value.txt\n@@ -1 +1 @@\n-before\n+after\n",
+        )?;
+        apply_upstream_patch(&dest, &patch)?;
+        assert_eq!(fs::read_to_string(dest.join("value.txt"))?, "after\n");
+        apply_upstream_patch(&dest, &patch)?;
+        assert_eq!(fs::read_to_string(dest.join("value.txt"))?, "after\n");
+        Ok(())
+    }
+}

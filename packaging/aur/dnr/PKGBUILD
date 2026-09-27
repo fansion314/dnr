@@ -1,6 +1,6 @@
 # Maintainer: Peilin Fan <peilin.fan@foxmail.com>
 pkgname=dnr
-pkgver=0.4.2
+pkgver=0.4.3
 pkgrel=1
 pkgdesc='Shared Deno runtime (system CEF + WebView)'
 arch=('x86_64')

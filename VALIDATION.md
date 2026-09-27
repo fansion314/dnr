@@ -1,5 +1,17 @@
 # 验证记录
 
+## v0.4.3 干净构建修复与发布准备（2026-09-27）
+
+- v0.4.2 macOS CI 成功编译 dnc，但 runtime 报告 `--locked` 失败；Arch 三个 runtime
+  任务同样失败，未进入 Release 发布。原标签和失败记录保留。
+- 在嵌套于项目 Git checkout 的干净源码快照中复现：未初始化 Git 的 `.upstream` 会让
+  `git apply --reverse --check --verbose` 输出全部 `Skipped patch` 却退出 0，导致漏补丁。
+- `prepare` 现在为复制的上游树建立独立 Git 上下文。6 项 xtask 测试通过，包括新增的
+  嵌套仓库内真实应用补丁与重复 prepare 回归。
+- 独立的固定 Deno/Laufey 快照重新 prepare 后，两个补丁反向检查通过，dnr 入口与依赖
+  确实出现在生成 manifest；`cargo fetch --locked --target aarch64-apple-darwin` 退出 0。
+- v0.4.3 新版本的完整构建、原生测试、Release 和 tap 验收交给 Actions；此处不预写成功结果。
+
 ## v0.4.2 macOS 预构建与 Homebrew 发布准备（2026-09-27）
 
 - 17 项发布脚本测试通过，覆盖实际归档 SHA-256、固定版本 URL、拒绝坏校验和/移动标签、

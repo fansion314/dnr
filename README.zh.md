@@ -30,7 +30,7 @@ macOS 和 Linux 均已有原生运行时与 GUI 验证记录。包内原生插�
 ## 快速上手
 
 macOS ARM64 预构建包和 Homebrew tap 配置见 [macOS 发布说明](docs/MACOS-RELEASE.md)。
-从 v0.4.2 开始，可运行 `brew install fansion314/dnr/dnr`，
+从 v0.4.3 开始，可运行 `brew install fansion314/dnr/dnr`，
 从一个压缩包同时安装 WebView 版 `dnr` 和 `dnc`（macOS 15 及以上，无需编译）。
 
 也可以[从源码构建工具](#从源码构建)，然后在仓库根目录将输出目录加入当前终端的 PATH：
@@ -112,7 +112,7 @@ dnc examples/desktop --entry main.ts --app-id com.example.desktop -o desktop.dnp
 
 需要 GUI 的桌面 API 被调用时，后端才会初始化。窗口、托盘和后台任务共同决定应用生命周期；关闭最后一个窗口不会自动终止仍在运行的服务。示例会在用户关窗时关闭 HTTP 服务。
 
-**dnr 0.4.2 桌面缩放扩展**：`dnr zoom set 1.25` 保存用户全局内容倍率，重启应用生效；应用调用 `Deno.desktop.setZoomFactor(1.2)` 与之乘算，得到 150%。统一 Cmd/Ctrl `+`、`-`、`0` 快捷键调整当前应用进程的倍率。详见[缩放设置与 API](docs/ZOOM.md)。
+**dnr 0.4.3 桌面缩放扩展**：`dnr zoom set 1.25` 保存用户全局内容倍率，重启应用生效；应用调用 `Deno.desktop.setZoomFactor(1.2)` 与之乘算，得到 150%。统一 Cmd/Ctrl `+`、`-`、`0` 快捷键调整当前应用进程的倍率。详见[缩放设置与 API](docs/ZOOM.md)。
 
 **dnr 0.4.1 新增下游扩展**：`closeBehavior: "hide" | "destroy"`（默认销毁）、`setCloseBehavior()`、`getCloseBehavior()` 和 `destroy()`；固定上游 Deno Desktop 和已发布 dnr 0.4.0 均不包含这些接口。同时修复原生 `close` 事件可取消，并改变已有 `close()` 的行为，使其也分发该事件；`destroy()` 跳过事件。来源、兼容性和 Linux 托盘限制见[窗口生命周期](docs/WINDOW-LIFECYCLE.md)，维护记录见[上游补丁登记表](docs/PATCHES.md)。
 
