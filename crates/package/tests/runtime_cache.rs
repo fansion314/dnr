@@ -74,7 +74,12 @@ console.log('identity', Deno.mainModule);
     fs::write(src.join("value.cjs"), "module.exports = 42;").unwrap();
     fs::write(
         src.join("worker.ts"),
-        "const n: number = 43; postMessage(n);",
+        // The parent terminates the worker as soon as its message arrives.
+        // A top-level postMessage can race the loader's queued code-cache
+        // callbacks. Completing a dynamic import passes through poll_progress,
+        // which drains those callbacks before resolving the import. Keep the
+        // zero-miss assertion below; do not replace this barrier with a sleep.
+        "const n: number = 43; await import('./late.ts'); postMessage(n);",
     )
     .unwrap();
     fs::write(
