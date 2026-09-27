@@ -101,15 +101,55 @@ static int fail(NSString *message) {
   return 1;
 }
 
+static NSArray<NSString *> *runtimeCandidates(NSString *configured, NSString *path,
+                                              NSString *home, NSString *cwd) {
+  // Explicit paths are pins: do not silently substitute a different runtime.
+  if (configured && ![configured isEqualToString:@"dnr"])
+    return configured.isAbsolutePath ? @[configured] : @[];
+  NSMutableOrderedSet<NSString *> *candidates = [NSMutableOrderedSet orderedSet];
+  // Preserve POSIX PATH ordering, including relative/empty entries. Resolve
+  // relative entries against the caller's cwd without changing that cwd.
+  if (path) {
+    for (NSString *directory in [path componentsSeparatedByString:@":"]) {
+      NSString *base = directory.isAbsolutePath ? directory
+        : [cwd stringByAppendingPathComponent:directory];
+      [candidates addObject:[base stringByAppendingPathComponent:@"dnr"]];
+    }
+  }
+  // Finder/LaunchServices usually supplies only /usr/bin:/bin:/usr/sbin:/sbin.
+  // These stable locations survive Homebrew version upgrades. Never invoke a
+  // login shell or source user shell configuration to discover a runtime.
+  [candidates addObjectsFromArray:@[@"/opt/homebrew/bin/dnr",
+                                    @"/opt/homebrew/opt/dnr/bin/dnr",
+                                    @"/usr/local/bin/dnr"]];
+  if (home.length) [candidates addObject:[home stringByAppendingPathComponent:@".local/bin/dnr"]];
+  return candidates.array;
+}
+
+static NSString *findRuntime(NSArray<NSString *> *candidates) {
+  NSFileManager *files = NSFileManager.defaultManager;
+  for (NSString *candidate in candidates) {
+    BOOL directory = NO;
+    if ([files fileExistsAtPath:candidate isDirectory:&directory] && !directory &&
+        [files isExecutableFileAtPath:candidate]) return candidate;
+  }
+  return nil;
+}
+
 int main(int argc, char **argv) {
   @autoreleasepool {
     NSBundle *bundle = NSBundle.mainBundle;
-    NSString *runtime = [bundle objectForInfoDictionaryKey:@"DNRRuntimePath"];
+    id configured = [bundle objectForInfoDictionaryKey:@"DNRRuntimePath"];
     NSString *package = [bundle pathForResource:@"application" ofType:@"dnp"];
-    if (!package || ![runtime isKindOfClass:NSString.class])
+    if (!package || (configured && ![configured isKindOfClass:NSString.class]))
       return fail(@"应用资源不完整，请重新安装应用。");
-    if (![[NSFileManager defaultManager] isExecutableFileAtPath:runtime])
-      return fail([NSString stringWithFormat:@"找不到共享 dnr 运行时，请安装到：\n%@", runtime]);
+    NSArray<NSString *> *candidates = runtimeCandidates(configured,
+      NSProcessInfo.processInfo.environment[@"PATH"], NSHomeDirectory(),
+      NSFileManager.defaultManager.currentDirectoryPath);
+    NSString *runtime = findRuntime(candidates);
+    if (!runtime)
+      return fail([NSString stringWithFormat:@"找不到共享 dnr 运行时。请安装 dnr，或检查应用的运行时配置。\n已查找：\n%@",
+                   [candidates componentsJoinedByString:@"\n"]]);
     // Preserve argv boundaries, inherited descriptors, environment and cwd.
     char **args = calloc((size_t)argc + 2, sizeof(char *));
     if (!args) return fail(@"无法分配启动参数。");

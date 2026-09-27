@@ -16,6 +16,7 @@ cleanup() {
     # This tap is unique to this run; never unlink or uninstall another tap's dnr.
     brew uninstall "$tap/dnr" >/dev/null 2>&1 || true
     brew untap "$tap" >/dev/null 2>&1 || true
+    if [[ -n ${launch_test:-} ]]; then rm -rf "$launch_test"; fi
 }
 trap cleanup EXIT
 tap_path=$(brew --repository "$tap")
@@ -36,3 +37,27 @@ brew test --force "$tap/dnr"
 prefix=$(brew --prefix "$tap/dnr")
 codesign --verify --strict "$prefix/bin/dnr"
 codesign --verify --strict "$prefix/bin/dnc"
+
+# Exercise the shipped dnc's launcher against this Homebrew installation with
+# a Finder-like PATH that deliberately omits both Homebrew bin directories.
+launch_test=$(mktemp -d)
+python3 - "$prefix" "$launch_test" <<'PY'
+import json, os, pathlib, subprocess, sys
+prefix, root = map(pathlib.Path, sys.argv[1:])
+source = root / "input"
+source.mkdir()
+(source / "main.ts").write_text('console.log(JSON.stringify({runtime:Deno.execPath(),args:Deno.args}));')
+manifest = root / "desktop.json"
+manifest.write_text(json.dumps({"appId":"dev.dnr.homebrew.launcher", "name":"dnr launcher test",
+    "version":"1.0.0", "entry":"main.ts", "macos":{"icon":
+    "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericApplicationIcon.icns"}}))
+app = root / "Test App.app"
+subprocess.run([str(prefix/"bin/dnc"),str(source),"--desktop-manifest",str(manifest),
+                "--target","macos","-o",str(app)],check=True)
+result = subprocess.run([str(app/"Contents/MacOS/launcher"),"a b",""],
+    cwd=root, env=dict(os.environ,PATH="/usr/bin:/bin"),check=True,capture_output=True,text=True,timeout=30)
+data = json.loads(result.stdout)
+assert os.path.samefile(data["runtime"],prefix/"bin/dnr"), data
+assert data["args"] == ["a b", ""], data
+print("DNR_HOMEBREW_LAUNCHER_OK: Finder-like PATH found the installed Homebrew runtime")
+PY

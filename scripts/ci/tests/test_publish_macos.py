@@ -24,6 +24,7 @@ class PublishMacosTests(unittest.TestCase):
                          "packaging/homebrew/dnr.rb.in"]:
             shutil.copy(ROOT / filename, self.root / filename)
         (self.root / "docs/releases/v0.4.2.md").write_text("Release notes")
+        (self.root / "Cargo.toml").write_text('[workspace.package]\nversion = "0.4.2"\n')
         self.archive = self.root / "release-assets/dnr-0.4.2-macos-arm64.tar.gz"
         self.archive.write_bytes(b"tested package")
         self.checksum = self.archive.with_suffix(".gz.sha256")
@@ -34,7 +35,12 @@ class PublishMacosTests(unittest.TestCase):
                         GITHUB_SHA="a" * 40, FAKE_REMOTE_COMMIT="a" * 40,
                         FAKE_ROOT=str(self.root), FAKE_EXISTS="1",
                         PATH=str(self.root / "fake-bin") + os.pathsep + os.environ["PATH"])
-        self.fake("git", '#!/bin/sh\nprintf "%s\\trefs/tags/v0.4.2\\n" "$FAKE_REMOTE_COMMIT"\n')
+        self.fake("git", '''#!/usr/bin/env python3
+import os, sys
+if sys.argv[1] == "ls-remote": print(os.environ["FAKE_REMOTE_COMMIT"] + "\\trefs/tags/v0.4.2")
+elif sys.argv[1] == "rev-parse": print(os.environ["FAKE_REMOTE_COMMIT"])
+elif sys.argv[1] == "merge-base": sys.exit(0 if os.environ.get("FAKE_ANCESTOR", "1") == "1" else 1)
+''')
         self.fake("gh", '''#!/usr/bin/env python3
 import json, os, pathlib, shutil, sys
 root = pathlib.Path(os.environ["FAKE_ROOT"])
@@ -101,6 +107,30 @@ elif args[:2] == ["release", "download"]:
 
     def test_wrong_formula_fails_before_github(self):
         (self.root / "release-assets/dnr.rb").write_text("wrong formula")
+        self.assertNotEqual(self.run_publish().returncode, 0)
+        self.assertEqual(self.calls(), [])
+
+    def revision(self):
+        self.env.update(DNR_PACKAGE_REVISION="1", GITHUB_EVENT_NAME="workflow_dispatch", GITHUB_SHA="b"*40)
+        self.archive.rename(self.archive.with_name("dnr-0.4.2-macos-arm64-r1.tar.gz"))
+        self.archive = self.archive.with_name("dnr-0.4.2-macos-arm64-r1.tar.gz")
+        self.checksum = self.archive.with_suffix(".gz.sha256")
+        self.checksum.write_text(f"{hashlib.sha256(self.archive.read_bytes()).hexdigest()}  {self.archive.name}\n")
+        subprocess.run(["python3","scripts/ci/homebrew.py","render","owner/dnr","0.4.2",
+                        str(self.archive),"release-assets/dnr.rb"],cwd=self.root,check=True)
+
+    def test_revision_publishes_new_assets_without_moving_tag(self):
+        self.revision()
+        result = self.run_publish()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        uploads = [call for call in self.calls() if call[1] == "upload"]
+        self.assertEqual({Path(call[3]).name for call in uploads},
+                         {self.archive.name, self.checksum.name, "dnr-macos-r1.rb"})
+        self.assertFalse(any(call[1] == "create" for call in self.calls()))
+
+    def test_revision_rejects_unrelated_source_commit(self):
+        self.revision()
+        self.env["FAKE_ANCESTOR"] = "0"
         self.assertNotEqual(self.run_publish().returncode, 0)
         self.assertEqual(self.calls(), [])
 

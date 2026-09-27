@@ -1,7 +1,7 @@
 use std::{fs, path::Path, process::Command};
 
 fn dnc() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_dnc"))
+    Command::new(std::env::var_os("DNC_BIN").unwrap_or_else(|| env!("CARGO_BIN_EXE_dnc").into()))
 }
 fn fixture(dir: &Path) {
     fs::create_dir(dir.join("input")).unwrap();
@@ -207,6 +207,70 @@ if (Deno.args[0] === "__wait") {
             "runtime must be reaped before launcher exits"
         );
     }
+
+    // The default bundle discovers dnr from the caller's PATH, including paths
+    // containing spaces and relative entries, without changing cwd or argv.
+    let mut automatic = manifest.clone();
+    automatic["macos"]
+        .as_object_mut()
+        .unwrap()
+        .remove("runtimePath");
+    fs::write(
+        dir.path().join("desktop.json"),
+        serde_json::to_vec(&automatic).unwrap(),
+    )
+    .unwrap();
+    assert!(build().arg("--force").status().unwrap().success());
+    let bin = dir.path().join("runtime bin");
+    fs::create_dir(&bin).unwrap();
+    std::os::unix::fs::symlink(&runtime, bin.join("dnr")).unwrap();
+    let result = Command::new(&launcher)
+        .current_dir(dir.path())
+        .env("PATH", "nonexistent:runtime bin")
+        .args(["a b", "", "--literal"])
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{result:?}");
+    let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(value["args"], serde_json::json!(["a b", "", "--literal"]));
+    assert_eq!(
+        value["cwd"],
+        fs::canonicalize(dir.path()).unwrap().to_str().unwrap()
+    );
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[ignore = "requires Xcode CLT; checks native runtime discovery without opening UI"]
+fn macos_launcher_path_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = dir.path().join("path-test");
+    let output = Command::new("clang")
+        .args([
+            "-fobjc-arc",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-framework",
+            "AppKit",
+        ])
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/launcher-path.m"))
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        Command::new(binary)
+            .arg(dir.path())
+            .status()
+            .unwrap()
+            .success()
+    );
 }
 
 #[test]

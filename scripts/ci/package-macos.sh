@@ -13,6 +13,9 @@ output=$(cd "$output" && pwd)
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 name="dnr-$version-macos-arm64"
+revision=${DNR_PACKAGE_REVISION:-0}
+[[ $revision =~ ^(0|[1-9][0-9]*)$ ]] || exit 1
+if [[ $revision != 0 ]]; then name="$name-r$revision"; fi
 package="$stage/$name"
 mkdir -p "$package/bin" "$package/licenses" "$package/docs"
 for binary in dnr dnc; do
@@ -38,6 +41,14 @@ install -m 644 .upstream/deno/LICENSE.md "$package/licenses/LICENSE-DENO"
 install -m 644 .upstream/laufey/LICENSE "$package/licenses/LICENSE-LAUFEY"
 install -m 644 README.md README.zh.md THIRD_PARTY.md "$package/"
 cp docs/*.md "$package/docs/"
+python3 - "$package/BUILD-INFO.json" "$version" "$revision" <<'PY'
+import json, os, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps({
+    "version": sys.argv[2], "revision": int(sys.argv[3]),
+    "sourceCommit": os.environ.get("GITHUB_SHA", "unpublished-local-build"),
+    "backend": "webview", "target": "aarch64-apple-darwin"
+}, indent=2) + "\n")
+PY
 COPYFILE_DISABLE=1 tar -czf "$output/$name.tar.gz" -C "$stage" "$name"
 (
     cd "$output"

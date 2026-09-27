@@ -16,7 +16,8 @@ def version_of(formula):
     match = re.search(r'^  version "(\d+\.\d+\.\d+)"$', formula, re.M)
     if not match:
         raise ValueError("expected an explicit stable version in formula")
-    return tuple(map(int, match[1].split(".")))
+    revision = re.search(r'^  revision (\d+)$', formula, re.M)
+    return (*map(int, match[1].split(".")), int(revision[1]) if revision else 0)
 
 
 def render(repository, version, archive):
@@ -24,13 +25,16 @@ def render(repository, version, archive):
         raise ValueError("invalid GitHub repository")
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise ValueError("expected a stable version")
-    if archive.name != f"dnr-{version}-macos-arm64.tar.gz":
+    match = re.fullmatch(rf"dnr-{re.escape(version)}-macos-arm64(?:-r([1-9][0-9]*))?\.tar\.gz", archive.name)
+    if not match:
         raise ValueError("archive name does not match version/platform")
     with archive.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     return (ROOT / "packaging/homebrew/dnr.rb.in").read_text().replace(
         "@REPOSITORY@", repository
-    ).replace("@VERSION@", version).replace("@SHA256@", digest)
+    ).replace("@VERSION@", version).replace("@SHA256@", digest).replace(
+        "@ARCHIVE@", archive.name
+    ).replace("@REVISION@", f"\n  revision {match[1]}" if match[1] else "")
 
 
 def gh_api(endpoint, payload=None):
@@ -56,7 +60,9 @@ def update(tap, formula):
         if "(HTTP 404)" not in str(error):
             raise
         current = None
-    payload = {"message": f"chore(homebrew): update dnr to {'.'.join(map(str, version_of(formula)))}",
+    version = version_of(formula)
+    label = '.'.join(map(str, version[:3])) + (f"_{version[3]}" if version[3] else "")
+    payload = {"message": f"chore(homebrew): update dnr to {label}",
                "content": base64.b64encode(formula.encode()).decode(), "branch": branch}
     if current:
         previous = base64.b64decode(current["content"]).decode()

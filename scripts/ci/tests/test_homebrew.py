@@ -80,6 +80,20 @@ class HomebrewTests(unittest.TestCase):
                           self.current(), RuntimeError("Conflict (HTTP 409)")]), self.assertRaises(RuntimeError):
             homebrew.update("fansion314/dnr", self.formula)
 
+    def test_revision_upgrades_same_version_without_replacing_old_url(self):
+        archive = self.archive.with_name("dnr-0.4.2-macos-arm64-r1.tar.gz")
+        archive.write_bytes(b"repaired package")
+        repaired = homebrew.render("fansion314/dnr", "0.4.2", archive)
+        self.assertIn("  revision 1\n", repaired)
+        self.assertIn("macos-arm64-r1.tar.gz", repaired)
+        with patch.object(homebrew, "gh_api", side_effect=[{"default_branch":"main"}, self.current("0.4.2"), {}]) as api:
+            homebrew.update("fansion314/dnr", repaired)
+            self.assertEqual(api.call_args.args[1]["message"], "chore(homebrew): update dnr to 0.4.2_1")
+        current = {"sha":"new-sha", "content":base64.b64encode(repaired.encode()).decode()}
+        with patch.object(homebrew, "gh_api", side_effect=[{"default_branch":"main"}, current]) as api:
+            homebrew.update("fansion314/dnr", self.formula)
+            self.assertEqual(api.call_count, 2)
+
 
 
 if __name__ == "__main__":

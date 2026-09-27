@@ -1,8 +1,8 @@
 class Dnr < Formula
   desc "Shared Deno runtime and application packager"
   homepage "https://github.com/@REPOSITORY@"
-  url "https://github.com/@REPOSITORY@/releases/download/v@VERSION@/dnr-@VERSION@-macos-arm64.tar.gz"
-  version "@VERSION@"
+  url "https://github.com/@REPOSITORY@/releases/download/v@VERSION@/@ARCHIVE@"
+  version "@VERSION@"@REVISION@
   sha256 "@SHA256@"
   license "MIT"
 

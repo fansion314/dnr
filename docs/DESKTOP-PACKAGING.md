@@ -18,7 +18,7 @@ x86_64 `.pkg.tar.zst`。不携带或安装 dnr，不构建前端、不安装依�
   "windowIcon": "desktop/icon.png",
   "macos": {
     "icon": "desktop/icon.icns",
-    "runtimePath": "/usr/local/bin/dnr",
+    "runtimePath": "dnr",
     "minimumSystemVersion": "11.0"
   },
   "linux": {
@@ -94,10 +94,18 @@ CEF 分别设置标题栏小图标和应用图标，WebView 设置 GTK 窗口默
 16–512 点及 2× 尺寸，再经 `iconutil` 生成 ICNS；建议使用带透明留白的 1024×1024 PNG。
 不自动设计图标或给现有图标增加圆角、留白。
 
-`runtimePath` 默认 `/usr/local/bin/dnr`，必须是目标机器上共享 dnr 的绝对路径，
-不展开 `~` 或环境变量。也可以指向已安装的按哈希固定的共享运行时。dnc 不复制
-该文件，也不要求构建时已安装在该位置；运行时缺失时启动器显示错误对话框。
-共享 runtime 的更新和版本兼容由安装者管理。
+`runtimePath` 默认 `dnr`（也可省略），启动时按继承的 PATH 顺序查找可执行文件，
+跳过目录和不可执行项，支持 PATH 中的相对路径、空项及带空格的目录，保留调用者 cwd。
+PATH 未找到时依次检查 `/opt/homebrew/bin/dnr`、`/opt/homebrew/opt/dnr/bin/dnr`、
+`/usr/local/bin/dnr` 和 `~/.local/bin/dnr`，以支持 Finder 的精简环境。
+不启动登录 shell、不读取 shell 配置，也不把带版本号的 Cellar 路径写入应用。
+
+显式绝对 `runtimePath` 仍表示固定运行时，缺失时报告错误，不悄悄回退到另一个版本。
+显式路径不展开 `~` 或环境变量；仍支持按哈希固定的共享运行时。dnc 不复制该文件，
+也不要求打包时已安装在目标位置。错误对话框会列出已检查的路径。
+
+自动查找由 v0.4.2 macOS 修订包 r1 的 dnc 引入。旧 `.app` 中的启动器不会随着
+`brew upgrade` 自动改变，须重新打包并签名；应用自身显式固定路径的配置仍需由应用维护者管理。
 
 原生 ARM64 启动器从自身 bundle 定位 `.dnp`，通过 `posix_spawn` 启动共享 dnr
 子进程，保留参数边界、调用者 cwd、标准输入输出和 LaunchServices 启动环境。
@@ -110,7 +118,7 @@ CEF 分别设置标题栏小图标和应用图标，WebView 设置 GTK 窗口默
 LaunchServices 注册的进程会引发 RunningBoard PID 版本不匹配，MenuBarAgent 因而
 拒绝创建托盘场景。启动器必须在应用存活期间保留，不能启动子进程后立即退出。
 应用名称、存储身份和 Dock 图标由 dnr 从包元数据读取，直接运行 DNP 也能设置
-Dock 图标。无需 Finder 的 PATH 包含 dnr。此修复只需新版 dnc 重新打包 `.app`，
+Dock 图标。Finder 的 PATH 不包含 dnr 时使用上述常见安装路径。此修复只需新版 dnc 重新打包 `.app`，
 不改变 DNP v4 格式，也不要求重建已有的共享 dnr。
 新版 bundle 的 Info.plist 写入 `DNRLaunchMode=supervised`，安装脚本可据此拒绝
 仍使用旧 `exec` 启动器的产物；此前的 `DNRRuntimePath` 配置保持兼容。

@@ -37,14 +37,14 @@ struct Manifest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Macos {
     icon: PathBuf,
-    /// Installed shared runtime path, never a runtime to embed or install.
+    /// "dnr" discovers the runtime at launch; an absolute path pins it.
     #[serde(default = "default_runtime")]
     runtime_path: String,
     #[serde(default = "default_minimum")]
     minimum_system_version: String,
 }
 fn default_runtime() -> String {
-    "/usr/local/bin/dnr".into()
+    "dnr".into()
 }
 fn default_minimum() -> String {
     "11.0".into()
@@ -352,8 +352,8 @@ fn macos(m: &Manifest, base: &Path, work: &Path, stage: &Path) -> Result<PathBuf
     let config = m.macos.as_ref().context("manifest needs macos settings")?;
     line(&config.runtime_path, "macos.runtimePath")?;
     ensure!(
-        Path::new(&config.runtime_path).is_absolute(),
-        "macos.runtimePath must be the absolute installed runtime path"
+        config.runtime_path == "dnr" || Path::new(&config.runtime_path).is_absolute(),
+        "macos.runtimePath must be dnr (automatic discovery) or an absolute path"
     );
     ensure!(
         config

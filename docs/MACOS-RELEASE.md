@@ -88,6 +88,24 @@ bash scripts/ci/test-homebrew.sh dist/macos-local-validation/dnr.rb \
 
 本地生成的配方仅用于验证，正式配方以 Actions 发布的实际包校验和为准。
 
+## 保持版本号的 macOS 修订发布
+
+已发布版本的 macOS 修复可以追加包修订号，不移动原标签或覆盖旧资产。例如：
+
+```sh
+gh workflow run release-macos.yml --ref main -f publish_tag=v0.4.2 -f package_revision=1
+```
+
+此路径完整重建 dnr/dnc、执行 runtime 和真实启动器测试，发布
+`dnr-0.4.2-macos-arm64-r1.tar.gz`，并将配方设为 `version "0.4.2"`、`revision 1`。
+用户执行 `brew upgrade fansion314/dnr/dnr` 即可获得修复；程序版本仍为 0.4.2。
+修订源提交必须是原标签的后代且 workspace 版本一致；归档内的 `BUILD-INFO.json`
+记录真实源提交与修订号。修订不会重建或替换原有 Linux 资产。
+
+仅恢复这个修订的配方时使用 `-f tap_release=v0.4.2 -f package_revision=1`。
+同一个版本/修订组合仍不可换包，后续修复必须增加 revision。r1 增加了默认 PATH
+查找和 Finder/Homebrew 回退；旧应用需用修复后的 dnc 重新打包，显式运行时路径仍保留。
+
 依据：[Homebrew tap 维护指南](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap)、
 [Formula Cookbook](https://docs.brew.sh/Formula-Cookbook)、
 [GitHub 托管 runner](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job)。

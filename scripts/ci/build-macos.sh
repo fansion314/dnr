@@ -32,6 +32,9 @@ cargo test --locked --workspace
 DNR_BIN="$root/dist/dnr" cargo test --locked -p dnr-package \
     --test runtime --test runtime_native --test runtime_groups --test runtime_cache \
     --test runtime_backend --test runtime_node_flags --test runtime_zoom -- --ignored
+DNR_BIN="$root/dist/dnr" DNC_BIN="$root/dist/dnc" \
+    DNC_TEST_ICON=/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericApplicationIcon.icns \
+    cargo test --locked -p dnc --test cli macos_ -- --ignored
 bash scripts/ci/package-macos.sh "$version"
 {
     printf 'commit=%s\nbackend=webview\nMACOSX_DEPLOYMENT_TARGET=%s\n' "$GITHUB_SHA" "$MACOSX_DEPLOYMENT_TARGET"
