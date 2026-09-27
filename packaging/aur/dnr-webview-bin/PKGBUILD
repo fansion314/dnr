@@ -1,6 +1,6 @@
 # Maintainer: Peilin Fan <peilin.fan@foxmail.com>
 pkgname=dnr-webview-bin
-pkgver=0.4.3
+pkgver=0.4.2
 pkgrel=1
 pkgdesc='Shared Deno runtime (WebView, prebuilt)'
 arch=('x86_64')

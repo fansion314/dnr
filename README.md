@@ -30,7 +30,7 @@ macOS and Linux have native runtime and GUI validation records, including packag
 ## Quick start
 
 For macOS ARM64 prebuilt installation and Homebrew tap setup, see
-[macOS releases](docs/MACOS-RELEASE.md). Starting with v0.4.3,
+[macOS releases](docs/MACOS-RELEASE.md). Starting with v0.4.2,
 `brew install fansion314/dnr/dnr` installs both the WebView runtime and `dnc` from one archive
 (macOS 15 or later, no compilation required).
 
@@ -146,7 +146,7 @@ GUI initialization happens when a desktop API needs it. Windows, trays, and back
 
 **dnr 0.4.1 adds downstream extensions**, absent from the pinned upstream Deno Desktop and dnr 0.4.0: `closeBehavior: "hide" | "destroy"` (default: `"destroy"`), `setCloseBehavior()`, `getCloseBehavior()`, and `destroy()`. Native close events become cancelable, and the existing `close()` now also dispatches that event; `destroy()` bypasses it. See [API provenance, compatibility, and Linux tray limitations](docs/WINDOW-LIFECYCLE.md) and the [upstream patch register](docs/PATCHES.md).
 
-**dnr 0.4.3 desktop zoom extension:** `dnr zoom set 1.25` saves user-wide content zoom for newly started apps. Applications multiply it with `Deno.desktop.setZoomFactor(1.2)` (150% combined); native Cmd/Ctrl `+`, `-`, `0` shortcuts adjust the process-wide application factor. See [zoom settings and API](docs/ZOOM.md).
+**dnr 0.4.2 desktop zoom extension:** `dnr zoom set 1.25` saves user-wide content zoom for newly started apps. Applications multiply it with `Deno.desktop.setZoomFactor(1.2)` (150% combined); native Cmd/Ctrl `+`, `-`, `0` shortcuts adjust the process-wide application factor. See [zoom settings and API](docs/ZOOM.md).
 
 For a desktop launcher with an application name and icon, create a JSON desktop manifest and build on the target platform:
 
