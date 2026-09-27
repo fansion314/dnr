@@ -1,5 +1,19 @@
 # 验证记录
 
+## v0.4.2 macOS 预构建与 Homebrew 发布准备（2026-09-27）
+
+- 17 项发布脚本测试通过，覆盖实际归档 SHA-256、固定版本 URL、拒绝坏校验和/移动标签、
+  同版本资产不可替换、幂等重跑、tap 防降级与普通 Git push 更新路径。
+- actionlint 1.7.12 检查 macOS/Arch 两份工作流通过；新增 Bash 脚本语法、生成配方的
+  Ruby 语法、`cargo fmt --all -- --check`、版本和锁文件一致性检查通过。
+- 使用当时已有的 macOS ARM64 `dist/dnr`（0.4.1 zoom debug）和 `dist/dnc`（0.4.1），
+  打成一个临时 gzip tar 包。架构、只链接系统库及两份 ad-hoc 签名验证通过。
+- 在临时 tap 实际执行 Homebrew 安装（不链接全局命令）与 `brew test --force`，
+  两份程序版本、TypeScript、包内资源和 `dnc` → DNP → `dnr` 执行通过；测试包随后卸载。
+  此结果验证分发/安装路径，不冒充 v0.4.2 Actions release 产物验证。
+- 此提交尚未执行远端 v0.4.2 构建、上传或从 Release 下载验收；后续状态、正式哈希与
+  tap 更新证据保留在 Actions artifacts / job 日志及 GitHub Release，不追加验收提交。
+
 前半部分 macOS 记录为历史验收结果；Linux 记录及最新的 macOS 性能优化复验见本文后半部分。
 
 环境：macOS ARM64，Rust 1.98.1；Deno `abd22074e4`、Laufey `1fe8787`。sccache 保持启用。
@@ -1540,12 +1554,12 @@ Xfce 的 ItemIsMenu 缺省策略限制仍存在。未构建或验证 system-CEF/
 保留无关的 Pi 性能文档修改，没有提交到本轮发布中。
 
 
-## 用户全局与应用乘算缩放（2026-09-27，未发布）
+## 用户全局与应用乘算缩放（2026-09-27，v0.4.2 发布前验证）
 
 实现 `dnr zoom [set <factor>|reset]`、启动时用户配置快照、`Deno.desktop` 应用进程倍率
 与原生 Cmd/Ctrl 缩放快捷键。全局 × 应用倍率，不重复乘系统 DPI；应用倍率不持久化。
 接入保存在两份上游 patch 与 integration 源文件，下游 Laufey C ABI 为 35；包格式仍为 v4。
-未提交、推送、发布或替换已安装的 dnr/dnc/应用，版本字符串仍为 0.4.1。
+以下记录形成于功能提交前；当时未推送、发布或替换已安装的 dnr/dnc/应用，测试版本字符串为 0.4.1。
 
 ### 构建与自动回归
 

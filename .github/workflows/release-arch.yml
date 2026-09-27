@@ -83,6 +83,9 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    concurrency:
+      group: release-publish-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
