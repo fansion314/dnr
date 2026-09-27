@@ -1307,3 +1307,56 @@ dnc `98bf15280c568801f1270302f3ac273d55f512d3543a3310986aa6ab3b836077`；
 
 正式资产、安装归档、Actions 成功记录与复验日志保存在 `dist/release-v0.4.0/`。
 本轮发布 GitHub 并更新已配置的 Git 远程，没有向 AUR 服务器提交配方。
+
+
+## macOS 托盘与薄应用启动器修复（2026-09-27）
+
+环境：macOS 27.0（26A428）ARM64，Rust 1.98.1，sccache 保持启用。
+Songjian 修复基于 `f2935fc`；继续使用原 dnr 0.4.0 / DNP v4
+运行时，SHA-256 为 `78e43017826da26919dfcaba652a87a87e345a74e7f9de782f44351357ff1ee3`。
+
+### 根因与方案
+
+- 已安装 Songjian 1.1.1 的旧启动器 `execv` 共享 dnr 后，MenuBarAgent 持续记录
+  `process has mismatched pid version`，AppKit 记录 `scene activation failed`。
+  原托盘图标确实未显示；直接启动相同 dnr 的探针得到正常菜单栏位置。
+- 去掉启动器 AppKit 初始化、改用 `POSIX_SPAWN_SETEXEC` 均未解决；使用
+  `posix_spawn` 创建子进程且保留启动器后，托盘位置恢复，原生 bundle 身份保留。
+- 最终启动器只负责创建、监督并回收运行时子进程，不初始化第二个 NSApplication。
+  kqueue `EVFILT_PROC/NOTE_EXIT` 监视退出，信号事件转发 HUP/INT/QUIT/TERM，保留参数、
+  cwd、环境与标准输入输出。初版 sigwait(SIGCHLD) 在 Foundation 辅助线程存在时漏掉
+  通知，被真实回归捕获并替换；最终未采用轮询或后台服务。
+- Info.plist 新增 `DNRLaunchMode=supervised`；Songjian 构建/安装流程检查该标记。
+  不修改运行时、包格式或 Linux 启动方式。
+- Songjian 新增透明松树 SVG 与生成脚本，macOS 使用 36×36 PNG（18 点、2×），
+  其余平台保留彩色图标。两个桌面构建入口均重新生成模板 PNG。
+
+### 验证与安装
+
+- `cargo fmt --all -- --check`、`cargo clippy --locked --workspace --all-targets -- -D warnings`
+  通过；`cargo test --locked --workspace` 的 58 项非忽略测试通过。
+- `CARGO_CACHE_RUSTC_INFO=0 DNR_BIN=$PWD/dist/dnr DNC_TEST_ICON=../Songjian/desktop/icon.icns
+  cargo test --locked -p dnc --test cli macos_bundle_real_runtime -- --ignored` 通过。
+  覆盖真实 .app 编译/签名、特殊参数/空参数、cwd、应用身份、退出码 37、向启动器发送
+  TERM 后运行时处理并返回 23、外部 KILL 子进程后返回 137，以及运行时回收。
+- Songjian `vp check`、`vp test`（31 通过、10 跳过）、`vp run check`、
+  `vp run desktop:check`（Deno check/lint、4 项桌面测试）通过。
+- 使用新 release dnc 构建、签名并安装 `/Applications/松间.app`；原包备份到
+  `~/Library/Application Support/dnr/backups/2026-09-27T02-56-48.546Z/松间.app`。
+  签名严格验证通过，安装与构建 DNP SHA-256 相同：
+  `6e63a3a41c050ba28be2ee0a737f065069fe0dfcc72eb74d403a4f6e89998e41`。
+- 新 dnc 已原子安装到 `~/.local/bin/dnc`，签名、版本和构建产物哈希核对通过：
+  `533037822f6de70e1bef5dc3977235555ace021d6c07006d9a6701bbed91a459`。
+  旧 dnc 备份于 `~/Library/Application Support/dnr/backups/2026-09-27T03-02-24.214144Z/dnc`。
+  `~/.local/bin/dnr` 与本轮复用的运行时哈希一致，无需替换。
+- 用户确认菜单栏出现正常的小松树；MenuBarAgent 记录新运行时成功注册并连接状态栏
+  scene，未出现该进程的 PID 版本不匹配。NSRunningApplication 报告 bundle 为
+  `/Applications/松间.app`、ID 为 `world.fansionia.songjian`，GUI 归属于运行时子进程。
+- 原生关闭按钮隐藏窗口，菜单栏仍有松间条目；通过原生应用重开恢复同一页面/端口。
+  原生应用菜单 Quit 后监督进程与运行时都已退出，随后重新打开应用留供使用。
+- 启动器文件 53,056 字节；一次空闲采样为 CPU 0.0%、RSS 6,432 KiB，非长期性能基准。
+  工作区数据在安装、GUI 检查及退出后 SHA-256 均为
+  `7c45a880b12c48f3a9781c280908a2049e4cee664da944caa52e2b448deb3fa2`。
+- 托盘右键自动点击受 UI 工具 `cannotClickOffscreenElement` 限制；本轮未把应用菜单 Quit
+  当作托盘菜单退出的验收。未切换系统明暗主题；Linux 原生 GUI 未复验（本轮未改变其图标
+  或启动器）。原生运行时库实现没有改动，因此未重复全部 Node-API/FFI 原生测试。

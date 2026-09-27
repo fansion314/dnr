@@ -79,7 +79,20 @@ fn macos_bundle_real_runtime() {
     fixture(dir.path());
     let runtime = fs::canonicalize(std::env::var_os("DNR_BIN").expect("DNR_BIN")).unwrap();
     let icon = fs::canonicalize(std::env::var_os("DNC_TEST_ICON").expect("DNC_TEST_ICON")).unwrap();
-    fs::write(dir.path().join("input/main.ts"), "console.log(JSON.stringify({args:Deno.args,cwd:Deno.cwd(),name:Deno.env.get('LAUFEY_APP_NAME'),id:Deno.env.get('LAUFEY_APP_ID')}));").unwrap();
+    fs::write(
+        dir.path().join("input/main.ts"),
+        r#"
+if (Deno.args[0] === "__exit") Deno.exit(37);
+if (Deno.args[0] === "__wait") {
+  Deno.addSignalListener("SIGTERM", () => Deno.exit(23));
+  Deno.writeTextFileSync("child.pid", String(Deno.pid));
+  setTimeout(() => Deno.exit(99), 15000);
+} else {
+  console.log(JSON.stringify({args:Deno.args,cwd:Deno.cwd(),name:Deno.env.get('LAUFEY_APP_NAME'),id:Deno.env.get('LAUFEY_APP_ID')}));
+}
+"#,
+    )
+    .unwrap();
     let manifest = serde_json::json!({
         "appId": "org.example.test", "name": "测试 ' & 应用", "version": "1.0.0", "entry": "main.ts",
         "macos": { "icon": icon, "runtimePath": runtime }
@@ -138,6 +151,62 @@ fn macos_bundle_real_runtime() {
     );
     assert_eq!(value["name"], manifest["name"]);
     assert_eq!(value["id"], manifest["appId"]);
+
+    let launcher = output.join("Contents/MacOS/launcher");
+    assert_eq!(
+        Command::new(&launcher)
+            .arg("__exit")
+            .status()
+            .unwrap()
+            .code(),
+        Some(37)
+    );
+    // A supervisor must forward termination and reap its child, including a
+    // child killed externally. The script's watchdog bounds a failed test.
+    for kill_child in [false, true] {
+        let pid_file = dir.path().join("child.pid");
+        let _ = fs::remove_file(&pid_file);
+        let mut process = Command::new(&launcher)
+            .current_dir(dir.path())
+            .arg("__wait")
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        while !pid_file.exists() {
+            if started.elapsed() > std::time::Duration::from_secs(10) {
+                let _ = process.kill();
+                let _ = process.wait();
+                panic!("runtime did not publish its PID");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let child: u32 = fs::read_to_string(&pid_file).unwrap().parse().unwrap();
+        assert_ne!(child, process.id(), "launcher must not exec the runtime");
+        let target = if kill_child { child } else { process.id() };
+        assert!(
+            Command::new("kill")
+                .args([
+                    if kill_child { "-KILL" } else { "-TERM" },
+                    &target.to_string()
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(
+            process.wait().unwrap().code(),
+            Some(if kill_child { 137 } else { 23 })
+        );
+        assert!(
+            !Command::new("kill")
+                .args(["-0", &child.to_string()])
+                .output()
+                .unwrap()
+                .status
+                .success(),
+            "runtime must be reaped before launcher exits"
+        );
+    }
 }
 
 #[test]

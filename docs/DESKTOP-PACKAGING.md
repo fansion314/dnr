@@ -99,9 +99,21 @@ CEF 分别设置标题栏小图标和应用图标，WebView 设置 GTK 窗口默
 该文件，也不要求构建时已安装在该位置；运行时缺失时启动器显示错误对话框。
 共享 runtime 的更新和版本兼容由安装者管理。
 
-原生 ARM64 启动器从自身 bundle 定位 `.dnp`，随后 `exec` 共享 dnr，
-保留 LaunchServices 原生入口、参数和调用者 cwd。应用名称、身份和 Dock 图标
-由 dnr 从包元数据读取，直接运行 DNP 也能设置 Dock 图标。无需 Finder 的 PATH 包含 dnr。
+原生 ARM64 启动器从自身 bundle 定位 `.dnp`，通过 `posix_spawn` 启动共享 dnr
+子进程，保留参数边界、调用者 cwd、标准输入输出和 LaunchServices 启动环境。
+启动器自身不创建 `NSApplication`；子进程负责应用的窗口、托盘、Dock 和重开事件。
+启动器等待子进程结束并回收它，返回其退出码；信号退出映射为 `128 + 信号编号`。
+发给启动器的 HUP、INT、QUIT、TERM 转发给子进程。不可捕获的 SIGKILL 不会被转发；
+系统强制结束时应针对实际 GUI 进程或整组相关进程。
+
+不能改回 `exec`/`POSIX_SPAWN_SETEXEC`：在 macOS 27 实测中，替换已由
+LaunchServices 注册的进程会引发 RunningBoard PID 版本不匹配，MenuBarAgent 因而
+拒绝创建托盘场景。启动器必须在应用存活期间保留，不能启动子进程后立即退出。
+应用名称、存储身份和 Dock 图标由 dnr 从包元数据读取，直接运行 DNP 也能设置
+Dock 图标。无需 Finder 的 PATH 包含 dnr。此修复只需新版 dnc 重新打包 `.app`，
+不改变 DNP v4 格式，也不要求重建已有的共享 dnr。
+新版 bundle 的 Info.plist 写入 `DNRLaunchMode=supervised`，安装脚本可据此拒绝
+仍使用旧 `exec` 启动器的产物；此前的 `DNRRuntimePath` 配置保持兼容。
 `minimumSystemVersion` 默认 `11.0`，只设置 launcher/Info.plist 的最低版本；
 实际最低系统版本还取决于共享 dnr 自身。
 

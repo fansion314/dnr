@@ -405,7 +405,7 @@ fn macos(m: &Manifest, base: &Path, work: &Path, stage: &Path) -> Result<PathBuf
             "CFBundleVersion": m.version, "LSMinimumSystemVersion": config.minimum_system_version,
             "NSHighResolutionCapable": true, "NSSupportsAutomaticGraphicsSwitching": true,
             "NSAppTransportSecurity": {"NSAllowsLocalNetworking": true},
-            "DNRRuntimePath": config.runtime_path
+            "DNRRuntimePath": config.runtime_path, "DNRLaunchMode": "supervised"
         }))?,
     )?;
     run(Command::new("plutil")
