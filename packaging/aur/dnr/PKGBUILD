@@ -1,6 +1,6 @@
 # Maintainer: Peilin Fan <peilin.fan@foxmail.com>
 pkgname=dnr
-pkgver=0.4.0
+pkgver=0.4.1
 pkgrel=1
 pkgdesc='Shared Deno runtime (system CEF + WebView)'
 arch=('x86_64')
@@ -39,7 +39,7 @@ check() {
     cd "$srcdir/dnr"
     cargo test --locked -p dnr-package -p xtask
     DNR_BIN="$srcdir/dnr/dist/dnr" cargo test --locked -p dnr-package \
-        --test runtime --test runtime_native --test runtime_groups --test runtime_cache --test runtime_backend -- --ignored
+        --test runtime --test runtime_native --test runtime_groups --test runtime_cache --test runtime_backend --test runtime_node_flags -- --ignored
     python3 integration/native/tests/test_gui_imports.py
     python3 scripts/test-linux-lazy.py --dnr dist/dnr
     bash scripts/test-backend-selection.sh

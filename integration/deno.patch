@@ -1125,7 +1125,7 @@
    }
  
    export interface BrowserWindowOptions {
-+    /** Unreleased dnr extension; absent from pinned upstream Deno Desktop.
++    /** dnr 0.4.1 extension; absent from pinned upstream Deno Desktop.
 +     * Default action after an uncanceled close request. Default: "destroy".
 +     * "hide" retains the window, page state, and its memory until destroy(). */
 +    closeBehavior?: "destroy" | "hide";
