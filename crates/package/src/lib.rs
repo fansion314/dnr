@@ -22,6 +22,8 @@ mod reader;
 pub use config::PackageConfig;
 pub use materialize::{NativeCacheStats, NativeUse, cache_directory};
 
+/// Shared tool version, inherited from the dnr workspace rather than upstream Deno.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const FORMAT_VERSION: u32 = 4;
 pub const MARKER: &str = "# DNRZIP1\n";
 pub const DEFAULT_CACHE_BYTES: usize = 256 * 1024 * 1024;

@@ -18,8 +18,11 @@ mkdir -p "$package/bin" "$package/licenses" "$package/docs"
 for binary in dnr dnc; do
     [[ $(lipo -archs "dist/$binary") == arm64 ]] || exit 1
     actual=$("dist/$binary" --version)
-    [[ $(printf '%s\n' "$actual" | awk '{print $1 " " $2}') == "$binary $version" ]] || exit 1
     printf '%s\n' "$actual"
+    if [[ $(printf '%s\n' "$actual" | awk '{print $1 " " $2}') != "$binary $version" ]]; then
+        echo "Expected $binary $version; refusing to package a mismatched binary" >&2
+        exit 1
+    fi
     # Reject accidental links to the build machine's Homebrew or build directories.
     otool -L "dist/$binary" | tail -n +2 | awk '{print $1}' > "$stage/libraries"
     if grep -Ev '^(/usr/lib/|/System/Library/)' "$stage/libraries"; then

@@ -8,7 +8,9 @@ fn main() {
     });
     if args.first().is_some_and(|s| s == "--version" || s == "-V") {
         println!(
-            "dnr 0.4.1 (Deno 2.9.7; Laufey 0.7.0; format 4; backend {})",
+            "dnr {} (Deno 2.9.7; Laufey 0.7.0; format {}; backend {})",
+            dnr_package::VERSION,
+            dnr_package::FORMAT_VERSION,
             env!("DNR_BACKEND")
         );
         return;

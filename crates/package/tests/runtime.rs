@@ -10,6 +10,19 @@ use std::{
 
 #[test]
 #[ignore = "requires a built native dnr; set DNR_BIN and pass --ignored"]
+fn runtime_version_matches_workspace() {
+    let binary = PathBuf::from(std::env::var_os("DNR_BIN").expect("set DNR_BIN"));
+    let output = Command::new(binary).arg("--version").output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let version = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        version.starts_with(&format!("dnr {} ", env!("CARGO_PKG_VERSION"))),
+        "runtime and package versions differ: {version}"
+    );
+}
+
+#[test]
+#[ignore = "requires a built native dnr; set DNR_BIN and pass --ignored"]
 fn package_tree_and_extract_commands() {
     let binary = PathBuf::from(std::env::var_os("DNR_BIN").expect("set DNR_BIN"))
         .canonicalize()
