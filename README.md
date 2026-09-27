@@ -31,8 +31,13 @@ macOS and Linux have native runtime and GUI validation records, including packag
 
 For macOS ARM64 prebuilt installation and Homebrew tap setup, see
 [macOS releases](docs/MACOS-RELEASE.md). Starting with v0.4.2,
-`brew install fansion314/dnr/dnr` installs both the WebView runtime and `dnc` from one archive
-(macOS 15 or later, no compilation required).
+the following installs both the WebView runtime and `dnc` from one archive
+(macOS 15 or later, no compilation required). The tap lives in this repository:
+
+```sh
+brew tap fansion314/dnr https://github.com/fansion314/dnr.git
+brew install fansion314/dnr/dnr
+```
 
 To [build the tools from source](#build-from-source), add the output directory to your current shell's PATH after building:
 

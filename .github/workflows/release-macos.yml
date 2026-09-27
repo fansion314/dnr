@@ -4,8 +4,13 @@ on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
-  # Branch dispatches validate/build only. A dispatch on a release tag publishes.
+  # Empty input: build (and publish on tags). Nonempty: sync an existing release's tap only.
   workflow_dispatch:
+    inputs:
+      tap_release:
+        description: 'Existing release tag to install-test and sync to Formula/dnr.rb without rebuilding (e.g. v0.4.2)'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -21,6 +26,7 @@ concurrency:
 jobs:
   build:
     name: Build dnr (WebView) and dnc
+    if: github.event_name != 'workflow_dispatch' || inputs.tap_release == ''
     runs-on: macos-15
     timeout-minutes: 180
     env:
@@ -100,16 +106,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/ci/publish-macos.sh
-      - name: Explain tap setup when disabled
-        if: vars.HOMEBREW_TAP == ''
-        run: echo 'Tap update disabled. Configure HOMEBREW_TAP and HOMEBREW_TAP_DEPLOY_KEY as described in docs/MACOS-RELEASE.md.' >> "$GITHUB_STEP_SUMMARY"
 
   homebrew:
-    name: Verify release download and update tap
+    name: Verify release download and update repository tap
     needs: release
-    if: vars.HOMEBREW_TAP != ''
+    if: always() && (needs.release.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.tap_release != ''))
     runs-on: macos-15
     timeout-minutes: 20
+    permissions:
+      contents: write
     concurrency:
       group: homebrew-tap
       cancel-in-progress: false
@@ -117,25 +122,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: macos-arm64
-          path: release-assets
+      - name: Fetch the published archive and generate the pinned formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tap_release || github.ref_name }}
+        run: |
+          [[ $RELEASE_TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease --jq '(.isDraft or .isPrerelease) | not')" = true
+          version=${RELEASE_TAG#v}
+          archive="dnr-$version-macos-arm64.tar.gz"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$archive" --pattern "$archive.sha256" --dir release-assets
+          (cd release-assets && shasum -a 256 --check "$archive.sha256")
+          python3 scripts/ci/homebrew.py render "$GITHUB_REPOSITORY" "$version" \
+            "release-assets/$archive" release-assets/dnr.rb
       - name: Test installation from the public Release URL
         run: bash scripts/ci/test-homebrew.sh release-assets/dnr.rb
-      - name: Update the dedicated tap
+      - name: Commit Formula/dnr.rb to this repository's default branch
         env:
-          TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
-          HOMEBREW_TAP: ${{ vars.HOMEBREW_TAP }}
-        run: |
-          test -n "$TAP_DEPLOY_KEY" || { echo 'Missing HOMEBREW_TAP_DEPLOY_KEY secret' >&2; exit 1; }
-          key_file=$(mktemp "$RUNNER_TEMP/dnr-tap-key.XXXXXX")
-          known_hosts=$(mktemp "$RUNNER_TEMP/dnr-known-hosts.XXXXXX")
-          trap 'rm -f "$key_file" "$known_hosts"' EXIT
-          chmod 600 "$key_file"
-          printf '%s\n' "$TAP_DEPLOY_KEY" > "$key_file"
-          # Fetch GitHub's host keys over authenticated HTTPS, not unverified ssh-keyscan.
-          curl --fail --silent --show-error https://api.github.com/meta |
-            python3 -c 'import json, sys; print("\n".join("github.com " + key for key in json.load(sys.stdin)["ssh_keys"]))' > "$known_hosts"
-          export GIT_SSH_COMMAND="ssh -i $key_file -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$known_hosts"
-          python3 scripts/ci/homebrew.py update-git "$HOMEBREW_TAP" release-assets/dnr.rb
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci/homebrew.py update "$GITHUB_REPOSITORY" release-assets/dnr.rb

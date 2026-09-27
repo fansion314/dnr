@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render a checksum-pinned binary formula, or publish it to a dedicated tap."""
+"""Render a checksum-pinned binary formula, or publish it to a repository tap."""
 
 import argparse
 import base64
@@ -8,7 +8,6 @@ import json
 from pathlib import Path
 import re
 import subprocess
-import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -46,8 +45,8 @@ def gh_api(endpoint, payload=None):
 
 
 def update(tap, formula):
-    if not re.fullmatch(r"[\w-]+/homebrew-[\w.-]+", tap):
-        raise ValueError("tap must be OWNER/homebrew-NAME")
+    if not re.fullmatch(r"[\w-]+/[\w.-]+", tap):
+        raise ValueError("tap repository must be OWNER/REPOSITORY")
     repo = gh_api(f"repos/{tap}")  # Fail early on authentication or missing repository.
     branch = repo["default_branch"]
     endpoint = f"repos/{tap}/contents/Formula/dnr.rb"
@@ -57,7 +56,7 @@ def update(tap, formula):
         if "(HTTP 404)" not in str(error):
             raise
         current = None
-    payload = {"message": f"chore: update dnr to {'.'.join(map(str, version_of(formula)))}",
+    payload = {"message": f"chore(homebrew): update dnr to {'.'.join(map(str, version_of(formula)))}",
                "content": base64.b64encode(formula.encode()).decode(), "branch": branch}
     if current:
         previous = base64.b64decode(current["content"]).decode()
@@ -74,32 +73,6 @@ def update(tap, formula):
     print(f"Updated {tap}/Formula/dnr.rb")
 
 
-def update_git(tap, formula):
-    """Use a repository-scoped SSH deploy key supplied through GIT_SSH_COMMAND."""
-    if not re.fullmatch(r"[\w-]+/homebrew-[\w.-]+", tap):
-        raise ValueError("tap must be OWNER/homebrew-NAME")
-    incoming = version_of(formula)
-    with tempfile.TemporaryDirectory(prefix="dnr-tap-") as directory:
-        checkout = Path(directory) / "tap"
-        subprocess.run(["git", "clone", "--depth=1", f"git@github.com:{tap}.git", str(checkout)], check=True)
-        target = checkout / "Formula/dnr.rb"
-        if target.exists():
-            previous = target.read_text()
-            if version_of(previous) > incoming or previous == formula:
-                print("Tap already matches this release or has a newer version.")
-                return
-            if version_of(previous) == incoming:
-                raise ValueError("refusing to change an already published formula version")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(formula)
-        subprocess.run(["git", "-C", str(checkout), "add", "Formula/dnr.rb"], check=True)
-        subprocess.run(["git", "-C", str(checkout), "-c", "user.name=github-actions[bot]",
-                        "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
-                        "commit", "-m", f"chore: update dnr to {'.'.join(map(str, incoming))}"], check=True)
-        # No force: a concurrent tap commit makes the job fail safely.
-        subprocess.run(["git", "-C", str(checkout), "push", "origin", "HEAD"], check=True)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -111,17 +84,12 @@ def main():
     publish = commands.add_parser("update")
     publish.add_argument("tap")
     publish.add_argument("formula", type=Path)
-    git_publish = commands.add_parser("update-git")
-    git_publish.add_argument("tap")
-    git_publish.add_argument("formula", type=Path)
     args = parser.parse_args()
     if args.command == "render":
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(render(args.repository, args.version, args.archive))
-    elif args.command == "update":
-        update(args.tap, args.formula.read_text())
     else:
-        update_git(args.tap, args.formula.read_text())
+        update(args.tap, args.formula.read_text())
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ macOS 只提供一个 `dnr-<version>-macos-arm64.tar.gz`：`bin/dnr` 为系统 W
 以下命令在维护者完成首次 Release 与 tap 配置后可用：
 
 ```sh
-brew tap fansion314/dnr
+brew tap fansion314/dnr https://github.com/fansion314/dnr.git
 brew install fansion314/dnr/dnr
 dnr --version
 dnc --version
@@ -24,29 +24,25 @@ brew update
 brew upgrade fansion314/dnr/dnr
 ```
 
-也可以直接执行 `brew install fansion314/dnr/dnr`，由 Homebrew 自动添加 tap。
+tap 与源码共用 `fansion314/dnr` 仓库，因此首次添加必须指定完整 Git URL；
+省略 URL 会让 Homebrew 寻找另一个 `homebrew-dnr` 仓库。配方在根目录 `Formula/dnr.rb`。
 配方下载固定版本的 GitHub Release 压缩包并验证 SHA-256，然后一次安装两个程序；
 不在用户电脑上编译。若已有手动安装的同名程序，使用 `which -a dnr dnc` 检查 PATH。
 
 ## 首次配置（维护者）
 
-1. 创建公开仓库 `fansion314/homebrew-dnr`，以 `main` 为默认分支，并用 README 初始化。
-   配方由 CI 写入 `Formula/dnr.rb`；不需要该仓库再执行一次 bottle 构建。
-2. 创建专用 SSH key pair，将公钥加入 tap 仓库的 Deploy keys 并勾选写权限。
-   在 `fansion314/dnr` 的 Actions secrets 中将私钥保存为 `HOMEBREW_TAP_DEPLOY_KEY`。
-   该 key 只用于 tap 仓库，不使用开发者个人 SSH key 或 GitHub 登录令牌。
-3. 在 `fansion314/dnr` 的 Actions variables 中设置
-   `HOMEBREW_TAP=fansion314/homebrew-dnr`。更换 tap 时修改此变量及用户安装文档。
-4. 将工作流与脚本提交到默认分支。先手动运行 **Release macOS package** 验证构建；
-   普通分支试跑只上传 Actions artifacts，不写 Release 或 tap。
-5. 按项目发布约定，在一次发布提交中准备版本号、锁文件、现有 Arch 配方及
+1. 将工作流与脚本提交到默认分支。无需额外仓库、SSH key、PAT、secret 或变量；
+   Homebrew job 使用本仓库 `GITHUB_TOKEN` 和显式 `contents: write` 权限。
+   默认分支的保护规则需要允许这一配方更新写入。
+2. 手动运行 **Release macOS package**，留空 `tap_release` 来验证构建；普通分支
+   试跑只上传 Actions artifacts，不写 Release 或 tap。
+3. 按项目发布约定，在一次发布提交中准备版本号、锁文件、现有 Arch 配方及
    `docs/releases/v<version>.md`，然后推送对应 `vX.Y.Z` 标签。
    不要移动已有标签来补入此工作流；已发布的 `v0.4.1` 没有此工作流。
 
-未设置 `HOMEBREW_TAP` 时，Release 正常上传 macOS 包，job summary 提示尚未启用 tap。
-设置变量后，缺少或失效的 deploy key 会让 tap job 明确失败，已上传的 Release 包仍保留。
-不要将私钥写入配方、脚本、普通变量或日志。手动使用 Contents API 时，脚本的 `update`
-子命令也支持通过 `GH_TOKEN` 提供仅限 tap 仓库、具有 Contents 写权限的 fine-grained PAT。
+发布成功后，CI 会在默认分支追加一次仅更新 `Formula/dnr.rb` 的提交，写入真实的版本、
+Release URL 和 SHA-256。这是用户明确允许的配方更新步骤，不是验收记录提交；
+独立 tap 也需要相同的更新提交，共仓只是将它保留在源码仓库中。
 
 ## CI 与失败恢复
 
@@ -55,13 +51,13 @@ brew upgrade fansion314/dnr/dnr
 1. `macos-15` 原生 ARM64 runner，稳定 Rust，按锁文件安装依赖；使用独立的固定
    Deno/Laufey 检出，不复用开发机 `.upstream` 或 `target`。保持已有 sccache 配置。
 2. 显式构建 `--backend webview`，运行 workspace 与 runtime/native/group/cache/backend/
-   Node flags 测试。检查架构、版本、系统动态库和签名后，生成一个 gzip tar 包。
+   Node flags/zoom 测试。检查架构、版本、系统动态库和签名后，生成一个 gzip tar 包。
 3. 临时 Homebrew tap 从本地压缩包安装；`brew test` 验证两份版本、TS 执行、资源读取
    和 `dnc` → `.dnp` → `dnr`。测试后卸载临时 formula 和 tap，不覆盖已有 Homebrew dnr。
 4. 标签发布任务校验标签提交、包校验和与配方。macOS 与 Arch 共享发布互斥锁，
    macOS 不改写 Arch 的 `SHA256SUMS`、发布说明或 latest 标记。
-5. 启用 tap 后，另一台 ARM64 runner 从公开 Release URL 再次安装并执行 `brew test`，
-   成功后使用专用 deploy key 更新独立 tap，源码仓库不产生发布后验收提交。
+5. 另一台 ARM64 runner 下载公开 Release 包、核对校验和，再从公开 URL 安装并执行
+   `brew test`，成功后通过 Contents API 提交本仓库 `Formula/dnr.rb`。
 
 CLI/包测试不能代替真实 WebView 窗口、绑定与关闭生命周期验收；CI 不将未运行的 GUI
 检查写成通过。构建日志和环境记录保存在 Actions artifacts，发布后的安装证据留在
@@ -70,7 +66,15 @@ job 日志中，不追加源码仓库验收提交。
 同版本已有 Release 资产只接受完全相同的内容；不能重建后用 `--clobber` 偷换 tap
 引用的包。如果只有发布/tap job 失败，使用 **Re-run failed jobs** 复用已测试 artifact。
 需要改变二进制时发布新版本。tap 更新会跳过旧版本和完全相同的配方，拒绝同版本内容
-替换；并发写入通过普通 Git push 检测冲突，失败后可重跑该 job，不强推。
+替换；并发写入通过 Contents API 的文件 SHA 检测冲突，失败后可重跑该 job。
+
+若只需为已经发布的包更新或恢复 tap，可在默认分支手动运行工作流并填写
+`tap_release=v0.4.2`。这条路径不重建、不上传或改写 Release 资产，只下载现有包、
+验证 Homebrew 安装并更新配方：
+
+```sh
+gh workflow run release-macos.yml --ref main -f tap_release=v0.4.2
+```
 
 ## 本地验证脚本
 

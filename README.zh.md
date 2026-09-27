@@ -30,8 +30,13 @@ macOS 和 Linux 均已有原生运行时与 GUI 验证记录。包内原生插�
 ## 快速上手
 
 macOS ARM64 预构建包和 Homebrew tap 配置见 [macOS 发布说明](docs/MACOS-RELEASE.md)。
-从 v0.4.2 开始，可运行 `brew install fansion314/dnr/dnr`，
-从一个压缩包同时安装 WebView 版 `dnr` 和 `dnc`（macOS 15 及以上，无需编译）。
+从 v0.4.2 开始，以下命令从一个压缩包同时安装 WebView 版 `dnr` 和 `dnc`
+（macOS 15 及以上，无需编译）。tap 与源码共用本仓库：
+
+```sh
+brew tap fansion314/dnr https://github.com/fansion314/dnr.git
+brew install fansion314/dnr/dnr
+```
 
 也可以[从源码构建工具](#从源码构建)，然后在仓库根目录将输出目录加入当前终端的 PATH：
 
