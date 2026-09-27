@@ -1499,3 +1499,42 @@ Xfce 的 ItemIsMenu 缺省策略限制仍存在。未构建或验证 system-CEF/
 
 证据 JSON 位于 `dist/validation-upstream-20260927/macos-songjian/`：
 `before.json`、`after-close.json`、`hidden.json`、`restored.json`；截图已在 CUA 中实际查看。
+
+
+## v0.4.1 发布准备与本机安装（2026-09-27）
+
+发布提交 `a0c6030351ed05b0161dd355d31dc84fc2ee82b6`，标签 `v0.4.1`；
+已原子推送到 Gitea origin 与 GitHub，两端 main/tag 解引用均核对一致。
+松间的 `47878ee` 已同步到其唯一配置的 Gitea origin。
+[Actions 36300571743](https://github.com/fansion314/dnr/actions/runs/36300571743)
+由标签触发，四种 Arch 包完成各自检查后由 workflow 自动发布；本地没有手工上传发布包。
+当前记录时独立 dnc 构建已成功，三个运行时尚在构建，不能据此宣称 GitHub Release 已发布。
+
+本机 macOS ARM64：
+
+- workspace tests、严格 clippy、fmt、补丁快照检查通过；8 份 PKGBUILD/.SRCINFO 与两份
+  Cargo.lock 的版本一致，runtime 版本为 0.4.1，包格式保持 v4。
+- 保留 sccache，`CARGO_CACHE_RUSTC_INFO=0 cargo run --locked -p xtask -- build` 的 release
+  构建通过；22 项显式 runtime/native/groups/cache/backend/node-flags 测试通过。
+  真实 macOS 薄启动器测试及 release `close-api.ts` 回归通过。
+- 松间 `vp check`、`vp test`（31 通过、10 跳过）、类型检查、4 项桌面测试通过。
+  使用新 release dnr/dnc 重新构建、签名并通过项目安装器安装 `/Applications/松间.app`。
+  应用源码仍为 1.1.1；应用 DNP 内容未变，更新的是运行时固定路径及安装产物。
+- 已原子替换 `~/.local/bin/dnr`、`~/.local/bin/dnc` 为 0.4.1，签名和构建/安装 SHA-256 相同。
+  松间的 `DNRRuntimePath` 指向下述相同 runtime 哈希的共享副本，`DNRLaunchMode=supervised`。
+- 实际打开已安装松间，CUA 可访问性树和截图确认页面正常；监听服务 HTTP 200，
+  runtime 进程确实从新版哈希目录运行。用户工作区文件在安装前、安装后、启动后哈希均为
+  `7c45a880b12c48f3a9781c280908a2049e4cee664da944caa52e2b448deb3fa2`。
+- 按用户要求，Pi **没有重新打包或安装**。现有 Pi v4 包在新 PATH/runtime 下输出 0.87.1，
+  文件 SHA-256 保持 `ed453378b24d9bcbbbae48c2d141f2e03fb215bb0e1b318f610c37ab58c25459`。
+
+安装产物 SHA-256：
+
+- dnr：`3ede25d3535bfb94643c3bd3cc555b1e6ead1ca85147e67c38fabed06f7233a5`
+- dnc：`a3be9a4f4fb58954703fc6c8c53b392d6b05253a6f03aff3d5122729a9ddd225`
+- 松间 DNP：`6e63a3a41c050ba28be2ee0a737f065069fe0dfcc72eb74d403a4f6e89998e41`
+
+备份：`~/Library/Application Support/dnr/backups/2026-09-27T06-42-14Z-v0.4.1-tools/`
+保存原 dnr/dnc；`2026-09-27T06-42-21.349Z/松间.app` 保存原应用。
+本地日志、安装前后摘要及校验记录在 `dist/release-v0.4.1-local/`。
+保留无关的 Pi 性能文档修改，没有提交到本轮发布中。
