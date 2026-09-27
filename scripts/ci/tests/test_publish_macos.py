@@ -33,6 +33,7 @@ class PublishMacosTests(unittest.TestCase):
                         str(self.archive), "release-assets/dnr.rb"], cwd=self.root, check=True)
         self.env = dict(os.environ, GITHUB_REF_NAME="v0.4.2", GITHUB_REPOSITORY="owner/dnr",
                         GITHUB_SHA="a" * 40, FAKE_REMOTE_COMMIT="a" * 40,
+                        DNR_PACKAGE_REVISION="0", GITHUB_EVENT_NAME="push", RELEASE_TAG="v0.4.2",
                         FAKE_ROOT=str(self.root), FAKE_EXISTS="1",
                         PATH=str(self.root / "fake-bin") + os.pathsep + os.environ["PATH"])
         self.fake("git", '''#!/usr/bin/env python3
