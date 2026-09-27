@@ -559,3 +559,82 @@
      laufey_js_result_fn callback;
      void* callback_data;
    };
+--- a/backend-common/src/tray_linux.cc
++++ b/backend-common/src/tray_linux.cc
+@@ -93,6 +93,9 @@
+   GtkWidget* menu;
+   laufey_menu_click_fn menu_click_fn;
+   void* menu_click_data;
++  laufey_tray_click_fn click_fn;
++  void* click_data;
++  gulong activate_signal;
+ };
+ 
+ std::mutex& LinuxTrayMutex() {
+@@ -234,10 +237,46 @@
+   });
+ }
+ 
+-void SetTrayClickHandlerLinux(uint32_t /*tray_id*/,
+-                                laufey_tray_click_fn /*handler*/,
+-                                void* /*user_data*/) {
+-  // AppIndicator has no left-click event; clicks always open the menu.
++void SetTrayClickHandlerLinux(uint32_t tray_id,
++                                laufey_tray_click_fn handler,
++                                void* user_data) {
++  OnGtkMain([tray_id, handler, user_data] {
++    std::lock_guard<std::mutex> lock(LinuxTrayMutex());
++    auto it = LinuxTrayMap().find(tray_id);
++    if (it == LinuxTrayMap().end()) return;
++    auto& entry = it->second;
++    entry.click_fn = handler;
++    entry.click_data = user_data;
++    if (entry.activate_signal) {
++      g_signal_handler_disconnect(entry.indicator, entry.activate_signal);
++      entry.activate_signal = 0;
++    }
++    if (!handler) return;
++    // Ayatana 0.6 exposes SNI Activate as a GObject signal. Probe at runtime
++    // because legacy libappindicator shares the ABI but lacks this signal.
++    if (!g_signal_lookup("activate", G_OBJECT_TYPE(entry.indicator))) {
++      g_warning("laufey: tray left click requires AppIndicator activate signal; "
++                "use the tray menu or install libayatana-appindicator >= 0.6");
++      return;
++    }
++    entry.activate_signal = g_signal_connect_data(
++        entry.indicator, "activate",
++        G_CALLBACK(+[](AppIndicator*, gint, gint, gpointer data) {
++          auto id = GPOINTER_TO_UINT(data);
++          laufey_tray_click_fn callback = nullptr;
++          void* callback_data = nullptr;
++          {
++            std::lock_guard<std::mutex> lock(LinuxTrayMutex());
++            auto it = LinuxTrayMap().find(id);
++            if (it == LinuxTrayMap().end()) return;
++            callback = it->second.click_fn;
++            callback_data = it->second.click_data;
++          }
++          // Do not hold the map lock across a runtime callback.
++          if (callback) callback(callback_data, id);
++        }),
++        GUINT_TO_POINTER(tray_id), nullptr, GConnectFlags(0));
++  });
+ }
+ 
+ void SetTrayDoubleClickHandlerLinux(uint32_t /*tray_id*/,
+--- a/backend-common/include/laufey_backend_common.h
++++ b/backend-common/include/laufey_backend_common.h
+@@ -405,10 +405,9 @@
+ // when neither is present on the system, CreateTrayIconLinux returns 0
+ // and all other calls no-op.
+ //
+-// AppIndicator has no left-click event — a click anywhere pops the
+-// indicator's menu — so SetTrayClickHandlerLinux and
+-// SetTrayDoubleClickHandlerLinux accept handlers for API symmetry but
+-// don't surface clicks back.
++// Primary activation is forwarded when the loaded library exposes the
++// Ayatana >= 0.6 "activate" signal. Older libraries retain menu-only behavior.
++// Double clicks are not represented by the StatusNotifier protocol.
+ 
+ uint32_t CreateTrayIconLinux();
+ void DestroyTrayIconLinux(uint32_t tray_id);

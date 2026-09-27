@@ -6,7 +6,7 @@
 
 | 行为 | 维护位置 | 上游保留的接入点 |
 | --- | --- | --- |
-| v3 元数据、文件校验、原生分组、持久缓存 | `crates/package/src/{v3,index,materialize,persistent}.rs` | 不依赖 Deno |
+| v4 元数据、文件校验、原生分组、持久缓存 | `crates/package/src/{metadata,index,materialize,persistent}.rs` | 不依赖 Deno |
 | ZIP 覆盖、包路径归一化、原生库加载 | `integration/rt/dnr_vfs.rs` | `file_system.rs` 的字段与 trait 方法入口 |
 | V8/转译持久缓存 | `integration/rt/dnr_cache.rs` | loader 选择适配器、转译入口与 Worker 服务传递 |
 | 应用身份、进程启动、安装目录 | `integration/rt/dnr.rs` | runtime 模块注册和运行入口 |
@@ -38,4 +38,5 @@ python3 scripts/check-upstream-patches.py --deno-revision <候选提交> --laufe
 4. 保留默认 sccache，运行工作区 fmt/clippy/tests、完整 release 构建和显式 runtime/native/groups/cache 测试；补充实际 Pi 和 GUI 验证。
 5. macOS 与 Linux 分开记录。macOS 成功不代表 Linux WebView 或 system-CEF 已验证；补丁检查也不能代替原生验收。
 
-本轮 Deno 补丁由 20 文件、128 hunks、`+509/-98` 收敛至 15 文件、110 hunks、`+394/-79`。Laufey 保持 10 文件、27 hunks、`+165/-33`。统计只计补丁正文，不把迁入本地模块的行数当成逻辑删除。
+补丁数量以检查脚本的当前输出为准。逐项维护原因、验证入口和上游吸收条件见
+[补丁登记表](PATCHES.md)，窗口关闭策略见 [桌面窗口生命周期](WINDOW-LIFECYCLE.md)。

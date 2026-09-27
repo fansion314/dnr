@@ -1360,3 +1360,142 @@ Songjian 修复基于 `f2935fc`；继续使用原 dnr 0.4.0 / DNP v4
 - 托盘右键自动点击受 UI 工具 `cannotClickOffscreenElement` 限制；本轮未把应用菜单 Quit
   当作托盘菜单退出的验收。未切换系统明暗主题；Linux 原生 GUI 未复验（本轮未改变其图标
   或启动器）。原生运行时库实现没有改动，因此未重复全部 Node-API/FFI 原生测试。
+
+
+## 上游关闭事件、托盘回调与 Node O_EXCL 修复（2026-09-27）
+
+以下先记录第一阶段的结果与阻塞；后续已获授权的完整 Linux WebView/Plasma 复验见本节末尾。补丁原因、入口和移除条件见
+[PATCHES.md](docs/PATCHES.md)，新增 API 见 [WINDOW-LIFECYCLE.md](docs/WINDOW-LIFECYCLE.md)。
+验证阶段没有推送、发布或替换已安装 runtime/松间；保留原有性能文档未提交修改。
+
+### macOS ARM64
+
+- 保持 sccache，使用 `CARGO_CACHE_RUSTC_INFO=0 cargo run --locked -p xtask -- build --debug --runtime-only`
+  构建真实 runtime。产物 `dist/dnr`（debug）SHA-256：
+  `a81e9f576e3b96924d209427afeecabd4e7ba413c7afe753b703bfe184fed9b8`。
+  普通源码版本仍为 0.4.0；没有把该调试产物安装到 `~/.local/bin`。
+- `cargo fmt --all -- --check`、严格 workspace clippy、workspace tests 通过。
+- 显式 `DNR_BIN=$PWD/dist/dnr cargo test --locked -p dnr-package --test runtime
+  --test runtime_cache --test runtime_groups --test runtime_native --test runtime_node_flags -- --ignored`
+  共 20 项通过。含历史 readFile 所有权回归、Node-API/FFI、Worker/缓存和新增 Node 数值标志的源码/DNP 两种入口。
+- `node examples/node-open-flags.mjs` 与新 dnr 都通过同步、回调和 Promise 三种 API。
+- `dist/dnr examples/desktop/close-api.ts` 真实 WebView 自动回归通过：取消关闭、处理器重入、
+  隐藏后 `isClosed=false`、恢复后同一页面 token 且只加载一次、切换销毁策略、显式 destroy 和幂等调用。
+  首版发现 native fast-call 升级覆盖 JS close；改用独立 Symbol 后重复关闭通过。
+- macOS 标题栏/快捷键验收**未通过**：现有 `test-macos-window.py` 在 Cmd+H 隐藏步骤超时；
+  独立 System Events 标题栏点击也失败，CUA 未识别未打包的 dnr 进程。
+  本轮没有把 API 自动测试当成原生关闭按钮验收，也未给该 UI 自动化失败归因到新补丁。
+
+### xjtuse-arch-dev 原生 Linux x86_64
+
+- 环境：Rust 1.98.1，GTK 3.24.52，Ayatana AppIndicator 0.6.0-2，Xfce panel 4.20.8-1；
+  Xvfb/Openbox/X11 + 软件渲染，复用已有 session D-Bus。
+- 使用规定的增量同步助手，工作区 `/workspace/dnr-92802ab7a212`；排除 macOS `.upstream/`、
+  target/dist，固定上游另以只含指定提交的独立 Git 快照同步，并在远端成功执行干净 `xtask prepare`。
+  后续测试文件同步来自已登记的 patch，不修改本机 mirror。
+- `cargo test --locked --manifest-path .upstream/deno/Cargo.toml -p deno_fs
+  --features deno_core/v8 --lib`：5 项通过，包括数值标志映射与真正的 Unix 文件打开。
+  单独测试包需要显式开启 `deno_core/v8`；首次省略时报 feature 错误，修正命令后通过。
+- `strace -f -e trace=openat` 实测：`O_RDONLY/O_WRONLY/O_RDWR | O_EXCL` 在已存在普通文件上成功，
+  syscall 中保留 `O_EXCL` 且没有 `O_CREAT`；`O_RDWR|O_CREAT|O_EXCL` 对已存在文件返回 EEXIST；
+  删除文件后单独 EXCL 返回 ENOENT，组合标志可以新建。文件内容未被改变。
+  没有访问真实块设备，因此尚未验证块设备 EBUSY、独占保持到 close 或 Etcher 烧录。
+- 用 `g++ -std=c++17 -Wall -Wextra -Werror` 编译 `integration/native/tests/tray_activation.cc`，
+  include 指向 patched Laufey backend-common/capi，再链接 `pkg-config --cflags --libs gtk+-3.0` 和 `-ldl`。
+  `gui-run timeout 15s .cache/validation/tray-activation` 通过，覆盖回调、多图标、替换、移除和无锁重入。
+- 带 PNG 参数运行该 fixture，真实窗口关闭后隐藏；真实左键点击**仍打开菜单，未通过恢复验收**。
+  原因是 Ayatana 不发布 ItemIsMenu，而 Xfce 将缺省值解释为 menu-only。
+  从 watcher 读取实际 bus name/path 后调用 `org.kde.StatusNotifierItem.Activate` 返回成功并恢复窗口，
+  证明原来的 No handler for Activate 已被修复。真实右键打开菜单并点击 Quit 正常退出。
+  这仅是 patched 托盘源文件的 GTK fixture，不是完整 dnr/松间测试。
+- WebKitGTK 与 CEF 都未安装。自动审批拒绝 `pacman -Syu --needed webkit2gtk-4.1`，
+  理由是项目禁止自行安装远端系统依赖；该阶段已请求用户授权，当时尚未收到答复。
+  未绕过拒绝安装系统包。因此完整 Linux runtime、两个后端原生关闭与松间应用本轮尚未验证。
+
+证据：远端 `.cache/validation/{open-flags.strace,tray-interactive.log,tray-*.png}`；
+本地 `dist/validation-upstream-20260927/` 已保存并查看截图。
+`xfce-left-opens-menu.png` 是失败证据，`dnr-tray-dbus-restored.png` 是显式 D-Bus 恢复证据，
+两者不能互相替代。测试没有修改面板设置、用户松间数据或安装的应用。
+
+
+### 授权后完整 Linux WebView 与松间复验（同日）
+
+用户明确授权在 `xjtuse-arch-dev` 内安装 WebKitGTK 并同步升级系统包后，执行
+`pacman -Syu --needed --noconfirm webkit2gtk-4.1` 成功，安装 WebKitGTK 2.52.6-1 及依赖；
+没有改动宿主机系统包。保持 sccache，通过增量同步复用上游快照、Cargo 缓存和构建目录。
+
+- `xtask prepare` 对齐最终补丁成功；`cargo run --locked -p xtask -- build --backend webview --debug`
+  完整构建成功，首次 runtime 编译约 5 分钟。产物为原生 Linux x86_64 ELF，N-API 导出检查通过，
+  `ldd` 所有依赖均可解析。最终 Linux debug `dist/dnr` SHA-256：
+  `a5edb4fbfe5be973c341d5d1987a7d50daa0ee7b3e1f6d25895d5d8b3b2bd389`。
+- 显式 runtime/cache/groups/native/node-flags 共 20 项通过。首次运行只读目录测试被其
+  “必须非 root”前置条件拒绝，随后以容器 UID 65534 运行该已编译测试并通过；其余测试按原环境执行。
+- `close-api.ts` 在 Linux WebView 上通过；最终补充了既有 `attachPanel().destroy()` 在
+  hide 策略/取消处理器存在时仍无条件销毁的回归。macOS 最终增量构建与同一 API 回归也通过。
+  最终 macOS debug runtime SHA-256：`29a238d45326c09a2c664a2e7c3abeceae9784af797d870ac4a09fc2646fe565`。
+  新增 API 来源已在 README、类型注释、WINDOW-LIFECYCLE 和 PATCHES 中明确区分；
+  这些仍是未发布的 dnr 扩展，没有升级源码版本号。
+- `gui-run python3 scripts/test-linux-close.py --dnr dist/dnr --backend webview --window-system x11
+  --repeat 2 --logs .cache/validation/native-close` 通过 8 个 WM 原生关闭场景，覆盖 Deno.exit(0)、
+  Node process.exit(9)、HTTP 服务异步关闭和无服务器异步收尾。关闭到进程退出约 0.02–0.18 秒。
+  X11 选项使用 WM_DELETE_WINDOW，不调用应用 JS close。首次运行发现容器 PID 1 不回收
+  已退出 WebKit 子进程；测试 runner 改为子进程 subreaper 后，按测试进程组回收并验证无活跃残留。
+  没有修改系统 init、WebKit sandbox 或 runtime 的退出逻辑来绕过检查。
+- 松间源码使用原 checkout 内容，在独立远端副本完成 `vp install --frozen-lockfile`、`vp build`、
+  `vp check`、`vp test`（31 通过、10 个旧安装布局测试跳过）、`vp run check`。未修改业务源码。
+
+**Xfce 4.20.8 / Openbox / X11，源码入口：**
+
+- 实际页面截图正常；真实点击“开始专注”，再点击标题栏关闭后隐藏。
+- 只读观测端点确认 `id=1, loads=1, closes=1, closed=false, visible=false`。
+- 实际托盘右键菜单“显示松间”恢复；恢复后仍是同一窗口、同一页面 token 和相同 URL，加载次数仍为 1。
+  计时从 24:56 继续到 23:28，没有重建页面。再次标题栏关闭后，经真实 D-Bus Activate 恢复也保留同一页面。
+- 随后另一项环境配置工作切换了桌面，正在运行的源码测试结束。故该源码轮次的菜单退出未计为通过；
+  切换完成经用户明确确认后，才继续以下 Plasma 测试，没有与桌面切换并发操作鼠标。
+
+**Plasma / KWin X11 6.7.5 / 软件渲染，DNP 入口：**
+
+- 使用相同 Ayatana 0.6.0-2，无系统库补丁、无面板行为设置改动。
+- 以未修改的 `desktop/*.ts` 和远端前端构建输出组成 DNP，包含正式 appId 与窗口图标。
+  这是测试打包，不是发行脚本的 minified bundle，也不是对已安装松间的替换。
+- 观测版 DNP 仅增加 `app-lifecycle-probe.ts` 入口包装器，记录创建窗口和 load/close 次数，
+  对测试页面写入唯一 nonce，并通过随机 loopback 端口提供状态读取；应用模块保持原样。
+  使用独立绝对 `XDG_DATA_HOME`，隔离用户应用数据。
+- 真实标题栏关闭后窗口隐藏；**真实鼠标左键点击托盘成功恢复**，不弹菜单。
+  记录 `id=1, loads=1, closes=1, closed=false`，恢复后 visible=true；页面 token、URL 不变，
+  专注计时从 24:57 继续到 24:08。这里使用鼠标输入，不是以手工 D-Bus 调用代替左键。
+- 随后用不含探针入口的普通 `Songjian.dnp` 复验：正常页面、标题栏关闭隐藏并保留 PID、
+  真实托盘左键恢复、右键“退出松间”，最后退出码 0，runtime PID 消失。
+  普通包 SHA-256：`ea93434556c262b17a08a172438c5cff57e17554c2d31c107a63234fdb5e55f9`。
+- 最终证据在远端 `.cache/validation/` 的 `songjian-source-*`、`songjian-plasma-*`、
+  `songjian-normal-*`、`native-close/`、构建日志和测试日志；截图均取回并实际查看。
+
+结论边界：Linux WebView + Plasma X11 的三个相关路径已有实际运行证据；
+Xfce 的 ItemIsMenu 缺省策略限制仍存在。未构建或验证 system-CEF/dual、Wayland、真实 GPU、
+实际音频输出或块设备烧录。没有发布/安装新 runtime 或松间，没有修改用户真实数据。
+
+用户在验收后确认当前目标不提供 Xfce 支持；其 ItemIsMenu 兼容性记录作为范围边界保留，不阻塞本轮交付。
+
+
+### macOS 松间原生关窗页面保留复验（同日，提交前追加）
+
+按用户要求，用本轮 macOS debug runtime（SHA-256 `29a238d45326c09a2c664a2e7c3abeceae9784af797d870ac4a09fc2646fe565`）
+和未修改的松间业务源码，重新 `vp build` 并由 dnc 构建独立薄 `.app`。
+测试 bundle ID 为 `world.fansionia.songjian.validation.close`，DNRRuntimePath 指向工作区产物；
+探针在导入松间入口前把 HOME 指向测试目录，未改 `/Applications/松间.app` 或真实用户数据。
+
+- 通过 CUA 操作真实 AppKit 窗口，点击“开始专注”，在待办输入框留下未提交文本
+  `未提交草稿 macOS 保留验证`；没有点击添加。
+- 点击原生红色关闭按钮。第二次关闭后，在 UI 工具重新激活应用前读取探针：
+  `id=1, loads=1, closes=2, closed=false, visible=false`。
+- 页面 token 始终为 `0.1kseyot4606`，服务 URL 始终为同一端口；未保存草稿仍存在，
+  计时从 24:37 继续到隐藏时的 23:34，再到重新显示后的 22:57。
+- 通过 CUA 重新激活应用后，窗口 visible=true，仍只有一个窗口、一次页面加载；
+  可访问性树和截图均确认未提交草稿保留。重新激活不是重建页面。
+- CUA 的 `getAXState()` 会重新激活该测试应用，因此第一次关闭后紧接 AX 检查时看到 visible=true；
+  为避免把工具的重新显示当作关闭失败，第二轮先独立采样隐藏状态，再进行 AX 检查。
+- 本轮补齐了之前未打包进程无法被 UI 自动化定位时缺失的**原生红色关闭按钮**证据。
+  结论是当前补丁运行时下松间只隐藏窗口、不销毁页面；不是对仍安装着的旧运行时重新验收。
+
+证据 JSON 位于 `dist/validation-upstream-20260927/macos-songjian/`：
+`before.json`、`after-close.json`、`hidden.json`、`restored.json`；截图已在 CUA 中实际查看。

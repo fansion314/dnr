@@ -1121,7 +1121,32 @@
      // `DesktopStartupError` (see its docs for why these otherwise vanish). The
 --- a/cli/tsc/dts/lib.deno.desktop.d.ts
 +++ b/cli/tsc/dts/lib.deno.desktop.d.ts
-@@ -720,8 +720,8 @@
+@@ -378,6 +378,10 @@
+   }
+ 
+   export interface BrowserWindowOptions {
++    /** Unreleased dnr extension; absent from pinned upstream Deno Desktop.
++     * Default action after an uncanceled close request. Default: "destroy".
++     * "hide" retains the window, page state, and its memory until destroy(). */
++    closeBehavior?: "destroy" | "hide";
+     title?: string;
+     /** @default {800} */
+     width?: number;
+@@ -644,6 +648,13 @@
+ 
+     isClosed(): boolean;
+     close(): void;
++    /** dnr extension: destroy without dispatching close.
++     * Attached WebGPU surfaces still hide for native-handle safety. */
++    destroy(): void;
++    /** dnr extension: choose the action for native/programmatic close requests. */
++    setCloseBehavior(behavior: "destroy" | "hide"): void;
++    /** dnr extension: query the configured close action. */
++    getCloseBehavior(): "destroy" | "hide";
+ 
+     isVisible(): boolean;
+     show(): void;
+@@ -720,8 +731,8 @@
    /** App-level dock / taskbar handle.
     *
     * A `"reopen"` event fires on macOS when the user clicks the dock icon;
@@ -1347,3 +1372,211 @@
  
      js_runtime
        .op_state()
+--- a/cli/rt/desktop.rs
++++ b/cli/rt/desktop.rs
+@@ -178,9 +178,47 @@
+ 
+   // Window registry: windowId -> BrowserWindow instance.
+   const windows = new Map();
++  const closeBehaviors = new WeakMap();
++  const closing = new WeakSet();
++  const privateDesktopClose = Symbol.for("Deno_privateDesktopClose");
++  function validateCloseBehavior(behavior) {
++    if (behavior !== "destroy" && behavior !== "hide") {
++      throw new TypeError('closeBehavior must be "destroy" or "hide"');
++    }
++    return behavior;
++  }
++  BrowserWindowPrototype.setCloseBehavior = function(behavior) {
++    closeBehaviors.set(this, validateCloseBehavior(behavior));
++  };
++  BrowserWindowPrototype.getCloseBehavior = function() {
++    return closeBehaviors.get(this) ?? "destroy";
++  };
++  BrowserWindowPrototype.destroy = function() {
++    if (this.isClosed()) return;
++    BrowserWindowPrototype[privateDesktopClose].call(this);
++    // Native WebGPU surfaces can still require hiding for handle safety.
++    if (this.isClosed()) {
++      windows.delete(this.windowId);
++      windowBindCallbacks.delete(this.windowId);
++    }
++  };
++  BrowserWindowPrototype.close = function() {
++    if (this.isClosed() || closing.has(this)) return;
++    closing.add(this);
++    try {
++      const event = new Event("close", { cancelable: true });
++      if (!this.dispatchEvent(event) || this.isClosed()) return;
++      if (this.getCloseBehavior() === "hide") this.hide();
++      else this.destroy();
++    } finally {
++      closing.delete(this);
++    }
++  };
+   const nativeConstructor = BrowserWindow;
+   const OrigBW = function(...args) {
++    const behavior = validateCloseBehavior(args[0]?.closeBehavior ?? "destroy");
+     const instance = new nativeConstructor(...args);
++    closeBehaviors.set(instance, behavior);
+     const windowId = instance.windowId;
+     windows.set(windowId, instance);
+     return instance;
+@@ -455,7 +493,8 @@
+       destroy() {
+         tray.removeEventListener("click", onTrayClick);
+         if (onBlur) window.removeEventListener("blur", onBlur);
+-        window.close();
++        // Panel destruction remains unconditional even with a hide policy.
++        window.destroy();
+       },
+     };
+   };
+@@ -936,7 +975,7 @@
+           case "closeRequested": {
+             const target = windows.get(ev.windowId);
+             if (!target) break;
+-            target.dispatchEvent(new Event("close"));
++            target.close();
+             break;
+           }
+           case "runtimeError": {
+--- a/cli/rt_desktop/lib.rs
++++ b/cli/rt_desktop/lib.rs
+@@ -81,8 +81,6 @@
+     let move_tx = self.event_tx.clone();
+     let page_load_tx = self.event_tx.clone();
+     let close_tx = self.event_tx.clone();
+-    let closed_windows = self.closed_windows.clone();
+-    let open_windows_on_close = self.open_windows.clone();
+     let shown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+ 
+     window
+@@ -213,18 +211,14 @@
+         );
+       })
+       .on_close_requested(move |ev| {
+-        closed_windows.lock().unwrap().insert(ev.window_id);
+-        open_windows_on_close.lock().unwrap().remove(&ev.window_id);
+         let _ = close_tx.try_send(
+           deno_runtime::ops::desktop::DesktopEvent::CloseRequested {
+             window_id: ev.window_id,
+           },
+         );
+-        // Since laufey 0.7.0 a registered close-requested handler *defers*
+-        // the close: the window stays open until `Window::close()` is called.
+-        // The JS "close" event is a plain notification (not cancelable), so
+-        // complete the close here to keep the native close button working.
+-        laufey::Window::from_id(ev.window_id).close();
++        // Laufey defers native close while this handler is installed.
++        // JS dispatches a cancelable event, then hides or destroys the window.
++        // Keep lifecycle bookkeeping unchanged until close_window is called.
+       })
+   }
+ 
+--- a/ext/fs/interface.rs
++++ b/ext/fs/interface.rs
+@@ -102,10 +102,10 @@
+       options.create = true;
+       flags &= !libc::O_CREAT;
+     }
+-    if (flags & libc::O_EXCL) == libc::O_EXCL {
++    if options.create && (flags & libc::O_EXCL) == libc::O_EXCL {
+       options.create_new = true;
+-      // Note: O_EXCL only controls create_new semantics. The write access
+-      // mode is determined separately by O_WRONLY or O_RDWR flags.
++      // Only O_CREAT | O_EXCL means exclusive creation. Preserve standalone
++      // O_EXCL in custom_flags (Linux block-device exclusive opens).
+       flags &= !libc::O_EXCL;
+     }
+     if (flags & libc::O_RDWR) == libc::O_RDWR {
+@@ -139,6 +139,19 @@
+ #[cfg(test)]
+ mod tests {
+   use super::*;
++
++  #[test]
++  fn exclusive_open_is_distinct_from_exclusive_creation() {
++    for access in [libc::O_RDONLY, libc::O_WRONLY, libc::O_RDWR] {
++      let options = OpenOptions::from(access | libc::O_EXCL);
++      assert!(!options.create);
++      assert!(!options.create_new);
++      assert_eq!(options.custom_flags.unwrap() & libc::O_EXCL, libc::O_EXCL);
++      let create = OpenOptions::from(access | libc::O_CREAT | libc::O_EXCL);
++      assert!(create.create && create.create_new);
++      assert_eq!(create.custom_flags.unwrap_or(0) & libc::O_EXCL, 0);
++    }
++  }
+ 
+   #[test]
+   fn read_only_create_flags_require_read_and_write_access() {
+--- a/runtime/ops/desktop.rs
++++ b/runtime/ops/desktop.rs
+@@ -924,7 +924,9 @@
+     self.api.is_closed(self.window_id)
+   }
+ 
++  // Fast-call upgrades must not overwrite the cancelable JS close wrapper.
+   #[fast]
++  #[symbol("Deno_privateDesktopClose")]
+   fn close(&self) {
+     if self.surface_taken.get() {
+       // A WebGPU surface is referencing this window's native handles.
+--- a/ext/fs/std_fs.rs
++++ b/ext/fs/std_fs.rs
+@@ -1436,3 +1436,55 @@
+ 
+   opts
+ }
++
++#[cfg(all(test, unix))]
++mod exclusive_open_tests {
++  use super::*;
++
++  #[test]
++  fn numeric_exclusive_opens_preserve_existing_files() {
++    struct Cleanup(std::path::PathBuf);
++    impl Drop for Cleanup {
++      fn drop(&mut self) {
++        let _ = fs::remove_file(&self.0);
++      }
++    }
++    let path = Cleanup(std::env::temp_dir().join(format!(
++      "dnr-exclusive-{}-{}",
++      std::process::id(),
++      rand::random::<u64>()
++    )));
++    fs::OpenOptions::new()
++      .write(true)
++      .create_new(true)
++      .open(&path.0)
++      .unwrap();
++    fs::write(&path.0, b"preserve").unwrap();
++    for access in [libc::O_RDONLY, libc::O_WRONLY, libc::O_RDWR] {
++      drop(
++        open_options(OpenOptions::from(access | libc::O_EXCL))
++          .open(&path.0)
++          .unwrap(),
++      );
++    }
++    let error = open_options(OpenOptions::from(
++      libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
++    ))
++    .open(&path.0)
++    .unwrap_err();
++    assert_eq!(error.raw_os_error(), Some(libc::EEXIST));
++    assert_eq!(fs::read(&path.0).unwrap(), b"preserve");
++    fs::remove_file(&path.0).unwrap();
++    let error = open_options(OpenOptions::from(libc::O_RDWR | libc::O_EXCL))
++      .open(&path.0)
++      .unwrap_err();
++    assert_eq!(error.raw_os_error(), Some(libc::ENOENT));
++    drop(
++      open_options(OpenOptions::from(
++        libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
++      ))
++      .open(&path.0)
++      .unwrap(),
++    );
++  }
++}

@@ -139,6 +139,8 @@ In a dual build, `auto` tries system CEF first and falls back to WebView if its 
 
 GUI initialization happens when a desktop API needs it. Windows, trays, and background tasks contribute to the app's lifetime; closing the last window does not automatically stop an active server. The example shuts its server down when the user closes the window.
 
+This checkout adds an **unreleased dnr extension**, absent from the pinned upstream Deno Desktop and released dnr 0.4.0: `closeBehavior: "hide" | "destroy"` (default: `"destroy"`), `setCloseBehavior()`, `getCloseBehavior()`, and `destroy()`. Native close events become cancelable, and the existing `close()` now also dispatches that event; `destroy()` bypasses it. See [API provenance, compatibility, and Linux tray limitations](docs/WINDOW-LIFECYCLE.md) and the [upstream patch register](docs/PATCHES.md).
+
 For a desktop launcher with an application name and icon, create a JSON desktop manifest and build on the target platform:
 
 ```sh
