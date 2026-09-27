@@ -219,6 +219,7 @@ fn sync_integration(root: &Path) -> Result<()> {
         "dnr_vfs.rs",
         "dnr_main.rs",
         "dnr_backend.rs",
+        "dnr_zoom_config.rs",
         "build.rs",
     ] {
         let source = fs::read(root.join("integration/rt").join(file))?;
@@ -277,3 +278,8 @@ fn sync_integration(root: &Path) -> Result<()> {
 #[cfg(test)]
 #[path = "../../integration/rt/dnr_backend.rs"]
 mod dnr_backend;
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../integration/rt/dnr_zoom_config.rs"]
+mod dnr_zoom_config;

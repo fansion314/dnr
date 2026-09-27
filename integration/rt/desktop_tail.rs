@@ -155,6 +155,13 @@ pub fn options() -> RunOptions {
         auto_serve: false,
         op_state_init: Some(Box::new(|state| {
             let (event_tx, event_rx) = denort::desktop::create_desktop_event_channel();
+            let zoom_tx = event_tx.0.clone();
+            laufey::on_zoom_change(move |global_factor, app_factor, shortcut| {
+                let _ = zoom_tx.try_send(deno_runtime::ops::desktop::DesktopEvent::ZoomChange {
+                    global_factor, app_factor, effective_factor: global_factor * app_factor,
+                    source: if shortcut { "shortcut" } else { "api" }.into(),
+                });
+            });
             let pending = denort::desktop::PendingBindResponses::new();
             let api = WefDesktopApi {
                 event_tx: event_tx.0.clone(),
@@ -207,6 +214,7 @@ pub fn main(args: Vec<String>, backend: &str) {
     if preflight >= 0 {
         std::process::exit(preflight);
     }
+    laufey::set_global_zoom(crate::dnr_zoom_config::load_for_application());
     let data = match crate::dnr::application(args) {
         Ok(data) => data,
         Err(error) => {

@@ -15,8 +15,15 @@ fn main() {
     }
     if args.is_empty() || args.first().is_some_and(|s| s == "--help" || s == "-h") {
         println!(
-            "dnr [--backend auto|system-cef|webview] [--no-code-cache] [--no-transpile-cache] <script.ts|application.dnp|installed-directory> [args...]\ndnr tree <application.dnp>\ndnr extract <application.dnp> <directory>\ndnr install <application.dnp> [directory] [--mode native|full] [--force]\ndnr cache <list|info|clean|rebuild> [options]\n\nShared Deno runtime. Local modules and prepared node_modules only.\nDesktop activates on GUI API use. Auto prefers system CEF, then WebView.\nPlace --backend before the script/package path. Explicit selection disables fallback. Applications run with full permissions.\nTree includes ZIP metadata; extract requires a new or empty directory.\nNative groups: dnc scan and --package-config; see docs/NATIVE-PACKAGING.md.\nUse explicit paths (./tree, ./install, ./cache) for scripts with command names."
+            "dnr [--backend auto|system-cef|webview] [--no-code-cache] [--no-transpile-cache] <script.ts|application.dnp|installed-directory> [args...]\ndnr tree <application.dnp>\ndnr extract <application.dnp> <directory>\ndnr install <application.dnp> [directory] [--mode native|full] [--force]\ndnr cache <list|info|clean|rebuild> [options]\ndnr zoom [set <factor>|reset]\n\nShared Deno runtime. Local modules and prepared node_modules only.\nDesktop activates on GUI API use. Auto prefers system CEF, then WebView.\nPlace --backend before the script/package path. Explicit selection disables fallback. Applications run with full permissions.\nTree includes ZIP metadata; extract requires a new or empty directory.\nNative groups: dnc scan and --package-config; see docs/NATIVE-PACKAGING.md.\nUse explicit paths (./tree, ./install, ./cache, ./zoom) for scripts with command names."
         );
+        return;
+    }
+    if args.first().is_some_and(|s| s == "zoom") {
+        if let Err(error) = denort::dnr_zoom_config::command(&args) {
+            eprintln!("dnr: {error}");
+            std::process::exit(1);
+        }
         return;
     }
     if args.first().is_some_and(|s| s == "tree" || s == "extract") {

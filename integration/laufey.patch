@@ -1,5 +1,15 @@
+diff --git a/capi/src/lib.rs b/capi/src/lib.rs
 --- a/capi/src/lib.rs
 +++ b/capi/src/lib.rs
+@@ -29,7 +29,7 @@
+ /// (`github.com/denoland/laufey/releases/tag/v{VERSION}`).
+ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+ 
+-pub const LAUFEY_API_VERSION: u32 = 34;
++pub const LAUFEY_API_VERSION: u32 = 35;
+ 
+ /// Creation-time window style flags for [`Window::new_with_options`].
+ /// Mirror the `LAUFEY_WINDOW_FLAG_*` constants in `laufey.h`.
 @@ -92,7 +92,11 @@
    ),
  }
@@ -12,9 +22,142 @@
    BACKEND_API.get().expect("Backend API not initialized")
  }
  
+@@ -126,9 +130,85 @@
+     return -2;
+   }
+   match BACKEND_API.set(api_ref) {
+-    Ok(_) => 0,
++    Ok(_) => {
++      let zoom = DESKTOP_ZOOM.lock().unwrap();
++      if let Some(set) = api_ref.set_content_zoom {
++        unsafe { set(api_ref.backend_data, zoom.global * zoom.app); }
++      }
++      if let Some(set) = api_ref.set_zoom_shortcut_handler {
++        unsafe { set(api_ref.backend_data, Some(zoom_shortcut)); }
++      }
++      0
++    },
+     Err(_) => -3,
+   }
++}
++
++
++// Process-wide content zoom. Accessors intentionally do not call api(): merely
++// inspecting or configuring desktop defaults must not activate the GUI.
++struct DesktopZoom {
++  global: f64,
++  app: f64,
++  shortcuts: bool,
++  changed: Option<Box<dyn Fn(f64, f64, bool) + Send + Sync>>,
++}
++static DESKTOP_ZOOM: Mutex<DesktopZoom> = Mutex::new(DesktopZoom {
++  global: 1.0, app: 1.0, shortcuts: true, changed: None,
++});
++
++pub fn set_global_zoom(factor: f64) {
++  assert!(factor.is_finite() && (0.5..=2.0).contains(&factor));
++  assert!(!is_initialized(), "global zoom is a startup setting");
++  DESKTOP_ZOOM.lock().unwrap().global = factor;
++}
++pub fn desktop_zoom() -> [f64; 3] {
++  let state = DESKTOP_ZOOM.lock().unwrap();
++  [state.global, state.app, state.global * state.app]
++}
++pub fn on_zoom_change(handler: impl Fn(f64, f64, bool) + Send + Sync + 'static) {
++  DESKTOP_ZOOM.lock().unwrap().changed = Some(Box::new(handler));
++}
++pub fn zoom_shortcuts_enabled() -> bool {
++  DESKTOP_ZOOM.lock().unwrap().shortcuts
++}
++pub fn set_zoom_shortcuts_enabled(enabled: bool) {
++  DESKTOP_ZOOM.lock().unwrap().shortcuts = enabled;
++}
++fn change_zoom(state: &mut DesktopZoom, factor: f64, shortcut: bool) {
++  if state.app == factor { return; }
++  state.app = factor;
++  // The native setter only queues work; it must never reenter this controller.
++  // Serialize publication with state changes so UI tasks see the latest value.
++  if let Some(api) = try_api() {
++    if let Some(set) = api.set_content_zoom {
++      unsafe { set(api.backend_data, state.global * state.app); }
++    }
++  }
++  if let Some(changed) = &state.changed {
++    changed(state.global, state.app, shortcut);
++  }
++}
++pub fn set_desktop_zoom(factor: f64) -> Result<(), &'static str> {
++  if !factor.is_finite() || !(0.5..=2.0).contains(&factor) {
++    return Err("zoom factor must be a finite number between 0.5 and 2.0");
++  }
++  change_zoom(&mut DESKTOP_ZOOM.lock().unwrap(), factor, false);
++  Ok(())
++}
++unsafe extern "C" fn zoom_shortcut(action: c_int) -> bool {
++  let mut state = DESKTOP_ZOOM.lock().unwrap();
++  if !state.shortcuts { return false; }
++  let levels = [0.5, 0.67, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
++  let factor = match action {
++    0 => return true,
++    1 => levels.into_iter().find(|v| *v > state.app + 1e-10).unwrap_or(2.0),
++    -1 => levels.into_iter().rev().find(|v| *v < state.app - 1e-10).unwrap_or(0.5),
++    2 => 1.0,
++    _ => return false,
++  };
++  change_zoom(&mut state, factor, true);
++  true
+ }
+ 
+ pub fn shutdown() {
+@@ -701,11 +781,14 @@
+   /// on macOS and Linux and by the Winit backend; ignored by the Windows
+   /// WebView2 and CEF backends, which paint an opaque window background.
+   pub transparent: bool,
++  /// Internal developer-tools window: retain engine zoom and shortcuts.
++  pub zoom_exempt: bool,
+ }
+ 
+ impl WindowOptions {
+   fn to_flags(self) -> u32 {
+     let mut flags = 0;
++    if self.zoom_exempt { flags |= 1 << 5; }
+     if self.frameless {
+       flags |= LAUFEY_WINDOW_FLAG_FRAMELESS;
+     }
+diff --git a/webview/src/runtime_loader.cc b/webview/src/runtime_loader.cc
 --- a/webview/src/runtime_loader.cc
 +++ b/webview/src/runtime_loader.cc
-@@ -886,7 +886,15 @@
+@@ -1,6 +1,7 @@
+ // Copyright 2025 Divy Srivastava. All rights reserved. MIT license.
+ 
+ #include "runtime_loader.h"
++#include "desktop_zoom.h"
+ 
+ #include "laufey_backend_common.h"
+ #include "laufey_external_links.h"
+@@ -210,6 +211,12 @@
+   return false;
+ }
+ 
++static void Backend_SetContentZoom(void* data, double factor) {
++  dnr_content_zoom.store(factor);
++  auto* backend = static_cast<RuntimeLoader*>(data)->GetBackend();
++  if (backend) backend->SetContentZoom();
++}
++
+ static void Backend_SetWindowOpacity(void* data, uint32_t window_id,
+                                      double opacity) {
+   RuntimeLoader* loader = static_cast<RuntimeLoader*>(data);
+@@ -774,6 +781,8 @@
+   backend_api_.is_resizable = Backend_IsResizable;
+   backend_api_.set_always_on_top = Backend_SetAlwaysOnTop;
+   backend_api_.is_always_on_top = Backend_IsAlwaysOnTop;
++  backend_api_.set_content_zoom = Backend_SetContentZoom;
++  backend_api_.set_zoom_shortcut_handler = DnrSetZoomShortcutHandler;
+   backend_api_.set_window_opacity = Backend_SetWindowOpacity;
+   backend_api_.get_window_opacity = Backend_GetWindowOpacity;
+   backend_api_.set_click_passthrough = Backend_SetClickPassthrough;
+@@ -886,7 +895,15 @@
    return instance_;
  }
  
@@ -30,7 +173,7 @@
  #ifndef _WIN32
    library_handle_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
    if (!library_handle_) {
-@@ -968,7 +976,7 @@
+@@ -968,7 +985,7 @@
    }
  
    running_ = true;
@@ -39,9 +182,18 @@
  
    std::cout << "Runtime started" << std::endl;
    return true;
+diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
 --- a/cef/src/runtime_loader.cc
 +++ b/cef/src/runtime_loader.cc
-@@ -217,23 +217,35 @@
+@@ -1,6 +1,7 @@
+ // Copyright 2025 Divy Srivastava. All rights reserved. MIT license.
+ 
+ #include "runtime_loader.h"
++#include "desktop_zoom.h"
+ #include "app.h"
+ #include "laufey_backend_common.h"
+ #include "scheme_handler.h"
+@@ -217,23 +218,35 @@
    }
  
    // With callback: send IPC to renderer for eval with result
@@ -80,7 +232,43 @@
  }
  
  static void Backend_SetWindowSize(void* data, uint32_t window_id, int width,
-@@ -1830,6 +1842,10 @@
+@@ -421,6 +434,15 @@
+     });
+   }
+   return result;
++}
++
++static void Backend_SetContentZoom(void*, double factor) {
++  dnr_content_zoom.store(factor);
++  CefPostTask(TID_UI, base::BindOnce([] {
++    RuntimeLoader::GetInstance()->ForEachBrowserWithId([](uint32_t id, CefRefPtr<CefBrowser> browser) {
++      if (!dnr_zoom_exempt.contains(id)) browser->GetHost()->SetZoomLevel(DnrCefZoomLevel(id));
++    });
++  }));
+ }
+ 
+ static void Backend_SetWindowOpacity(void* data, uint32_t window_id,
+@@ -1629,8 +1651,10 @@
+                     // OnAfterCreated can pop it. Both run on the UI
+                     // thread so no race.
+                     g_pending_laufey_ids.push(wid);
++                    if (window_flags & LAUFEY_WINDOW_FLAG_ZOOM_EXEMPT) dnr_zoom_exempt.insert(wid);
+ 
+                     CefBrowserSettings browser_settings;
++                    browser_settings.chrome_zoom_bubble = STATE_DISABLED;
+                     CefRefPtr<CefDictionaryValue> extra_info =
+                         CefDictionaryValue::Create();
+                     extra_info->SetString(
+@@ -1779,6 +1803,8 @@
+   backend_api_.is_resizable = Backend_IsResizable;
+   backend_api_.set_always_on_top = Backend_SetAlwaysOnTop;
+   backend_api_.is_always_on_top = Backend_IsAlwaysOnTop;
++  backend_api_.set_content_zoom = Backend_SetContentZoom;
++  backend_api_.set_zoom_shortcut_handler = DnrSetZoomShortcutHandler;
+   backend_api_.set_window_opacity = Backend_SetWindowOpacity;
+   backend_api_.get_window_opacity = Backend_GetWindowOpacity;
+   backend_api_.set_click_passthrough = Backend_SetClickPassthrough;
+@@ -1830,6 +1856,10 @@
    backend_api_.set_resize_handler = Backend_SetResizeHandler;
    backend_api_.set_move_handler = Backend_SetMoveHandler;
    backend_api_.set_close_requested_handler = Backend_SetCloseRequestedHandler;
@@ -91,7 +279,7 @@
    backend_api_.test_trigger_close_requested = Backend_TestTriggerCloseRequested;
  
    backend_api_.poll_js_calls = [](void* data) {
-@@ -1980,7 +1996,15 @@
+@@ -1980,7 +2010,15 @@
    return instance_;
  }
  
@@ -107,7 +295,7 @@
  #ifndef _WIN32
    library_handle_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
    if (!library_handle_) {
-@@ -2063,7 +2087,7 @@
+@@ -2063,7 +2101,7 @@
    }
  
    running_ = true;
@@ -116,7 +304,7 @@
  
    std::cout << "Runtime started" << std::endl;
    return true;
-@@ -2084,6 +2108,27 @@
+@@ -2084,6 +2122,27 @@
  
    if (runtime_thread_.joinable()) {
      runtime_thread_.join();
@@ -144,6 +332,7 @@
    }
  }
  
+diff --git a/webview/src/main_linux.cc b/webview/src/main_linux.cc
 --- a/webview/src/main_linux.cc
 +++ b/webview/src/main_linux.cc
 @@ -3,6 +3,7 @@
@@ -187,6 +376,7 @@
    }
  
    std::string runtimePath;
+diff --git a/cef/src/main_linux.cc b/cef/src/main_linux.cc
 --- a/cef/src/main_linux.cc
 +++ b/cef/src/main_linux.cc
 @@ -21,6 +21,7 @@
@@ -230,6 +420,7 @@
    settings.no_sandbox = true;
    settings.log_severity = LaufeyCefLogSeverity();
  
+diff --git a/webview/src/main_mac.mm b/webview/src/main_mac.mm
 --- a/webview/src/main_mac.mm
 +++ b/webview/src/main_mac.mm
 @@ -134,15 +134,16 @@
@@ -308,9 +499,43 @@
      NSMenuItem* quitItem =
          [[NSMenuItem alloc] initWithTitle:@"Quit"
                                     action:@selector(terminate:)
+diff --git a/webview/src/webview_linux.cc b/webview/src/webview_linux.cc
 --- a/webview/src/webview_linux.cc
 +++ b/webview/src/webview_linux.cc
-@@ -478,13 +478,7 @@
+@@ -4,6 +4,7 @@
+ #include <gdk/gdkkeysyms.h>
+ 
+ #include "runtime_loader.h"
++#include "desktop_zoom.h"
+ #include "laufey_backend_common.h"
+ #include "laufey_json.h"
+ #include "init_script.h"
+@@ -266,6 +267,7 @@
+   uint32_t wid = LaufeyIdForWidget(widget);
+   if (wid == 0)
+     return FALSE;
++  DnrClearZoomKeys(wid);
+   RuntimeLoader::GetInstance()->DispatchFocusedEvent(wid, 0);
+   return FALSE;
+ }
+@@ -325,6 +327,8 @@
+   std::string key = keyboard::GdkKeyvalToKey(event->keyval);
+   std::string code = keyboard::GdkKeycodeToCode(event->hardware_keycode);
+   uint32_t modifiers = keyboard::GdkModifiersToLaufey(event->state);
++  if (DnrZoomKey(wid, state == LAUFEY_KEY_PRESSED, key, code, modifiers, false))
++    return TRUE;
+ 
+   RuntimeLoader::GetInstance()->DispatchKeyboardEvent(
+       wid, state, key.c_str(), code.c_str(), modifiers, false);
+@@ -360,6 +364,7 @@
+   bool IsResizable(uint32_t window_id) override;
+   void SetAlwaysOnTop(uint32_t window_id, bool always_on_top) override;
+   bool IsAlwaysOnTop(uint32_t window_id) override;
++  void SetContentZoom() override;
+   void SetWindowOpacity(uint32_t window_id, double opacity) override;
+   double GetWindowOpacity(uint32_t window_id) override;
+   void SetClickPassthrough(uint32_t window_id, bool enabled) override;
+@@ -478,13 +483,7 @@
    if (wid > 0) {
      UnregisterWidget(widget);
    }
@@ -325,9 +550,54 @@
  }
  
  // "delete-event" fires when the user requests a close (e.g. clicks the
+@@ -671,6 +670,7 @@
+     static std::once_flag dark_theme_once;
+     std::call_once(dark_theme_once, init_dark_theme_sync);
+ 
++    if (flags & LAUFEY_WINDOW_FLAG_ZOOM_EXEMPT) dnr_zoom_exempt.insert(window_id);
+     GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+     if (flags & LAUFEY_WINDOW_FLAG_FRAMELESS) {
+       gtk_window_set_decorated(GTK_WINDOW(window), FALSE);
+@@ -745,6 +745,7 @@
+                      GUINT_TO_POINTER(window_id));
+     g_signal_connect(webview, "create", G_CALLBACK(on_create), nullptr);
+ 
++    webkit_web_view_set_zoom_level(webview, DnrWindowZoom(window_id));
+     WebKitSettings* wk_settings = webkit_web_view_get_settings(webview);
+     webkit_settings_set_enable_developer_extras(wk_settings, TRUE);
+ 
+@@ -1034,6 +1035,19 @@
+   return result;
+ }
+ 
++void WebKitGTKBackend::SetContentZoom() {
++  // Always enqueue, including when invoked by a native key callback. The Rust
++  // controller may still hold its lock while publishing the new factor.
++  g_idle_add_full(G_PRIORITY_DEFAULT, [](gpointer data) -> gboolean {
++    auto* self = static_cast<WebKitGTKBackend*>(data);
++    std::lock_guard<std::mutex> lock(self->windows_mutex_);
++    for (auto& [id, state] : self->windows_) {
++      if (!dnr_zoom_exempt.contains(id)) webkit_web_view_set_zoom_level(state.webview, DnrWindowZoom(id));
++    }
++    return G_SOURCE_REMOVE;
++  }, this, nullptr);
++}
++
+ void WebKitGTKBackend::SetWindowOpacity(uint32_t window_id, double opacity) {
+   if (opacity < 0.0)
+     opacity = 0.0;
+diff --git a/cef/src/app.cc b/cef/src/app.cc
 --- a/cef/src/app.cc
 +++ b/cef/src/app.cc
-@@ -10,6 +10,10 @@
+@@ -2,6 +2,7 @@
+ 
+ #include "app.h"
+ #include "runtime_loader.h"
++#include "desktop_zoom.h"
+ #include "laufey_backend_common.h"
+ #include "laufey_external_links.h"
+ #include "scheme_handler.h"
+@@ -10,6 +11,10 @@
  
  #ifdef __linux__
  #include <gtk/gtk.h>
@@ -338,7 +608,15 @@
  #endif
  
  #ifdef __APPLE__
-@@ -37,10 +41,35 @@
+@@ -24,6 +29,7 @@
+ 
+ #include "include/base/cef_callback.h"
+ #include "include/cef_browser.h"
++#include "include/cef_command_ids.h"
+ #include "include/views/cef_browser_view.h"
+ #include "include/views/cef_window.h"
+ #include "include/wrapper/cef_closure_task.h"
+@@ -37,10 +43,35 @@
  LaufeyHandler* g_handler = nullptr;
  }
  
@@ -374,7 +652,23 @@
  
    // Register native window for event routing. Non-activating panels
    // (LAUFEY_WINDOW_FLAG_NO_ACTIVATE) are reconfigured before the first Show()
-@@ -212,14 +241,29 @@
+@@ -90,6 +121,7 @@
+ void LaufeyWindowDelegate::OnWindowActivationChanged(
+     CefRefPtr<CefWindow> window, bool active) {
+   if (laufey_id_ > 0) {
++    if (!active) DnrClearZoomKeys(laufey_id_);
+     RuntimeLoader::GetInstance()->DispatchFocusedEvent(laufey_id_, active);
+   }
+ }
+@@ -171,6 +203,7 @@
+     uint32_t laufey_id = g_pending_laufey_ids.front();
+     g_pending_laufey_ids.pop();
+     loader->RegisterBrowser(laufey_id, browser);
++    if (!dnr_zoom_exempt.contains(laufey_id)) browser->GetHost()->SetZoomLevel(DnrCefZoomLevel(laufey_id));
+   }
+ }
+ 
+@@ -212,13 +245,34 @@
        break;
      }
    }
@@ -387,7 +681,6 @@
 +  if (quit_requested_ && browser_list_.empty()) {
      CefQuitMessageLoop();
 -#endif
--  }
 +  }
 +}
 +
@@ -398,7 +691,10 @@
 +  if (!frame->IsMain()) return;
 +  auto* loader = RuntimeLoader::GetInstance();
 +  uint32_t wid = loader->GetLaufeyIdForBrowser(browser);
-+  if (wid > 0) loader->CancelEvalCallbacks(wid, "Page navigated");
++  if (wid > 0) {
++    if (!dnr_zoom_exempt.contains(wid)) browser->GetHost()->SetZoomLevel(DnrCefZoomLevel(wid));
++    loader->CancelEvalCallbacks(wid, "Page navigated");
++  }
 +}
 +
 +void LaufeyHandler::OnLoadEnd(CefRefPtr<CefBrowser> browser,
@@ -407,11 +703,91 @@
 +  if (!frame->IsMain()) return;
 +  auto* loader = RuntimeLoader::GetInstance();
 +  uint32_t wid = loader->GetLaufeyIdForBrowser(browser);
-+  if (wid > 0) loader->DispatchPageLoadEvent(wid);
++  if (wid > 0) {
++    if (!dnr_zoom_exempt.contains(wid)) browser->GetHost()->SetZoomLevel(DnrCefZoomLevel(wid));
++    loader->DispatchPageLoadEvent(wid);
+   }
  }
  
- void LaufeyHandler::OnTitleChange(CefRefPtr<CefBrowser> browser,
-@@ -395,6 +439,17 @@
+@@ -257,6 +311,58 @@
+ // Keyboard mapping lives in backend-common (laufey_common::VkToKey / VkToCode).
+ // CEF normalizes every platform's key events to Windows VK codes, so the
+ // same table works here.
++
++bool LaufeyHandler::OnChromeCommand(CefRefPtr<CefBrowser> browser, int command_id,
++                                    cef_window_open_disposition_t) {
++  const auto wid = RuntimeLoader::GetInstance()->GetLaufeyIdForBrowser(browser);
++  if (!wid || dnr_zoom_exempt.contains(wid)) return false;
++  int action;
++  switch (command_id) {
++    case IDC_ZOOM_PLUS: action = 1; break;
++    case IDC_ZOOM_MINUS: action = -1; break;
++    case IDC_ZOOM_NORMAL: action = 2; break;
++    default: return false;
++  }
++  // Some system CEF versions still expose Chrome zoom UI despite the disabled
++  // bubble setting. Route those commands through the same process controller.
++  if (auto handler = dnr_zoom_shortcut.load()) handler(action);
++  return true;
++}
++
++static std::string DnrCefZoomCode(const CefKeyEvent& event) {
++  auto code = laufey_common::VkToCode(event.windows_key_code, false, 0);
++  // The upstream VK mapper omits arithmetic keypad keys.
++  if (event.windows_key_code == 0x6B) code = "NumpadAdd";
++  if (event.windows_key_code == 0x6D) code = "NumpadSubtract";
++  if (event.windows_key_code == 0x60 ||
++      ((event.modifiers & EVENTFLAG_IS_KEY_PAD) && event.windows_key_code == 0x2D))
++    code = "Numpad0";
++  return code;
++}
++
++bool LaufeyHandler::OnPreKeyEvent(CefRefPtr<CefBrowser> browser,
++    const CefKeyEvent& event, CefEventHandle, bool* is_keyboard_shortcut) {
++  if (event.type != KEYEVENT_RAWKEYDOWN && event.type != KEYEVENT_KEYUP)
++    return false;
++  uint32_t modifiers = 0;
++  if (event.modifiers & EVENTFLAG_SHIFT_DOWN) modifiers |= LAUFEY_MOD_SHIFT;
++  if (event.modifiers & EVENTFLAG_CONTROL_DOWN) modifiers |= LAUFEY_MOD_CONTROL;
++  if (event.modifiers & EVENTFLAG_ALT_DOWN) modifiers |= LAUFEY_MOD_ALT;
++  if (event.modifiers & EVENTFLAG_COMMAND_DOWN) modifiers |= LAUFEY_MOD_META;
++  auto key = laufey_common::VkToKey(event.windows_key_code, event.unmodified_character, false, false);
++  auto code = DnrCefZoomCode(event);
++  auto wid = RuntimeLoader::GetInstance()->GetLaufeyIdForBrowser(browser);
++  const bool handled = DnrZoomKey(wid, event.type != KEYEVENT_KEYUP, key, code,
++                    // Consuming a CEF raw key can suppress its keyup callback.
++                    // Chromium already supplies a reliable repeat flag.
++                    modifiers, (event.modifiers & EVENTFLAG_IS_REPEAT) != 0, false);
++  if (!handled && wid && !dnr_zoom_exempt.contains(wid) &&
++      event.type == KEYEVENT_RAWKEYDOWN && DnrZoomAction(key, code, modifiers)) {
++    // Let the page/runtime handle the key, then suppress Chrome's own zoom.
++    *is_keyboard_shortcut = true;
++  }
++  return handled;
++}
+ 
+ bool LaufeyHandler::OnKeyEvent(CefRefPtr<CefBrowser> browser,
+                                const CefKeyEvent& event,
+@@ -282,13 +388,16 @@
+ 
+   std::string key = laufey_common::VkToKey(event.windows_key_code,
+                                            event.character, false, false);
+-  std::string code = laufey_common::VkToCode(event.windows_key_code, false, 0);
++  std::string code = DnrCefZoomCode(event);
+ 
+   uint32_t wid = RuntimeLoader::GetInstance()->GetLaufeyIdForBrowser(browser);
+   RuntimeLoader::GetInstance()->DispatchKeyboardEvent(
+       wid, state, key.c_str(), code.c_str(), modifiers, false);
+ 
+-  return false;  // Don't consume the event — let CEF handle it too
++  // Even with platform shortcuts disabled, Chromium must not create a third
++  // hidden zoom factor after the page/runtime has handled this key.
++  return wid && !dnr_zoom_exempt.contains(wid) &&
++         DnrZoomAction(key, code, modifiers) != 0;
+ }
+ 
+ bool LaufeyHandler::OnJSDialog(CefRefPtr<CefBrowser> browser,
+@@ -395,6 +504,17 @@
      bool is_reload, CefRefPtr<CefJSDialogCallback> callback) {
    callback->Continue(true, "");
    return true;
@@ -429,6 +805,7 @@
  }
  
  void LaufeyHandler::CloseAllBrowsers(bool force_close) {
+diff --git a/cef/src/app.h b/cef/src/app.h
 --- a/cef/src/app.h
 +++ b/cef/src/app.h
 @@ -13,6 +13,7 @@
@@ -439,19 +816,21 @@
  #include "include/views/cef_browser_view.h"
  #include "include/views/cef_window.h"
  
-@@ -119,6 +120,7 @@
+@@ -119,8 +120,10 @@
  
  class LaufeyHandler : public CefClient,
                        public CefLifeSpanHandler,
 +                      public CefLoadHandler,
                        public CefDisplayHandler,
                        public CefKeyboardHandler,
++                      public CefCommandHandler,
                        public CefDragHandler,
-@@ -128,6 +130,14 @@
-   ~LaufeyHandler() override;
+                       public CefJSDialogHandler {
+  public:
+@@ -129,12 +132,23 @@
  
    static LaufeyHandler* GetInstance();
-+
+ 
 +  CefRefPtr<CefLoadHandler> GetLoadHandler() override {
 +    return this;
 +  }
@@ -459,10 +838,29 @@
 +                   TransitionType transition_type) override;
 +  void OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
 +                 int http_status_code) override;
- 
++
    CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override {
      return this;
-@@ -188,6 +198,7 @@
+   }
+   CefRefPtr<CefDisplayHandler> GetDisplayHandler() override {
+     return this;
+   }
++  CefRefPtr<CefCommandHandler> GetCommandHandler() override { return this; }
++  bool OnChromeCommand(CefRefPtr<CefBrowser> browser, int command_id,
++                       cef_window_open_disposition_t disposition) override;
+   CefRefPtr<CefKeyboardHandler> GetKeyboardHandler() override {
+     return this;
+   }
+@@ -170,6 +184,8 @@
+   void OnTitleChange(CefRefPtr<CefBrowser> browser,
+                      const CefString& title) override;
+ 
++  bool OnPreKeyEvent(CefRefPtr<CefBrowser> browser, const CefKeyEvent& event,
++                     CefEventHandle os_event, bool* is_keyboard_shortcut) override;
+   bool OnKeyEvent(CefRefPtr<CefBrowser> browser, const CefKeyEvent& event,
+                   CefEventHandle os_event) override;
+ 
+@@ -188,6 +204,7 @@
                                  CefProcessId source_process,
                                  CefRefPtr<CefProcessMessage> message) override;
  
@@ -470,7 +868,7 @@
    void CloseAllBrowsers(bool force_close);
    bool IsClosing() const {
      return is_closing_;
-@@ -196,6 +207,7 @@
+@@ -196,6 +213,7 @@
   private:
    std::list<CefRefPtr<CefBrowser>> browser_list_;
    bool is_closing_ = false;
@@ -478,6 +876,7 @@
  
    IMPLEMENT_REFCOUNTING(LaufeyHandler);
  };
+diff --git a/cef/src/runtime_loader.h b/cef/src/runtime_loader.h
 --- a/cef/src/runtime_loader.h
 +++ b/cef/src/runtime_loader.h
 @@ -36,6 +36,17 @@
@@ -559,6 +958,7 @@
      laufey_js_result_fn callback;
      void* callback_data;
    };
+diff --git a/backend-common/src/tray_linux.cc b/backend-common/src/tray_linux.cc
 --- a/backend-common/src/tray_linux.cc
 +++ b/backend-common/src/tray_linux.cc
 @@ -93,6 +93,9 @@
@@ -622,6 +1022,7 @@
  }
  
  void SetTrayDoubleClickHandlerLinux(uint32_t /*tray_id*/,
+diff --git a/backend-common/include/laufey_backend_common.h b/backend-common/include/laufey_backend_common.h
 --- a/backend-common/include/laufey_backend_common.h
 +++ b/backend-common/include/laufey_backend_common.h
 @@ -405,10 +405,9 @@
@@ -638,3 +1039,108 @@
  
  uint32_t CreateTrayIconLinux();
  void DestroyTrayIconLinux(uint32_t tray_id);
+diff --git a/capi/include/laufey.h b/capi/include/laufey.h
+--- a/capi/include/laufey.h
++++ b/capi/include/laufey.h
+@@ -11,7 +11,8 @@
+ extern "C" {
+ #endif
+ 
+-#define LAUFEY_API_VERSION 34
++#define LAUFEY_API_VERSION 35
++#define LAUFEY_WINDOW_FLAG_ZOOM_EXEMPT (1 << 5)
+ 
+ // Window handle types for get_window_handle_type
+ #define LAUFEY_WINDOW_HANDLE_UNKNOWN 0
+@@ -841,6 +842,11 @@
+   // false if the id is unknown or the backend doesn't support forwarding.
+   // NULL on backends older than API version 34.
+   bool (*is_click_passthrough_forward)(void* backend_data, uint32_t window_id);
++
++  // dnr API 35: process-wide page zoom, independent of system display scale.
++  void (*set_content_zoom)(void* backend_data, double factor);
++  // action: 0=query enabled, 1=in, -1=out, 2=reset. Must not initialize GUI.
++  void (*set_zoom_shortcut_handler)(void* backend_data, bool (*handler)(int));
+ };
+ 
+ #ifdef __cplusplus
+diff --git a/webview/src/webview_macos.mm b/webview/src/webview_macos.mm
+--- a/webview/src/webview_macos.mm
++++ b/webview/src/webview_macos.mm
+@@ -5,6 +5,7 @@
+ #import <WebKit/WebKit.h>
+ 
+ #include "runtime_loader.h"
++#include "desktop_zoom.h"
+ #include "laufey_backend_common.h"
+ #include "laufey_json.h"
+ #include "init_script.h"
+@@ -68,6 +69,7 @@
+   bool IsResizable(uint32_t window_id) override;
+   void SetAlwaysOnTop(uint32_t window_id, bool always_on_top) override;
+   bool IsAlwaysOnTop(uint32_t window_id) override;
++  void SetContentZoom() override;
+   void SetWindowOpacity(uint32_t window_id, double opacity) override;
+   double GetWindowOpacity(uint32_t window_id) override;
+   void SetClickPassthrough(uint32_t window_id, bool enabled) override;
+@@ -734,6 +736,9 @@
+                                          NSModifierFlagsToLaufey(
+                                              [event modifierFlags]);
+                                      bool repeat = [event isARepeat];
++                                     if (DnrZoomKey(wid, state == LAUFEY_KEY_PRESSED,
++                                                    key, code, modifiers, repeat))
++                                       return nil;
+ 
+                                      RuntimeLoader::GetInstance()
+                                          ->DispatchKeyboardEvent(
+@@ -897,6 +902,7 @@
+   dispatch_async(dispatch_get_main_queue(), ^{
+     @autoreleasepool {
+       InstallGlobalMonitors();
++      if (flags & LAUFEY_WINDOW_FLAG_ZOOM_EXEMPT) dnr_zoom_exempt.insert(window_id);
+ 
+       bool frameless = (flags & LAUFEY_WINDOW_FLAG_FRAMELESS) != 0;
+       bool no_activate = (flags & LAUFEY_WINDOW_FLAG_NO_ACTIVATE) != 0;
+@@ -1018,6 +1024,7 @@
+ 
+       WKWebView* webview = [[WKWebView alloc] initWithFrame:frame
+                                               configuration:config];
++      webview.pageZoom = DnrWindowZoom(window_id);
+       if ([webview respondsToSelector:@selector(setInspectable:)]) {
+         [webview setInspectable:YES];
+       }
+@@ -1070,6 +1077,7 @@
+                       object:window
+                        queue:nil
+                   usingBlock:^(NSNotification*) {
++                    DnrClearZoomKeys(window_id);
+                     RuntimeLoader::GetInstance()->DispatchFocusedEvent(
+                         window_id, 0);
+                   }];
+@@ -1513,6 +1521,15 @@
+   return result;
+ }
+ 
++void WKWebViewBackend::SetContentZoom() {
++  dispatch_async(dispatch_get_main_queue(), ^{
++    std::lock_guard<std::mutex> lock(windows_mutex_);
++    for (auto& [id, state] : windows_) {
++      if (!dnr_zoom_exempt.contains(id)) state.webview.pageZoom = DnrWindowZoom(id);
++    }
++  });
++}
++
+ void WKWebViewBackend::SetWindowOpacity(uint32_t window_id, double opacity) {
+   if (opacity < 0.0)
+     opacity = 0.0;
+diff --git a/webview/src/runtime_loader.h b/webview/src/runtime_loader.h
+--- a/webview/src/runtime_loader.h
++++ b/webview/src/runtime_loader.h
+@@ -398,6 +398,7 @@
+   // Overall window opacity in [0.0, 1.0] (1.0 == fully opaque). Fades the whole
+   // window uniformly, unlike LAUFEY_WINDOW_FLAG_TRANSPARENT. Default no-op /
+   // reports fully opaque; platform backends override.
++  virtual void SetContentZoom() {}
+   virtual void SetWindowOpacity(uint32_t /*window_id*/, double /*opacity*/) {}
+   virtual double GetWindowOpacity(uint32_t /*window_id*/) {
+     return 1.0;

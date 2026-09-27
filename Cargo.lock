@@ -837,6 +837,9 @@ version = "0.4.1"
 dependencies = [
  "anyhow",
  "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

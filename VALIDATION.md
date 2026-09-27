@@ -1538,3 +1538,68 @@ Xfce 的 ItemIsMenu 缺省策略限制仍存在。未构建或验证 system-CEF/
 保存原 dnr/dnc；`2026-09-27T06-42-21.349Z/松间.app` 保存原应用。
 本地日志、安装前后摘要及校验记录在 `dist/release-v0.4.1-local/`。
 保留无关的 Pi 性能文档修改，没有提交到本轮发布中。
+
+
+## 用户全局与应用乘算缩放（2026-09-27，未发布）
+
+实现 `dnr zoom [set <factor>|reset]`、启动时用户配置快照、`Deno.desktop` 应用进程倍率
+与原生 Cmd/Ctrl 缩放快捷键。全局 × 应用倍率，不重复乘系统 DPI；应用倍率不持久化。
+接入保存在两份上游 patch 与 integration 源文件，下游 Laufey C ABI 为 35；包格式仍为 v4。
+未提交、推送、发布或替换已安装的 dnr/dnc/应用，版本字符串仍为 0.4.1。
+
+### 构建与自动回归
+
+- 保持 sccache。macOS ARM64 使用 `CARGO_CACHE_RUSTC_INFO=0 cargo run --locked -p xtask -- build --debug --runtime-only`；
+  Linux x86_64 在既有 xjtuse-arch-dev 中增量同步、干净上游 `prepare` 后使用 `--backend dual --debug --runtime-only`，均退出 0。
+  旧远端生成树保留于 `.cache/zoom-old-upstream/`；没有修改本机 mirror 或复用 macOS 构建工具。
+- 用户明确授权后在容器中运行 `pacman -Syu --needed --noconfirm cef cmake clang pkgconf libxi libx11`。
+  新增 CEF 152.0.6-1、openh264 2.6.0-2；其余包无需升级。没有修改宿主机系统包。
+  `dist/dnr --check-system-cef` 退出 0，API 14900，与 headers 152.0.6+g708dc14+chromium-152.0.7977.83 匹配。
+- 本机 workspace tests、严格 clippy、fmt 检查通过；`check-upstream-patches.py` 在固定快照应用/反向检查通过。
+  新增配置测试覆盖路径选择、原子写入、缺省、损坏与修复、非法倍率和 I/O 错误。
+- macOS 显式 runtime/native/groups/cache/node-flags/backend/zoom 共 23 项通过。
+  Linux dual 同组 23 项通过：22 项在容器默认 UID 下执行，只读目录原生插件测试单独以 nobody 运行并通过。
+- `runtime_zoom` 实际运行 rebuilt dnr，覆盖 1.25 × 1.2 = 1.5、错误类型、去重事件、重置保留全局、
+  配置启动快照、后续进程新值、同名脚本与参数、损坏配置警告/回退。Linux dual 读取 `/proc/self/maps`
+  证明无窗口缩放 API 不加载 GTK/WebKitGTK/CEF。既有 backend 参数与元数据无 GUI 测试继续通过。
+- 用 `clang++ -std=c++20 -Wall -Wextra -Werror` 编译并执行原生快捷键 matcher fixture，退出 0。
+  覆盖按键消费、重复、缺少 printable character、边界匹配和开发者工具豁免。
+
+### 实际页面与原生输入
+
+- macOS 系统 WebView：`examples/desktop/zoom.ts` 实际布局自动验证通过。
+  系统基准 DPR=2，全局 1.25 × 应用 1.2 时 DPR=3，800 点内容区域的 CSS 视口为 533 px；
+  页面 100 CSS px 色块的 CSS 几何不变。覆盖同站点多窗口、不同站点导航、刷新、隐藏恢复与新增窗口。
+- 构建、签名独立 `DNR Zoom Probe.app`，使用隔离 `DNR_CONFIG_DIR` 和测试 bundle ID。
+  CUA 在真实 AppKit 窗口的输入框焦点下发送 Cmd+=、Cmd++、Cmd+-、Cmd+0、数字键盘加/减/0；
+  实际倍率、三个窗口视口及事件同步正确，启用时页面未收到缩放 keydown，禁用时收到一次且倍率不变。
+  缩放后实际点击按钮，可访问性树显示“已点击”；截图实际查看。测试包已正常退出。
+- Linux 环境：Rust 1.98.1、GTK 3.24.52、WebKitGTK 2.52.6，KDE/KWin X11、Xvfb 1600×1000、软件渲染。
+  使用独立 `GUI_SESSION_SLOT=verify`，串行执行 `scripts/test-linux-zoom.py` 的 webview 与 system-cef。
+  两者 HTTP 页面、多窗口、跨站点导航、隐藏恢复、新窗口、实际 CSS 视口测试均通过。
+- xdotool 真实 Ctrl+=/+/-/0、数字键盘加/减/0、重复 keydown、上限和禁用开关测试通过，
+  且确认输入框拥有焦点。全局配置改为 1.5 后旧进程保持 1.25，新进程读取 1.5 且应用倍率恢复 1。
+  截图取回并查看，结构化结果校验视口与控制器倍率一致，测试进程退出 0。
+- CEF 测试捕获并修正原始按键无 printable character、数字键盘 VK 映射缺失、
+  消费 raw key 后不一定收到 keyup，以及禁用平台快捷键后 Chrome 默认动作绕过控制器的问题。
+- 初期 CEF HTTP 加载超时。禁用新增 zoom 调用的对照仍失败，data URL 验证正常；
+  截图发现独立 KDE 会话的首次 KWallet 向导。根据实时控件树取消向导后，完整 HTTP/跨站点测试通过。
+  最终测试使用 `--cancel-wallet-setup`（只允许 verify 会话），没有创建钱包或关闭系统密码存储保护。
+  早期失败保留为诊断历史，不把 data URL 结果当作 HTTP 验收。
+
+### 限制与证据
+
+- 系统 CEF 152 尽管收到 `chrome_zoom_bubble=STATE_DISABLED`，截图仍可见原生缩放提示。
+  已通过 CefCommandHandler 将 Chrome 放大/缩小/Reset 命令接入同一控制器；其按钮未在本轮
+  可访问性树暴露，因此没有把真实点击这些原生按钮记为通过。键盘重置保留全局倍率已实测。
+- 未覆盖 Wayland、真实 Linux GPU、混合 DPI 多显示器迁移、运行中修改系统缩放、渲染进程崩溃恢复，
+  也未重建两个 Linux 单后端变体。此次 Linux 两后端结果均来自 dual 构建显式选择。
+- 新代码未修改系统显示倍率，也未增加根据屏幕分辨率猜测倍率的策略。
+- 本机证据：`dist/validation-zoom/` 的 macos-*.json、macos-bundle.log、临时 .app，以及
+  `linux/zoom/{webview,cef-data,cef-http}/` 的 runtime.log、results.json 和截图。
+  远端对应 `.cache/validation/zoom/`；失败状态文件仅代表相应诊断轮次。
+
+最终 debug 产物 SHA-256：
+
+- macOS dnr：`9748fc2ba9dc5f2faa1f9e90afc35692e9d57ae805a8c07242a1409d171ca679`
+- Linux dual dnr：`758b2d86a5034fa6b5ed6ebe6e9aab1a023c8c0b81cc8eaeb7033aa502900ee7`

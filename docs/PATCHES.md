@@ -45,6 +45,7 @@ DENO-FS-EXCL 另在 `ext/fs/interface.rs` 添加标志分离单元测试，在 `
 | 应用身份、离线解析、TS/JS 加载、顶层 await | `integration/rt/dnr.rs`；Deno `binary.rs`、`run.rs`、`cli/lib/worker.rs`。加载器修复随相关原生 runtime 测试复验 |
 | V8/转译缓存与 Worker 继承 | `integration/rt/dnr_cache.rs`；Deno `runtime/{code_cache,worker,web_worker}.rs`。保留读取、晚写入和 worker 回调路径 |
 | 懒 GUI 初始化和窗口/托盘/任务保活 | `integration/rt/desktop_tail.rs`；Laufey `capi/src/lib.rs`、WebView/CEF 平台事件循环。关闭最后一窗不能直接终止后台服务 |
+| 内容缩放（未发布扩展） | `integration/rt/dnr_zoom_config.rs` 与 `integration/native/desktop_zoom.h`；Deno desktop ops/类型/JS、Laufey Rust 控制器与下游 C ABI 35、三种后端原生 zoom/快捷键。全局乘应用倍率，应用进程内所有窗口同步；配置启动快照；详见 ZOOM.md |
 | macOS Dock 重开 | Laufey `webview/src/main_mac.mm` 与 Deno desktop 类型说明；既派发应用事件，也保留 AppKit 的默认恢复 |
 
 `dnr_desktop.rs` 由 xtask 从 patched `cli/rt_desktop/lib.rs` 与本地 tail 生成。

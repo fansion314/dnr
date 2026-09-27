@@ -1,3 +1,4 @@
+diff --git a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -390,7 +390,7 @@
@@ -9,6 +10,7 @@
  
  # crypto
  aead-gcm-stream = "0.4"
+diff --git a/cli/lib/worker.rs b/cli/lib/worker.rs
 --- a/cli/lib/worker.rs
 +++ b/cli/lib/worker.rs
 @@ -397,6 +397,7 @@
@@ -19,6 +21,7 @@
          deno_rt_native_addon_loader: shared.deno_rt_native_addon_loader.clone(),
          root_cert_store_provider: Some(shared.root_cert_store_provider.clone()),
          module_loader,
+diff --git a/cli/rt/Cargo.toml b/cli/rt/Cargo.toml
 --- a/cli/rt/Cargo.toml
 +++ b/cli/rt/Cargo.toml
 @@ -15,6 +15,10 @@
@@ -45,6 +48,14 @@
  async-trait.workspace = true
  bincode.workspace = true
  deno_ast = { workspace = true, features = ["cjs"] }
+@@ -76,5 +86,6 @@
+ deno_subprocess_windows.workspace = true
+ 
+ [dev-dependencies]
++tempfile.workspace = true
+ sys_traits = { workspace = true, features = ["memory"] }
+ test_util.workspace = true
+diff --git a/cli/rt/binary.rs b/cli/rt/binary.rs
 --- a/cli/rt/binary.rs
 +++ b/cli/rt/binary.rs
 @@ -601,6 +601,12 @@
@@ -123,6 +134,7 @@
        return fallback;
      };
      let Some(json) =
+diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
 --- a/cli/rt/file_system.rs
 +++ b/cli/rt/file_system.rs
 @@ -1,4 +1,8 @@
@@ -970,18 +982,21 @@
      let (_, entry) = self.fs_root.find_entry(path, self.case_sensitivity)?;
      match entry {
        VfsEntryRef::Dir(_) => Err(std::io::Error::other("path is a directory")),
+diff --git a/cli/rt/lib.rs b/cli/rt/lib.rs
 --- a/cli/rt/lib.rs
 +++ b/cli/rt/lib.rs
-@@ -1,5 +1,9 @@
+@@ -1,5 +1,10 @@
  // Copyright 2018-2026 the Deno authors. MIT license.
  
 +extern crate self as denort;
 +pub mod dnr;
 +pub mod dnr_cache;
++pub mod dnr_zoom_config;
 +pub mod dnr_desktop;
  use std::borrow::Cow;
  use std::env;
  use std::sync::Arc;
+diff --git a/cli/rt/node.rs b/cli/rt/node.rs
 --- a/cli/rt/node.rs
 +++ b/cli/rt/node.rs
 @@ -113,7 +113,7 @@
@@ -1005,6 +1020,7 @@
    let is_cjs = cjs_tracker
      .is_cjs_with_known_is_script(specifier, media_type, is_script)
      .map_err(JsErrorBox::from_err)?;
+diff --git a/cli/rt/run.rs b/cli/rt/run.rs
 --- a/cli/rt/run.rs
 +++ b/cli/rt/run.rs
 @@ -100,7 +100,7 @@
@@ -1119,11 +1135,33 @@
      // Same as `LibMainWorker::run()`, but tag any failure from the load phase
      // (main module still loading or first evaluating) as a
      // `DesktopStartupError` (see its docs for why these otherwise vanish). The
+diff --git a/cli/tsc/dts/lib.deno.desktop.d.ts b/cli/tsc/dts/lib.deno.desktop.d.ts
 --- a/cli/tsc/dts/lib.deno.desktop.d.ts
 +++ b/cli/tsc/dts/lib.deno.desktop.d.ts
-@@ -378,6 +378,10 @@
+@@ -377,7 +377,31 @@
+     deno?: boolean;
    }
  
++  /** dnr extension: process-wide page zoom, multiplied by user-wide zoom.
++   * Accessors do not initialize the GUI. System DPI is separate.
++   * Application zoom defaults to 1 and is not persisted by dnr. */
++  export interface DesktopZoom extends EventTarget {
++    getGlobalZoomFactor(): number;
++    getZoomFactor(): number;
++    getEffectiveZoomFactor(): number;
++    /** Finite factor in [0.5, 2]. Updates every application window. */
++    setZoomFactor(factor: number): void;
++    getZoomShortcutsEnabled(): boolean;
++    setZoomShortcutsEnabled(enabled: boolean): void;
++    addEventListener(type: "zoomchange", listener: (event: CustomEvent<{
++      globalFactor: number; appFactor: number; effectiveFactor: number;
++      source: "api" | "shortcut";
++    }>) => void, options?: boolean | AddEventListenerOptions): void;
++    addEventListener(type: string, listener: EventListenerOrEventListenerObject | null,
++      options?: boolean | AddEventListenerOptions): void;
++  }
++  export const desktop: DesktopZoom;
++
    export interface BrowserWindowOptions {
 +    /** dnr 0.4.1 extension; absent from pinned upstream Deno Desktop.
 +     * Default action after an uncanceled close request. Default: "destroy".
@@ -1132,7 +1170,7 @@
      title?: string;
      /** @default {800} */
      width?: number;
-@@ -644,6 +648,13 @@
+@@ -644,6 +668,13 @@
  
      isClosed(): boolean;
      close(): void;
@@ -1146,7 +1184,7 @@
  
      isVisible(): boolean;
      show(): void;
-@@ -720,8 +731,8 @@
+@@ -720,8 +751,8 @@
    /** App-level dock / taskbar handle.
     *
     * A `"reopen"` event fires on macOS when the user clicks the dock icon;
@@ -1157,6 +1195,7 @@
     */
    export class Dock extends EventTarget {
      constructor();
+diff --git a/ext/fs/ops.rs b/ext/fs/ops.rs
 --- a/ext/fs/ops.rs
 +++ b/ext/fs/ops.rs
 @@ -1550,8 +1550,8 @@
@@ -1181,6 +1220,7 @@
  }
  
  #[op2(stack_trace)]
+diff --git a/ext/process/lib.rs b/ext/process/lib.rs
 --- a/ext/process/lib.rs
 +++ b/ext/process/lib.rs
 @@ -341,6 +341,16 @@
@@ -1214,6 +1254,7 @@
        command: arg_cmd.to_string(),
        error: Box::new(e),
      })?;
+diff --git a/libs/core/ops_builtin_v8.rs b/libs/core/ops_builtin_v8.rs
 --- a/libs/core/ops_builtin_v8.rs
 +++ b/libs/core/ops_builtin_v8.rs
 @@ -474,7 +474,16 @@
@@ -1234,6 +1275,7 @@
        // A cache backend that can't answer must not fail the compile: degrade
        // to an uncached compile and don't arm the write side either.
        let Ok(code_cache) = cb(&specifier, &source_units) else {
+diff --git a/runtime/code_cache.rs b/runtime/code_cache.rs
 --- a/runtime/code_cache.rs
 +++ b/runtime/code_cache.rs
 @@ -24,3 +24,49 @@
@@ -1286,6 +1328,7 @@
 +    }));
 +
 +}
+diff --git a/runtime/web_worker.rs b/runtime/web_worker.rs
 --- a/runtime/web_worker.rs
 +++ b/runtime/web_worker.rs
 @@ -389,6 +389,7 @@
@@ -1304,6 +1347,7 @@
  
      {
        let state = js_runtime.op_state();
+diff --git a/runtime/worker.rs b/runtime/worker.rs
 --- a/runtime/worker.rs
 +++ b/runtime/worker.rs
 @@ -30,7 +30,6 @@
@@ -1372,9 +1416,44 @@
  
      js_runtime
        .op_state()
+diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
 --- a/cli/rt/desktop.rs
 +++ b/cli/rt/desktop.rs
-@@ -178,9 +178,47 @@
+@@ -24,6 +24,10 @@
+     Tray,
+     Notification: NotificationNative,
+     op_desktop_init,
++    op_desktop_get_zoom,
++    op_desktop_set_zoom,
++    op_desktop_get_zoom_shortcuts,
++    op_desktop_set_zoom_shortcuts,
+     op_desktop_recv_event,
+     op_desktop_resolve_bind_call,
+     op_desktop_reject_bind_call,
+@@ -35,6 +39,22 @@
+     op_desktop_request_notification_permission,
+     op_desktop_query_notification_permission,
+   } = internals.core.ops;
++  const desktop = new EventTarget();
++  Object.assign(desktop, {
++    getGlobalZoomFactor: () => op_desktop_get_zoom()[0],
++    getZoomFactor: () => op_desktop_get_zoom()[1],
++    getEffectiveZoomFactor: () => op_desktop_get_zoom()[2],
++    setZoomFactor(factor) {
++      if (typeof factor !== "number") throw new TypeError("zoom factor must be a number");
++      op_desktop_set_zoom(factor);
++    },
++    getZoomShortcutsEnabled: () => op_desktop_get_zoom_shortcuts(),
++    setZoomShortcutsEnabled(enabled) {
++      if (typeof enabled !== "boolean") throw new TypeError("enabled must be a boolean");
++      op_desktop_set_zoom_shortcuts(enabled);
++    },
++  });
++  Object.defineProperty(Deno, "desktop", { value: desktop, enumerable: true });
+   const BrowserWindowPrototype = BrowserWindow.prototype;
+   Object.setPrototypeOf(BrowserWindowPrototype, EventTarget.prototype);
+   const privateDesktopBind = Symbol.for("Deno_privateDesktopBind");
+@@ -178,9 +198,47 @@
  
    // Window registry: windowId -> BrowserWindow instance.
    const windows = new Map();
@@ -1422,7 +1501,7 @@
      const windowId = instance.windowId;
      windows.set(windowId, instance);
      return instance;
-@@ -455,7 +493,8 @@
+@@ -455,7 +513,8 @@
        destroy() {
          tray.removeEventListener("click", onTrayClick);
          if (onBlur) window.removeEventListener("blur", onBlur);
@@ -1432,7 +1511,21 @@
        },
      };
    };
-@@ -936,7 +975,7 @@
+@@ -781,6 +840,13 @@
+         const ev = await p;
+         if (ev == null) break;
+         switch (ev.kind) {
++          case "zoomChange": {
++            const { globalFactor, appFactor, effectiveFactor, source } = ev;
++            desktop.dispatchEvent(new CustomEvent("zoomchange", {
++              detail: { globalFactor, appFactor, effectiveFactor, source },
++            }));
++            break;
++          }
+           case "appMenuClick": {
+             const target = windows.get(ev.windowId);
+             if (!target) break;
+@@ -936,7 +1002,7 @@
            case "closeRequested": {
              const target = windows.get(ev.windowId);
              if (!target) break;
@@ -1441,8 +1534,18 @@
              break;
            }
            case "runtimeError": {
+diff --git a/cli/rt_desktop/lib.rs b/cli/rt_desktop/lib.rs
 --- a/cli/rt_desktop/lib.rs
 +++ b/cli/rt_desktop/lib.rs
+@@ -44,7 +44,7 @@
+ /// makes the failure mode obvious instead of "the desktop app silently won't
+ /// launch".
+ const _: () = assert!(
+-  laufey::LAUFEY_API_VERSION == 34,
++  laufey::LAUFEY_API_VERSION == 35,
+   "LAUFEY_API_VERSION mismatch: update this assert and the prebuilt backend release pin in cli/tools/desktop.rs when laufey bumps its API version",
+ );
+ 
 @@ -81,8 +81,6 @@
      let move_tx = self.event_tx.clone();
      let page_load_tx = self.event_tx.clone();
@@ -1474,6 +1577,46 @@
        })
    }
  
+@@ -247,6 +241,7 @@
+         frameless: false,
+         no_activate: false,
+         transparent_titlebar: false,
++        zoom_exempt: false,
+         hidden: true,
+         transparent: false,
+       },
+@@ -260,6 +255,11 @@
+ }
+ 
+ impl denort::desktop::DesktopApi for WefDesktopApi {
++  fn desktop_zoom(&self) -> [f64; 3] { laufey::desktop_zoom() }
++  fn set_desktop_zoom(&self, factor: f64) { let _ = laufey::set_desktop_zoom(factor); }
++  fn zoom_shortcuts_enabled(&self) -> bool { laufey::zoom_shortcuts_enabled() }
++  fn set_zoom_shortcuts_enabled(&self, enabled: bool) { laufey::set_zoom_shortcuts_enabled(enabled); }
++
+   fn create_window(
+     &self,
+     width: i32,
+@@ -276,6 +276,7 @@
+         frameless,
+         no_activate,
+         transparent_titlebar,
++        zoom_exempt: false,
+         hidden: false,
+         transparent,
+       },
+@@ -377,7 +378,9 @@
+       log::info!(
+         "[desktop] openDevtools(renderer={renderer}, deno={deno}) → {url}"
+       );
+-      let window = laufey::Window::new(1200, 800);
++      let window = laufey::Window::new_with_options(1200, 800, laufey::WindowOptions {
++        zoom_exempt: true, ..Default::default()
++      });
+       window.set_title("Deno Desktop DevTools");
+       window.navigate(&url);
+       let window = self.setup_window_events(window, false);
+diff --git a/ext/fs/interface.rs b/ext/fs/interface.rs
 --- a/ext/fs/interface.rs
 +++ b/ext/fs/interface.rs
 @@ -102,10 +102,10 @@
@@ -1510,9 +1653,30 @@
  
    #[test]
    fn read_only_create_flags_require_read_and_write_access() {
+diff --git a/runtime/ops/desktop.rs b/runtime/ops/desktop.rs
 --- a/runtime/ops/desktop.rs
 +++ b/runtime/ops/desktop.rs
-@@ -924,7 +924,9 @@
+@@ -313,6 +313,8 @@
+ #[derive(Debug, serde::Serialize)]
+ #[serde(tag = "kind", rename_all = "camelCase")]
+ pub enum DesktopEvent {
++  #[serde(rename_all = "camelCase")]
++  ZoomChange { global_factor: f64, app_factor: f64, effective_factor: f64, source: String },
+   #[serde(rename_all = "camelCase")]
+   AppMenuClick { window_id: u32, id: String },
+   #[serde(rename_all = "camelCase")]
+@@ -510,6 +512,10 @@
+ ///
+ /// All per-window methods take a `window_id` identifying the target window.
+ pub trait DesktopApi: Send + Sync + 'static {
++  fn desktop_zoom(&self) -> [f64; 3] { [1.0, 1.0, 1.0] }
++  fn set_desktop_zoom(&self, _factor: f64) {}
++  fn zoom_shortcuts_enabled(&self) -> bool { false }
++  fn set_zoom_shortcuts_enabled(&self, _enabled: bool) {}
+   /// Create a new window with the given dimensions and return its ID.
+   ///
+   /// `frameless` drops the title bar and standard window chrome.
+@@ -924,7 +930,9 @@
      self.api.is_closed(self.window_id)
    }
  
@@ -1522,6 +1686,50 @@
    fn close(&self) {
      if self.surface_taken.get() {
        // A WebGPU surface is referencing this window's native handles.
+@@ -1350,6 +1358,31 @@
+   {
+     let _ = tx.send(Err(error));
+   }
++}
++
++#[op2]
++#[serde]
++fn op_desktop_get_zoom(state: &OpState) -> Vec<f64> {
++  state.borrow::<Arc<dyn DesktopApi>>().desktop_zoom().to_vec()
++}
++
++#[op2(fast)]
++fn op_desktop_set_zoom(state: &OpState, factor: f64) -> Result<(), deno_error::JsErrorBox> {
++  if !factor.is_finite() || !(0.5..=2.0).contains(&factor) {
++    return Err(deno_error::JsErrorBox::range_error("zoom factor must be a finite number between 0.5 and 2.0"));
++  }
++  state.borrow::<Arc<dyn DesktopApi>>().set_desktop_zoom(factor);
++  Ok(())
++}
++
++#[op2(fast)]
++fn op_desktop_get_zoom_shortcuts(state: &OpState) -> bool {
++  state.borrow::<Arc<dyn DesktopApi>>().zoom_shortcuts_enabled()
++}
++
++#[op2(fast)]
++fn op_desktop_set_zoom_shortcuts(state: &OpState, enabled: bool) {
++  state.borrow::<Arc<dyn DesktopApi>>().set_zoom_shortcuts_enabled(enabled);
+ }
+ 
+ #[op2(fast)]
+@@ -2191,6 +2224,10 @@
+     op_desktop_verify_ed25519,
+     op_desktop_confirm_update,
+     op_desktop_init,
++    op_desktop_get_zoom,
++    op_desktop_set_zoom,
++    op_desktop_get_zoom_shortcuts,
++    op_desktop_set_zoom_shortcuts,
+     op_desktop_recv_event,
+     op_desktop_resolve_bind_call,
+     op_desktop_reject_bind_call,
+diff --git a/ext/fs/std_fs.rs b/ext/fs/std_fs.rs
 --- a/ext/fs/std_fs.rs
 +++ b/ext/fs/std_fs.rs
 @@ -1436,3 +1436,55 @@
@@ -1580,3 +1788,17 @@
 +    );
 +  }
 +}
+diff --git a/runtime/js/99_main.js b/runtime/js/99_main.js
+--- a/runtime/js/99_main.js
++++ b/runtime/js/99_main.js
+@@ -722,6 +722,10 @@
+   "op_desktop_confirm_update",
+   "op_desktop_verify_ed25519",
+   "op_desktop_init",
++  "op_desktop_get_zoom",
++  "op_desktop_set_zoom",
++  "op_desktop_get_zoom_shortcuts",
++  "op_desktop_set_zoom_shortcuts",
+   "op_desktop_recv_event",
+   "op_desktop_resolve_bind_call",
+   "op_desktop_reject_bind_call",
