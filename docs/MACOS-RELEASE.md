@@ -14,7 +14,8 @@ macOS 只提供一个 `dnr-<version>-macos-arm64.tar.gz`：`bin/dnr` 为系统 W
 以下命令在维护者完成首次 Release 与 tap 配置后可用：
 
 ```sh
-brew tap fansion314/dnr https://github.com/fansion314/dnr.git
+brew tap fansion314/dnr
+brew trust fansion314/dnr
 brew install fansion314/dnr/dnr
 dnr --version
 dnc --version
@@ -24,25 +25,33 @@ brew update
 brew upgrade fansion314/dnr/dnr
 ```
 
-tap 与源码共用 `fansion314/dnr` 仓库，因此首次添加必须指定完整 Git URL；
-省略 URL 会让 Homebrew 寻找另一个 `homebrew-dnr` 仓库。配方在根目录 `Formula/dnr.rb`。
+tap 统一放在 [`fansion314/homebrew-dnr`](https://github.com/fansion314/homebrew-dnr)，
+包含 dnr、pi-dnr、etcher-dnr 和 songjian。信任整个 tap 后可使用短名称安装。
+旧 tap 用户保持名称不变，只迁移远端：
+
+```sh
+brew tap --custom-remote fansion314/dnr https://github.com/fansion314/homebrew-dnr.git
+brew update
+brew trust fansion314/dnr
+```
+
+源码仓库的 `Formula/dnr.rb` 仅保留旧安装入口；最新配方以统一 tap 为准。
 配方下载固定版本的 GitHub Release 压缩包并验证 SHA-256，然后一次安装两个程序；
 不在用户电脑上编译。若已有手动安装的同名程序，使用 `which -a dnr dnc` 检查 PATH。
 
 ## 首次配置（维护者）
 
-1. 将工作流与脚本提交到默认分支。无需额外仓库、SSH key、PAT、secret 或变量；
-   Homebrew job 使用本仓库 `GITHUB_TOKEN` 和显式 `contents: write` 权限。
-   默认分支的保护规则需要允许这一配方更新写入。
+1. 将工作流与脚本提交到默认分支。统一 tap 使用自己的 `GITHUB_TOKEN` 定时检查公开 Release，
+   不需要跨仓库 PAT 或 secret。tap 默认分支需允许 Actions 更新配方。
 2. 手动运行 **Release macOS package**，留空 `tap_release` 来验证构建；普通分支
    试跑只上传 Actions artifacts，不写 Release 或 tap。
 3. 按项目发布约定，在一次发布提交中准备版本号、锁文件、现有 Arch 配方及
    `docs/releases/v<version>.md`，然后推送对应 `vX.Y.Z` 标签。
    不要移动已有标签来补入此工作流；已发布的 `v0.4.1` 没有此工作流。
 
-发布成功后，CI 会在默认分支追加一次仅更新 `Formula/dnr.rb` 的提交，写入真实的版本、
-Release URL 和 SHA-256。这是用户明确允许的配方更新步骤，不是验收记录提交；
-独立 tap 也需要相同的更新提交，共仓只是将它保留在源码仓库中。
+发布成功后，源码 CI 验证公开 URL 的 Homebrew 安装；统一 tap 每半小时检查一次
+Release 的包、SHA-256 和 GitHub asset digest，在独立 runner 安装验证后更新配方。
+也可手动运行统一 tap 的 `sync.yml`，不追加源码验收提交。
 
 ## CI 与失败恢复
 
@@ -57,7 +66,7 @@ Release URL 和 SHA-256。这是用户明确允许的配方更新步骤，不是
 4. 标签发布任务校验标签提交、包校验和与配方。macOS 与 Arch 共享发布互斥锁，
    macOS 不改写 Arch 的 `SHA256SUMS`、发布说明或 latest 标记。
 5. 另一台 ARM64 runner 下载公开 Release 包、核对校验和，再从公开 URL 安装并执行
-   `brew test`，成功后通过 Contents API 提交本仓库 `Formula/dnr.rb`。
+   `brew test`，成功后在 job summary 记录结果；统一 tap 独立同步。
 
 CLI/包测试不能代替真实 WebView 窗口、绑定与关闭生命周期验收；CI 不将未运行的 GUI
 检查写成通过。构建日志和环境记录保存在 Actions artifacts，发布后的安装证据留在
@@ -70,7 +79,7 @@ job 日志中，不追加源码仓库验收提交。
 
 若只需为已经发布的包更新或恢复 tap，可在默认分支手动运行工作流并填写
 `tap_release=v0.4.2`。这条路径不重建、不上传或改写 Release 资产，只下载现有包、
-验证 Homebrew 安装并更新配方：
+验证 Homebrew 安装（统一 tap 另行同步）：
 
 ```sh
 gh workflow run release-macos.yml --ref main -f tap_release=v0.4.2

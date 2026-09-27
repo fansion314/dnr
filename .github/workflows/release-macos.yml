@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       tap_release:
-        description: 'Existing release tag to install-test and sync to Formula/dnr.rb without rebuilding (e.g. v0.4.2)'
+        description: 'Existing release tag to install-test without rebuilding (e.g. v0.4.2)'
         type: string
         default: ''
       publish_tag:
@@ -130,13 +130,13 @@ jobs:
         run: bash scripts/ci/publish-macos.sh
 
   homebrew:
-    name: Verify release download and update repository tap
+    name: Verify public release for the unified tap
     needs: release
     if: always() && (needs.release.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.tap_release != ''))
     runs-on: macos-15
     timeout-minutes: 20
     permissions:
-      contents: write
+      contents: read
     concurrency:
       group: homebrew-tap
       cancel-in-progress: false
@@ -165,7 +165,6 @@ jobs:
             "release-assets/$archive" release-assets/dnr.rb
       - name: Test installation from the public Release URL
         run: bash scripts/ci/test-homebrew.sh release-assets/dnr.rb
-      - name: Commit Formula/dnr.rb to this repository's default branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/ci/homebrew.py update "$GITHUB_REPOSITORY" release-assets/dnr.rb
+      - name: Record unified tap publication path
+        run: |
+          echo 'Public release installation passed. The unified fansion314/homebrew-dnr tap independently verifies and imports this release.' >> "$GITHUB_STEP_SUMMARY"

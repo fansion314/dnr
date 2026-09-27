@@ -34,7 +34,8 @@ macOS ARM64 预构建包和 Homebrew tap 配置见 [macOS 发布说明](docs/MAC
 （macOS 15 及以上，无需编译）。tap 与源码共用本仓库：
 
 ```sh
-brew tap fansion314/dnr https://github.com/fansion314/dnr.git
+brew tap fansion314/dnr
+brew trust fansion314/dnr
 brew install fansion314/dnr/dnr
 ```
 
