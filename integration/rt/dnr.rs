@@ -303,6 +303,8 @@ pub fn application(mut args: Vec<String>) -> Result<StandaloneData, AnyError> {
     }
     use sha2::{Digest, Sha256};
     let storage_id = format!("dnr-{:x}", Sha256::digest(app_id.as_bytes()));
+    laufey::set_desktop_zoom(crate::dnr_zoom_config::load_application_factor(&storage_id))
+        .expect("validated application zoom");
     let metadata = Metadata {
         argv: args,
         seed: None,

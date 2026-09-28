@@ -1,6 +1,7 @@
 # 桌面内容缩放
 
-这是 dnr 0.4.2 新增的下游扩展；0.4.1 和固定上游 Deno Desktop 不包含本接口。
+这是 dnr 0.4.2 新增的下游扩展；0.4.3 增加应用倍率自动持久化。
+0.4.1 和固定上游 Deno Desktop 不包含本接口。
 
 ## 用户统一设置
 
@@ -38,9 +39,23 @@ Deno.desktop.addEventListener("zoomchange", (event) => {
 });
 ```
 
-应用倍率默认为 1，**当前应用进程的所有应用窗口共享**，不同进程独立。API 和快捷键修改
-同一份应用倍率；全局倍率只能通过命令配置，不被应用 API 覆盖。应用可自行保存应用倍率，
-dnr 不替应用持久化。CEF 站点缩放共享不需要改变 Cookie/localStorage 上下文。
+应用倍率首次使用默认为 1，**当前应用进程的所有应用窗口共享**。API 和快捷键修改
+同一份应用倍率，dnr 自动保存，并在下次启动、执行应用代码前恢复。应用无需自行保存；
+启动时主动调用 `setZoomFactor` 仍会覆盖已恢复的设置，因此不要为了设置默认值而每次启动
+无条件调用 setter。全局倍率只能通过命令配置，不被应用 API 覆盖。
+CEF 站点缩放共享不需要改变 Cookie/localStorage 上下文。
+
+应用倍率写入上述配置目录的 `app-zoom/dnr-<SHA-256>.json`，格式与全局配置一致。
+身份沿用应用存储身份：DNP 和完整安装目录使用 manifest 的 appId，升级、移动包或切换
+DNP/完整安装方式后保留；裸脚本使用规范化入口绝对路径，不同脚本隔离。
+保存的是第三层应用倍率，系统 DPI 和全局倍率不写入该值。`Cmd/Ctrl+0` 或
+`setZoomFactor(1)` 恢复并保存应用倍率 1；`dnr zoom reset` 只重置全局倍率。
+
+设置变化通过同一回调立即原子写入，不依赖窗口关闭、异步事件处理或正常退出。
+未修改倍率不创建应用配置。不同应用使用不同文件；同一应用多进程各自保持启动快照，
+最后一次成功修改决定下次启动值，不向其他已运行进程广播。
+损坏的应用文件警告并回退为 1，下一次倍率变化会修复；无法写入时警告，当前进程仍应用
+新倍率。快捷键启用状态保持进程内设置，不持久化。
 
 这些 API 在创建窗口前也可调用，不初始化 GUI。setter 更新控制器状态并安排原生 UI 操作；
 getter 返回控制器状态，不保证屏幕已同步重绘。`zoomchange` 异步派发，source 为 `api` 或
@@ -68,11 +83,16 @@ Rust 控制器保存两层倍率；Laufey 下游 C ABI 35 增加页面倍率与�
 上游 API 34 后端混用。三个后端使用 WKWebView pageZoom、WebKitGTK zoom-level 和
 CEF 的对数 zoom level，不注入页面 CSS、不强制修改系统 device scale。
 
-`runtime_zoom` 覆盖真实 runtime 的配置、API、事件、进程快照和无显示路径；
+`runtime_zoom` 覆盖真实 runtime 的配置、API、事件、进程快照、立即退出后的恢复、
+裸脚本/包身份隔离、包移动与完整安装共享设置，以及无显示路径；
 `examples/desktop/zoom.ts` 验证多窗口的实际 CSS 视口、导航、隐藏恢复和新窗口。
 加 `--interactive` 后保留窗口并输出仅监听 loopback 的测试控制端点，供真实键盘验证。
 Linux 真实快捷键回归用 `GUI_SESSION_SLOT=verify gui-run python3 scripts/test-linux-zoom.py --backend webview --logs .cache/validation/zoom/webview`；CEF 将后端改为 `system-cef`。可选 `--data` 使用 data URL 做导航故障对照，不代表 HTTP/跨站点验收。
 原生快捷键匹配单元测试为 `integration/native/tests/zoom_shortcuts.cc`。
+`python3 scripts/test-zoom-persistence.py` 验证 macOS Cmd+= 后重启恢复、API 设置后重启恢复、
+reset 后重启恢复，并读取真实页面视口。Linux 使用
+`GUI_SESSION_SLOT=verify gui-run python3 scripts/test-zoom-persistence.py --backend webview`，
+CEF 改为 `--backend system-cef`；隔离会话的首次 KWallet 向导可加 `--cancel-wallet-setup`。
 实际执行结果和未覆盖环境见 [VALIDATION.md](../VALIDATION.md)。
 
 系统 CEF 152 的实测中，即使设置 `chrome_zoom_bubble=STATE_DISABLED`，仍可能显示原生缩放提示。

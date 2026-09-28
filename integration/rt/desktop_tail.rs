@@ -157,6 +157,10 @@ pub fn options() -> RunOptions {
             let (event_tx, event_rx) = denort::desktop::create_desktop_event_channel();
             let zoom_tx = event_tx.0.clone();
             laufey::on_zoom_change(move |global_factor, app_factor, shortcut| {
+                // Both native shortcuts and Deno.desktop.setZoomFactor reach
+                // this callback. Save before publishing the event, including
+                // changes made before the first GUI window is created.
+                crate::dnr_zoom_config::persist_application_factor(app_factor);
                 let _ = zoom_tx.try_send(deno_runtime::ops::desktop::DesktopEvent::ZoomChange {
                     global_factor, app_factor, effective_factor: global_factor * app_factor,
                     source: if shortcut { "shortcut" } else { "api" }.into(),

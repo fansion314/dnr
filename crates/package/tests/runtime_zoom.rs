@@ -3,6 +3,81 @@ use std::{fs, path::PathBuf, process::Command};
 
 #[test]
 #[ignore = "requires a rebuilt native DNR_BIN"]
+fn application_zoom_survives_restart_and_package_relocation() {
+    use dnr_package::{PackOptions, pack};
+    let binary = PathBuf::from(std::env::var_os("DNR_BIN").expect("DNR_BIN"))
+        .canonicalize()
+        .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("config");
+    let source = temp.path().join("source");
+    fs::create_dir(&source).unwrap();
+    let script = source.join("main.ts");
+    fs::write(&script, r#"
+const d = Deno.desktop;
+console.log(JSON.stringify([d.getGlobalZoomFactor(), d.getZoomFactor(), d.getEffectiveZoomFactor()]));
+if (Deno.args.length) d.setZoomFactor(Number(Deno.args[0]));
+// No event-loop drain or graceful shutdown is needed to save the setting.
+Deno.exit(0);
+"#).unwrap();
+    let run = |args: &[&str]| {
+        let output = Command::new(&binary)
+            .args(args)
+            .current_dir(temp.path())
+            .env("DNR_CONFIG_DIR", &config)
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_DISPLAY")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        output
+    };
+    run(&["zoom", "set", "1.25"]);
+    let probe = |entry: &str, factor: Option<&str>, expected: &str| {
+        let mut args = vec![entry];
+        args.extend(factor);
+        let output = run(&args);
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), expected);
+        assert!(output.stderr.is_empty(), "{output:?}");
+    };
+    probe("source/main.ts", Some("1.2"), "[1.25,1,1.25]");
+    probe("source/main.ts", None, "[1.25,1.2,1.5]");
+    fs::copy(&script, source.join("other.ts")).unwrap();
+    probe("source/other.ts", None, "[1.25,1,1.25]");
+    for (name, id) in [("one.dnp", "test.zoom.one"), ("two.dnp", "test.zoom.two")] {
+        pack(&PackOptions {
+            directory: source.clone(),
+            entry: "main.ts".into(),
+            output: temp.path().join(name),
+            includes: vec![],
+            excludes: vec![],
+            app_id: Some(id.into()),
+            force: false,
+        })
+        .unwrap();
+    }
+    probe("one.dnp", Some("1.5"), "[1.25,1,1.25]");
+    fs::rename(temp.path().join("one.dnp"), temp.path().join("moved.dnp")).unwrap();
+    probe("moved.dnp", None, "[1.25,1.5,1.875]");
+    probe("two.dnp", None, "[1.25,1,1.25]");
+    run(&["install", "moved.dnp", "installed", "--mode", "full"]);
+    probe("installed", None, "[1.25,1.5,1.875]");
+    run(&["zoom", "set", "2"]);
+    probe("installed", Some("1"), "[2,1.5,3]");
+    probe("moved.dnp", None, "[2,1,2]");
+    assert_eq!(fs::read_dir(config.join("app-zoom")).unwrap().count(), 2);
+    // A corrupt app file falls back independently of the global preference.
+    for entry in fs::read_dir(config.join("app-zoom")).unwrap() {
+        fs::write(entry.unwrap().path(), "broken").unwrap();
+    }
+    let fallback = run(&["moved.dnp", "1.1"]);
+    assert_eq!(String::from_utf8_lossy(&fallback.stdout).trim(), "[2,1,2]");
+    assert!(String::from_utf8_lossy(&fallback.stderr).contains("cannot read application zoom"));
+    probe("moved.dnp", None, "[2,1.1,2.2]");
+}
+
+#[test]
+#[ignore = "requires a rebuilt native DNR_BIN"]
 fn zoom_config_and_process_snapshot_without_gui() {
     let binary = PathBuf::from(std::env::var_os("DNR_BIN").expect("DNR_BIN"))
         .canonicalize()

@@ -1,5 +1,24 @@
 # 验证记录
 
+## v0.4.3 应用缩放持久化（2026-09-28）
+
+- macOS ARM64 WebView 和 xjtuse Arch Linux x86_64 dual 的 debug runtime 构建通过，
+  固定 Deno/Laufey 版本不变。保留 sccache；本机使用 `CARGO_CACHE_RUSTC_INFO=0` 刷新失败的编译器探测缓存。
+- 两平台 `DNR_BIN=... cargo test --locked -p dnr-package --test runtime_zoom -- --ignored`
+  各 2 项通过，覆盖原有全局配置/API/事件、API 修改后立即退出再启动、脚本身份隔离、
+  DNP appId 隔离和包移动、完整安装与 DNP 共享设置、独立 global 乘数、reset 及损坏文件修复。
+- `scripts/test-zoom-persistence.py` 在 macOS WebView、Linux WebView、Linux system-CEF
+  均通过：真实 Cmd/Ctrl+= 将倍率 1 改为 1.1，下一次窗口启动恢复；API 改为 1.5 和
+  重置为 1 后分别重启恢复。全局倍率保持 1.25，800px 窗口的实际 CSS 视口约为
+  640→581/582→426→640，四次启动均验证。
+- Linux 在独立 KDE X11 verify 会话、Mesa 软件渲染中验证；CEF 的首次 KWallet 设置向导
+  通过测试脚本读取实时控件位置并取消。未测试 Wayland 或硬件 GPU。
+- 此处记录版本号更新前的同一功能源码 debug 验证，不预写 v0.4.3 Release 构建结果。
+  发布后构建、包校验及 Homebrew 下载安装结果由 Actions/Release 保留。
+- 更新版本号后 macOS ARM64 debug 重建，`runtime` 11 项、`runtime_zoom` 2 项、
+  `runtime_sync` 1 项全部通过。workspace tests、Clippy（`-D warnings`）、格式检查、
+  18 项发布 helper tests 通过。macOS 发布 CI 已包含 `runtime_sync` 原生回归。
+
 ## v0.4.2 干净构建修复与重新发布准备（2026-09-27）
 
 - v0.4.2 macOS CI 成功编译 dnc，但 runtime 报告 `--locked` 失败；Arch 三个 runtime

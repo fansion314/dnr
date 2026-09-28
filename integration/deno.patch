@@ -1802,3 +1802,59 @@ diff --git a/runtime/js/99_main.js b/runtime/js/99_main.js
    "op_desktop_recv_event",
    "op_desktop_resolve_bind_call",
    "op_desktop_reject_bind_call",
+diff --git a/ext/io/lib.rs b/ext/io/lib.rs
+--- a/ext/io/lib.rs
++++ b/ext/io/lib.rs
+@@ -928,8 +928,25 @@
+     }
+   }
+ }
+ 
++// Darwin's F_FULLFSYNC (used by Rust sync_all/sync_data) is a file fcntl
++// operation. Raw disk character devices reject it with ENOTTY. Use the fsync
++// syscall for devices, as Node/libuv does, and propagate actual flush errors.
++// Keep Rust's stronger full-sync behavior for ordinary files.
++fn dnr_sync_file(file: &StdFile, data_only: bool) -> io::Result<()> {
++  #[cfg(target_os = "macos")]
++  {
++    use std::os::unix::fs::FileTypeExt;
++    let kind = file.metadata()?.file_type();
++    if kind.is_char_device() || kind.is_block_device() {
++      return nix::unistd::fsync(file)
++        .map_err(|err| io::Error::from_raw_os_error(err as i32));
++    }
++  }
++  if data_only { file.sync_data() } else { file.sync_all() }
++}
++
+ #[async_trait::async_trait(?Send)]
+ impl crate::fs::File for StdFileResourceInner {
+   fn maybe_path(&self) -> Option<&Path> {
+     self.maybe_path.as_deref()
+@@ -1239,22 +1256,22 @@
+       .await
+   }
+ 
+   fn datasync_sync(self: Rc<Self>) -> FsResult<()> {
+-    self.with_sync(|file| Ok(file.sync_data()?))
++    self.with_sync(|file| Ok(dnr_sync_file(file, true)?))
+   }
+   async fn datasync_async(self: Rc<Self>) -> FsResult<()> {
+     self
+-      .with_inner_blocking_task(|file| Ok(file.sync_data()?))
++      .with_inner_blocking_task(|file| Ok(dnr_sync_file(file, true)?))
+       .await
+   }
+ 
+   fn sync_sync(self: Rc<Self>) -> FsResult<()> {
+-    self.with_sync(|file| Ok(file.sync_all()?))
++    self.with_sync(|file| Ok(dnr_sync_file(file, false)?))
+   }
+   async fn sync_async(self: Rc<Self>) -> FsResult<()> {
+     self
+-      .with_inner_blocking_task(|file| Ok(file.sync_all()?))
++      .with_inner_blocking_task(|file| Ok(dnr_sync_file(file, false)?))
+       .await
+   }
+ 
+   fn stat_sync(self: Rc<Self>) -> FsResult<FsStat> {
