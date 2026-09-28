@@ -80,6 +80,7 @@ impl deno_runtime::deno_process::NativeCommandResolver for PackageCommands {
 }
 
 pub fn cleanup_native_libraries() {
+    crate::dnr_state::flush();
     if let Some(package) = PACKAGE.get() {
         package.cleanup_native_libraries();
     }
@@ -87,6 +88,7 @@ pub fn cleanup_native_libraries() {
     if let Some(package) = PACKAGE.get() {
         package.finish_cache();
     }
+    let _ = dnr_package::persistent::catalog::flush();
 }
 
 pub fn read_text(path: &Path) -> std::io::Result<String> {
@@ -197,6 +199,7 @@ pub fn application(mut args: Vec<String>) -> Result<StandaloneData, AnyError> {
     let (root, entry, app_id, mut vfs) = if is_package {
         let package = Arc::new(Package::open(&input, DEFAULT_CACHE_BYTES)?);
         package.check_platform()?;
+        crate::dnr_cache::begin_usage(&input);
         desktop_identity(&package.manifest);
         if code_cache || transpile_cache {
             if let Ok(generation) = package.cache_generation() {
@@ -230,6 +233,7 @@ pub fn application(mut args: Vec<String>) -> Result<StandaloneData, AnyError> {
     } else {
         let (root, entry, id) = if let Some((manifest, content)) = installed {
             desktop_identity(&manifest);
+            crate::dnr_cache::begin_usage(&input);
             if code_cache || transpile_cache {
                 let open = || -> Result<_, AnyError> {
                     let stamp = dnr_package::persistent::SourceStamp::read(
@@ -303,7 +307,7 @@ pub fn application(mut args: Vec<String>) -> Result<StandaloneData, AnyError> {
     }
     use sha2::{Digest, Sha256};
     let storage_id = format!("dnr-{:x}", Sha256::digest(app_id.as_bytes()));
-    laufey::set_desktop_zoom(crate::dnr_zoom_config::load_application_factor(&storage_id))
+    laufey::set_desktop_zoom(crate::dnr_state::load_application(&storage_id))
         .expect("validated application zoom");
     let metadata = Metadata {
         argv: args,

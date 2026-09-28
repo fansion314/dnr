@@ -45,7 +45,7 @@ DENO-FS-EXCL 另在 `ext/fs/interface.rs` 添加标志分离单元测试，在 `
 | 应用身份、离线解析、TS/JS 加载、顶层 await | `integration/rt/dnr.rs`；Deno `binary.rs`、`run.rs`、`cli/lib/worker.rs`。加载器修复随相关原生 runtime 测试复验 |
 | V8/转译缓存与 Worker 继承 | `integration/rt/dnr_cache.rs`；Deno `runtime/{code_cache,worker,web_worker}.rs`。保留读取、晚写入和 worker 回调路径 |
 | 懒 GUI 初始化和窗口/托盘/任务保活 | `integration/rt/desktop_tail.rs`；Laufey `capi/src/lib.rs`、WebView/CEF 平台事件循环。关闭最后一窗不能直接终止后台服务 |
-| 内容缩放（未发布扩展） | `integration/rt/dnr_zoom_config.rs` 与 `integration/native/desktop_zoom.h`；Deno desktop ops/类型/JS、Laufey Rust 控制器与下游 C ABI 35、三种后端原生 zoom/快捷键。全局乘应用倍率，应用进程内所有窗口同步；配置启动快照；详见 ZOOM.md |
+| 内容缩放（未发布扩展） | `integration/rt/dnr_zoom_config.rs` 与 `integration/native/desktop_zoom.h`；Deno desktop ops/类型/JS、Laufey Rust 控制器与下游 C ABI 36、三种后端原生 zoom/快捷键。全局乘应用倍率，应用进程内所有窗口同步；配置启动快照；详见 ZOOM.md |
 | macOS Dock 重开 | Laufey `webview/src/main_mac.mm` 与 Deno desktop 类型说明；既派发应用事件，也保留 AppKit 的默认恢复 |
 
 `dnr_desktop.rs` 由 xtask 从 patched `cli/rt_desktop/lib.rs` 与本地 tail 生成。
@@ -58,3 +58,10 @@ DENO-FS-EXCL 另在 `ext/fs/interface.rs` 添加标志分离单元测试，在 `
 3. 保存生成树中必要调试修改，从干净快照 `xtask prepare`；不能把新 patch 叠到旧 patch 上。
 4. 构建真实 runtime；普通 workspace 测试不能覆盖内嵌 Deno。执行显式原生测试与平台 GUI 测试。
 5. 把实际平台/后端、未覆盖范围写入 `VALIDATION.md`。本表不替代验证记录。
+
+### v0.5.0 应用状态与窗口资源
+
+`integration/rt/dnr_state.rs` 保存按应用身份隔离的缩放和窗口尺寸，5 秒防抖、退出补写、跨进程字段合并。
+`integration/rt/dnr_windows.js` 保留逻辑窗口并管理原生实例释放/重建；通过 Deno desktop bootstrap 嵌入。
+Deno patch 扩展 ops、类型和快照保留列表；Laufey patch 增加 C ABI 36 的 metrics 查询，
+三个目标后端提供普通状态、可用工作区及实际窗口存在状态，CEF 分别确认原生窗口销毁和 OnBeforeClose，完成后清理原生回调注册。

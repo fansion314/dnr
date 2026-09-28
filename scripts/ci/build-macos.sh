@@ -31,7 +31,7 @@ cargo run --locked -p xtask -- build --backend webview
 cargo test --locked --workspace
 DNR_BIN="$root/dist/dnr" cargo test --locked -p dnr-package \
     --test runtime --test runtime_native --test runtime_groups --test runtime_cache \
-    --test runtime_backend --test runtime_node_flags --test runtime_zoom --test runtime_sync -- --ignored
+    --test runtime_backend --test runtime_node_flags --test runtime_zoom --test runtime_state --test runtime_sync -- --ignored
 DNR_BIN="$root/dist/dnr" DNC_BIN="$root/dist/dnc" \
     DNC_TEST_ICON=/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericApplicationIcon.icns \
     cargo test --locked -p dnc --test cli macos_ -- --ignored

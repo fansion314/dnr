@@ -315,7 +315,7 @@ fn v3_native_groups_ffi_subprocesses_and_sidecar() {
         sidecar["addon"]
             .as_str()
             .unwrap()
-            .contains("application.dnp.unpacked/v4/")
+            .contains("application.dnp.unpacked/fixture/root/")
     );
     let full = temp.path().join("full");
     successful(

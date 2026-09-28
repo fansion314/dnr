@@ -43,6 +43,67 @@ fn open(options: &PackOptions, cache: &Path) -> Package {
 }
 
 #[test]
+fn compact_sidecar_keeps_logical_tree_and_accepts_legacy_layout() {
+    let (temp, options, config) = fixture();
+    pack_with_config(&options, &config).unwrap();
+    let dest = temp.path().join("installed");
+    let install = vec![
+        options.output.display().to_string(),
+        dest.display().to_string(),
+    ];
+    dnr_package::commands::install(&install, true).unwrap();
+    let sidecar = dest.join("app.dnp.unpacked");
+    assert!(sidecar.join("plugin/root/plugin/addon.node").is_file());
+    assert!(!sidecar.join("v4").exists());
+    let package = Package::open(&dest.join("app.dnp"), 0).unwrap();
+    let native = package
+        .native_library_path("plugin/addon.node")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        package.logical_path(&native).as_deref(),
+        Some("plugin/addon.node")
+    );
+    assert_eq!(
+        fs::read(native.parent().unwrap().join("link")).unwrap(),
+        b"resource"
+    );
+    assert!(
+        dnr_package::commands::install(&install, true).is_err(),
+        "active installation must not be replaced"
+    );
+    let legacy = sidecar
+        .join("v4")
+        .join(package.package_id())
+        .join(package.selected_target());
+    drop(package);
+    fs::create_dir_all(&legacy).unwrap();
+    fs::rename(sidecar.join("plugin"), legacy.join("plugin")).unwrap();
+    fs::rename(sidecar.join(".locks"), legacy.join(".locks")).unwrap();
+    let old_reader = fs::File::open(legacy.join(".locks/plugin")).unwrap();
+    old_reader.lock_shared().unwrap();
+    assert!(
+        dnr_package::commands::install(&install, true).is_err(),
+        "legacy group leases must also block replacement"
+    );
+    drop(old_reader);
+    let reopened = Package::open(&dest.join("app.dnp"), 0).unwrap();
+    let native = reopened
+        .native_library_path("plugin/addon.node")
+        .unwrap()
+        .unwrap();
+    assert!(native.starts_with(legacy.canonicalize().unwrap()));
+    assert_eq!(
+        reopened.logical_path(&native).as_deref(),
+        Some("plugin/addon.node")
+    );
+    drop(reopened);
+    dnr_package::commands::install(&install, true).unwrap();
+    assert!(sidecar.join("plugin/root/plugin/addon.node").is_file());
+    assert!(!sidecar.join("v4").exists());
+}
+
+#[test]
 fn lazy_group_is_complete_readonly_and_reused_between_instances() {
     let (temp, options, config) = fixture();
     pack_with_config(&options, &config).unwrap();

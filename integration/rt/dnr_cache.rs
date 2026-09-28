@@ -13,13 +13,23 @@ struct Context {
     code: bool,
     emit: bool,
 }
+static USAGE: OnceLock<(std::path::PathBuf, std::path::PathBuf)> = OnceLock::new();
 static CONTEXT: OnceLock<Context> = OnceLock::new();
 static CODE_HITS: AtomicU64 = AtomicU64::new(0);
 static CODE_MISSES: AtomicU64 = AtomicU64::new(0);
 static EMIT_HITS: AtomicU64 = AtomicU64::new(0);
 static EMIT_MISSES: AtomicU64 = AtomicU64::new(0);
 
+pub fn begin_usage(path: &std::path::Path) {
+    if let (Ok(base), Ok(path)) = (dnr_package::cache_directory(), path.canonicalize()) {
+        dnr_package::persistent::catalog::access(base.clone(), path.clone());
+        let _ = USAGE.set((base, path));
+    }
+}
+
 pub fn init(generation: Arc<Generation>, code: bool, emit: bool) {
+    generation.mark_used();
+    generation.notify_index();
     let _ = CONTEXT.set(Context {
         generation,
         cache: Mutex::new(None),
@@ -29,6 +39,7 @@ pub fn init(generation: Arc<Generation>, code: bool, emit: bool) {
 }
 fn cache() -> Option<Arc<CompileCache>> {
     let context = CONTEXT.get()?;
+    context.generation.mark_used();
     let mut slot = context.cache.lock().unwrap_or_else(|e| e.into_inner());
     if slot.is_none() {
         let fingerprint = format!(
@@ -162,6 +173,9 @@ pub fn set_emit(specifier: &ModuleSpecifier, key: &str, text: &str) {
     }
 }
 pub fn finish() {
+    if let Some((base, path)) = USAGE.get() {
+        dnr_package::persistent::catalog::access(base.clone(), path.clone());
+    }
     if let Some(c) = CONTEXT.get() {
         c.cache.lock().unwrap_or_else(|e| e.into_inner()).take();
         c.generation.finish();

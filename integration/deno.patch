@@ -35,10 +35,11 @@ diff --git a/cli/rt/Cargo.toml b/cli/rt/Cargo.toml
  
  [lib]
  path = "./lib.rs"
-@@ -35,6 +39,12 @@
+@@ -35,6 +39,13 @@
  v8.workspace = true
  
  [dependencies]
++tempfile.workspace = true
 +dnr-package = { path = "../../../../crates/package" }
 +laufey = { path = "../../../laufey/capi" }
 +sha2.workspace = true
@@ -48,11 +49,12 @@ diff --git a/cli/rt/Cargo.toml b/cli/rt/Cargo.toml
  async-trait.workspace = true
  bincode.workspace = true
  deno_ast = { workspace = true, features = ["cjs"] }
-@@ -76,5 +86,6 @@
+@@ -75,6 +86,7 @@
+ memmap2.workspace = true
  deno_subprocess_windows.workspace = true
  
++
  [dev-dependencies]
-+tempfile.workspace = true
  sys_traits = { workspace = true, features = ["memory"] }
  test_util.workspace = true
 diff --git a/cli/rt/binary.rs b/cli/rt/binary.rs
@@ -985,13 +987,14 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
 diff --git a/cli/rt/lib.rs b/cli/rt/lib.rs
 --- a/cli/rt/lib.rs
 +++ b/cli/rt/lib.rs
-@@ -1,5 +1,10 @@
+@@ -1,5 +1,11 @@
  // Copyright 2018-2026 the Deno authors. MIT license.
  
 +extern crate self as denort;
 +pub mod dnr;
 +pub mod dnr_cache;
 +pub mod dnr_zoom_config;
++pub mod dnr_state;
 +pub mod dnr_desktop;
  use std::borrow::Cow;
  use std::env;
@@ -1138,19 +1141,22 @@ diff --git a/cli/rt/run.rs b/cli/rt/run.rs
 diff --git a/cli/tsc/dts/lib.deno.desktop.d.ts b/cli/tsc/dts/lib.deno.desktop.d.ts
 --- a/cli/tsc/dts/lib.deno.desktop.d.ts
 +++ b/cli/tsc/dts/lib.deno.desktop.d.ts
-@@ -377,7 +377,31 @@
+@@ -377,7 +377,44 @@
      deno?: boolean;
    }
  
 +  /** dnr extension: process-wide page zoom, multiplied by user-wide zoom.
 +   * Accessors do not initialize the GUI. System DPI is separate.
-+   * Application zoom defaults to 1 and is not persisted by dnr. */
++   * Application zoom is restored and saved per app with a five-second debounce. */
 +  export interface DesktopZoom extends EventTarget {
 +    getGlobalZoomFactor(): number;
 +    getZoomFactor(): number;
 +    getEffectiveZoomFactor(): number;
 +    /** Finite factor in [0.5, 2]. Updates every application window. */
 +    setZoomFactor(factor: number): void;
++    /** Per-process automatic restoration and persistence; both default true. */
++    setStatePersistence(options: { zoom?: boolean; windowSize?: boolean }): void;
++    getStatePersistence(): { zoom: boolean; windowSize: boolean };
 +    getZoomShortcutsEnabled(): boolean;
 +    setZoomShortcutsEnabled(enabled: boolean): void;
 +    addEventListener(type: "zoomchange", listener: (event: CustomEvent<{
@@ -1162,15 +1168,25 @@ diff --git a/cli/tsc/dts/lib.deno.desktop.d.ts b/cli/tsc/dts/lib.deno.desktop.d.
 +  }
 +  export const desktop: DesktopZoom;
 +
++  export type HiddenWindowPolicy =
++    | { mode: "immediate" }
++    | { mode: "keep" }
++    | { mode: "delayed"; delayMs?: number };
++
    export interface BrowserWindowOptions {
 +    /** dnr 0.4.1 extension; absent from pinned upstream Deno Desktop.
-+     * Default action after an uncanceled close request. Default: "destroy".
-+     * "hide" retains the window, page state, and its memory until destroy(). */
++     * Default action after an uncanceled close request. Default: "hide".
++     * "hide" follows hiddenWindowPolicy; defaults to release after five minutes. */
 +    closeBehavior?: "destroy" | "hide";
++    /** Stable per-application size identity; the first ordinary window uses main. */
++    stateKey?: string;
++    rememberSize?: boolean;
++    /** Defaults to delayed release after 300000 ms. Reopening reloads the page. */
++    hiddenWindowPolicy?: HiddenWindowPolicy;
      title?: string;
      /** @default {800} */
      width?: number;
-@@ -644,6 +668,13 @@
+@@ -644,6 +681,15 @@
  
      isClosed(): boolean;
      close(): void;
@@ -1181,10 +1197,12 @@ diff --git a/cli/tsc/dts/lib.deno.desktop.d.ts b/cli/tsc/dts/lib.deno.desktop.d.
 +    setCloseBehavior(behavior: "destroy" | "hide"): void;
 +    /** dnr extension: query the configured close action. */
 +    getCloseBehavior(): "destroy" | "hide";
++    setHiddenWindowPolicy(policy: HiddenWindowPolicy): void;
++    getHiddenWindowPolicy(): HiddenWindowPolicy;
  
      isVisible(): boolean;
      show(): void;
-@@ -720,8 +751,8 @@
+@@ -720,8 +766,8 @@
    /** App-level dock / taskbar handle.
     *
     * A `"reopen"` event fires on macOS when the user clicks the dock icon;
@@ -1419,10 +1437,24 @@ diff --git a/runtime/worker.rs b/runtime/worker.rs
 diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
 --- a/cli/rt/desktop.rs
 +++ b/cli/rt/desktop.rs
-@@ -24,6 +24,10 @@
+@@ -15,7 +15,7 @@
+ pub use deno_runtime::ops::desktop::MenuItem;
+ 
+ /// JS code that exposes desktop APIs via `Deno.BrowserWindow` and `Deno.desktop`.
+-pub const DESKTOP_JS: &str = r#"
++pub const DESKTOP_JS: &str = concat!(r#"
+ (() => {
+   const internals = Deno[Deno.internal];
+   const {
+@@ -24,6 +24,15 @@
      Tray,
      Notification: NotificationNative,
      op_desktop_init,
++    op_desktop_get_state_persistence,
++    op_desktop_set_state_persistence,
++    op_desktop_saved_window_size,
++    op_desktop_record_window_size,
++    op_desktop_window_metrics,
 +    op_desktop_get_zoom,
 +    op_desktop_set_zoom,
 +    op_desktop_get_zoom_shortcuts,
@@ -1430,12 +1462,27 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
      op_desktop_recv_event,
      op_desktop_resolve_bind_call,
      op_desktop_reject_bind_call,
-@@ -35,6 +39,22 @@
+@@ -35,8 +44,36 @@
      op_desktop_request_notification_permission,
      op_desktop_query_notification_permission,
    } = internals.core.ops;
+-  const BrowserWindowPrototype = BrowserWindow.prototype;
+-  Object.setPrototypeOf(BrowserWindowPrototype, EventTarget.prototype);
 +  const desktop = new EventTarget();
 +  Object.assign(desktop, {
++    getStatePersistence() {
++      const [zoom, windowSize] = op_desktop_get_state_persistence();
++      return { zoom, windowSize };
++    },
++    setStatePersistence(options) {
++      if (options === null || typeof options !== "object") throw new TypeError("state persistence options must be an object");
++      const [zoom, windowSize] = op_desktop_get_state_persistence();
++      const current = { zoom, windowSize };
++      for (const key of Object.keys(options)) {
++        if (!["zoom", "windowSize"].includes(key) || typeof options[key] !== "boolean") throw new TypeError("zoom and windowSize must be booleans");
++      }
++      op_desktop_set_state_persistence(options.zoom ?? current.zoom, options.windowSize ?? current.windowSize);
++    },
 +    getGlobalZoomFactor: () => op_desktop_get_zoom()[0],
 +    getZoomFactor: () => op_desktop_get_zoom()[1],
 +    getEffectiveZoomFactor: () => op_desktop_get_zoom()[2],
@@ -1450,58 +1497,32 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
 +    },
 +  });
 +  Object.defineProperty(Deno, "desktop", { value: desktop, enumerable: true });
-   const BrowserWindowPrototype = BrowserWindow.prototype;
-   Object.setPrototypeOf(BrowserWindowPrototype, EventTarget.prototype);
++  Object.setPrototypeOf(BrowserWindow.prototype, EventTarget.prototype);
    const privateDesktopBind = Symbol.for("Deno_privateDesktopBind");
-@@ -178,9 +198,47 @@
+   const privateDesktopUnbind = Symbol.for("Deno_privateDesktopUnbind");
  
-   // Window registry: windowId -> BrowserWindow instance.
-   const windows = new Map();
-+  const closeBehaviors = new WeakMap();
-+  const closing = new WeakSet();
-+  const privateDesktopClose = Symbol.for("Deno_privateDesktopClose");
-+  function validateCloseBehavior(behavior) {
-+    if (behavior !== "destroy" && behavior !== "hide") {
-+      throw new TypeError('closeBehavior must be "destroy" or "hide"');
-+    }
-+    return behavior;
-+  }
-+  BrowserWindowPrototype.setCloseBehavior = function(behavior) {
-+    closeBehaviors.set(this, validateCloseBehavior(behavior));
-+  };
-+  BrowserWindowPrototype.getCloseBehavior = function() {
-+    return closeBehaviors.get(this) ?? "destroy";
-+  };
-+  BrowserWindowPrototype.destroy = function() {
-+    if (this.isClosed()) return;
-+    BrowserWindowPrototype[privateDesktopClose].call(this);
-+    // Native WebGPU surfaces can still require hiding for handle safety.
-+    if (this.isClosed()) {
-+      windows.delete(this.windowId);
-+      windowBindCallbacks.delete(this.windowId);
-+    }
-+  };
-+  BrowserWindowPrototype.close = function() {
-+    if (this.isClosed() || closing.has(this)) return;
-+    closing.add(this);
-+    try {
-+      const event = new Event("close", { cancelable: true });
-+      if (!this.dispatchEvent(event) || this.isClosed()) return;
-+      if (this.getCloseBehavior() === "hide") this.hide();
-+      else this.destroy();
-+    } finally {
-+      closing.delete(this);
-+    }
-+  };
-   const nativeConstructor = BrowserWindow;
-   const OrigBW = function(...args) {
-+    const behavior = validateCloseBehavior(args[0]?.closeBehavior ?? "destroy");
-     const instance = new nativeConstructor(...args);
-+    closeBehaviors.set(instance, behavior);
-     const windowId = instance.windowId;
-     windows.set(windowId, instance);
-     return instance;
-@@ -455,7 +513,8 @@
+@@ -176,19 +213,7 @@
+     internals.setEventTargetData,
+   );
+ 
+-  // Window registry: windowId -> BrowserWindow instance.
+-  const windows = new Map();
+-  const nativeConstructor = BrowserWindow;
+-  const OrigBW = function(...args) {
+-    const instance = new nativeConstructor(...args);
+-    const windowId = instance.windowId;
+-    windows.set(windowId, instance);
+-    return instance;
+-  };
+-  Object.setPrototypeOf(OrigBW, nativeConstructor);
+-  Object.setPrototypeOf(OrigBW.prototype, nativeConstructor.prototype);
+-  Deno.BrowserWindow = OrigBW;
+-
++"#, include_str!("dnr_windows.js"), r#"
+   internals.defineEventHandler(BrowserWindowPrototype, "keydown");
+   internals.defineEventHandler(BrowserWindowPrototype, "keyup");
+   internals.defineEventHandler(BrowserWindowPrototype, "mousedown");
+@@ -455,7 +480,8 @@
        destroy() {
          tray.removeEventListener("click", onTrayClick);
          if (onBlur) window.removeEventListener("blur", onBlur);
@@ -1511,7 +1532,7 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
        },
      };
    };
-@@ -781,6 +840,13 @@
+@@ -781,6 +807,13 @@
          const ev = await p;
          if (ev == null) break;
          switch (ev.kind) {
@@ -1525,7 +1546,24 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
            case "appMenuClick": {
              const target = windows.get(ev.windowId);
              if (!target) break;
-@@ -936,7 +1002,7 @@
+@@ -808,7 +841,7 @@
+             break;
+           }
+           case "bindCall": {
+-            const callbacks = windowBindCallbacks.get(ev.windowId);
++            const callbacks = windowBindCallbacks.get(windows.get(ev.windowId)?.windowId);
+             const fn_ = callbacks?.get(ev.name);
+             if (!fn_) {
+               op_desktop_reject_bind_call(ev.callId, "No callback bound for: " + ev.name);
+@@ -914,6 +947,7 @@
+           case "windowResize": {
+             const target = windows.get(ev.windowId);
+             if (!target) break;
++            captureSize(target);
+             target.dispatchEvent(new CustomEvent("resize", {
+               detail: { width: ev.width, height: ev.height },
+             }));
+@@ -936,7 +970,7 @@
            case "closeRequested": {
              const target = windows.get(ev.windowId);
              if (!target) break;
@@ -1534,6 +1572,15 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
              break;
            }
            case "runtimeError": {
+@@ -1018,7 +1052,7 @@
+     }
+   })();
+ })();
+-"#;
++"#);
+ 
+ /// JS code that initializes auto-update APIs. Executed separately so
+ /// version and rollback state can be baked in as literals.
 diff --git a/cli/rt_desktop/lib.rs b/cli/rt_desktop/lib.rs
 --- a/cli/rt_desktop/lib.rs
 +++ b/cli/rt_desktop/lib.rs
@@ -1542,7 +1589,7 @@ diff --git a/cli/rt_desktop/lib.rs b/cli/rt_desktop/lib.rs
  /// launch".
  const _: () = assert!(
 -  laufey::LAUFEY_API_VERSION == 34,
-+  laufey::LAUFEY_API_VERSION == 35,
++  laufey::LAUFEY_API_VERSION == 36,
    "LAUFEY_API_VERSION mismatch: update this assert and the prebuilt backend release pin in cli/tools/desktop.rs when laufey bumps its API version",
  );
  
@@ -1585,10 +1632,24 @@ diff --git a/cli/rt_desktop/lib.rs b/cli/rt_desktop/lib.rs
          hidden: true,
          transparent: false,
        },
-@@ -260,6 +255,11 @@
+@@ -260,6 +255,25 @@
  }
  
  impl denort::desktop::DesktopApi for WefDesktopApi {
++  fn state_persistence(&self) -> [bool; 2] { denort::dnr_state::settings() }
++  fn set_state_persistence(&self, zoom: bool, size: bool) {
++    if denort::dnr_state::set_settings(zoom, size) { let _ = laufey::set_desktop_zoom(1.0); }
++  }
++  fn saved_window_size(&self, key: &str) -> Vec<i32> { denort::dnr_state::size(key).map(|s| s.to_vec()).unwrap_or_default() }
++  fn record_window_size(&self, key: &str, width: i32, height: i32) { denort::dnr_state::record_size(key, width, height); }
++  fn window_metrics(&self, id: u32) -> Vec<i32> {
++    let metrics = laufey::Window::from_id(id).metrics();
++    if metrics[5] == 0 && self.closed_windows.lock().unwrap().remove(&id) {
++      self.open_windows.lock().unwrap().remove(&id);
++      laufey::Window::from_id(id).forget();
++    }
++    metrics.to_vec()
++  }
 +  fn desktop_zoom(&self) -> [f64; 3] { laufey::desktop_zoom() }
 +  fn set_desktop_zoom(&self, factor: f64) { let _ = laufey::set_desktop_zoom(factor); }
 +  fn zoom_shortcuts_enabled(&self) -> bool { laufey::zoom_shortcuts_enabled() }
@@ -1597,7 +1658,7 @@ diff --git a/cli/rt_desktop/lib.rs b/cli/rt_desktop/lib.rs
    fn create_window(
      &self,
      width: i32,
-@@ -276,6 +276,7 @@
+@@ -276,6 +290,7 @@
          frameless,
          no_activate,
          transparent_titlebar,
@@ -1605,7 +1666,21 @@ diff --git a/cli/rt_desktop/lib.rs b/cli/rt_desktop/lib.rs
          hidden: false,
          transparent,
        },
-@@ -377,7 +378,9 @@
+@@ -288,12 +303,12 @@
+ 
+   fn close_window(&self, window_id: u32) {
+     self.closed_windows.lock().unwrap().insert(window_id);
+-    self.open_windows.lock().unwrap().remove(&window_id);
+     laufey::Window::from_id(window_id).close();
+   }
+ 
+   fn is_closed(&self, window_id: u32) -> bool {
+     self.closed_windows.lock().unwrap().contains(&window_id)
++      || !self.open_windows.lock().unwrap().contains(&window_id)
+   }
+ 
+   fn set_title(&self, window_id: u32, title: &str) {
+@@ -377,7 +392,9 @@
        log::info!(
          "[desktop] openDevtools(renderer={renderer}, deno={deno}) → {url}"
        );
@@ -1665,10 +1740,15 @@ diff --git a/runtime/ops/desktop.rs b/runtime/ops/desktop.rs
    #[serde(rename_all = "camelCase")]
    AppMenuClick { window_id: u32, id: String },
    #[serde(rename_all = "camelCase")]
-@@ -510,6 +512,10 @@
+@@ -510,6 +512,15 @@
  ///
  /// All per-window methods take a `window_id` identifying the target window.
  pub trait DesktopApi: Send + Sync + 'static {
++  fn state_persistence(&self) -> [bool; 2] { [true, true] }
++  fn set_state_persistence(&self, _zoom: bool, _size: bool) {}
++  fn saved_window_size(&self, _key: &str) -> Vec<i32> { Vec::new() }
++  fn record_window_size(&self, _key: &str, _width: i32, _height: i32) {}
++  fn window_metrics(&self, _id: u32) -> Vec<i32> { vec![0; 6] }
 +  fn desktop_zoom(&self) -> [f64; 3] { [1.0, 1.0, 1.0] }
 +  fn set_desktop_zoom(&self, _factor: f64) {}
 +  fn zoom_shortcuts_enabled(&self) -> bool { false }
@@ -1676,7 +1756,7 @@ diff --git a/runtime/ops/desktop.rs b/runtime/ops/desktop.rs
    /// Create a new window with the given dimensions and return its ID.
    ///
    /// `frameless` drops the title bar and standard window chrome.
-@@ -924,7 +930,9 @@
+@@ -924,7 +935,9 @@
      self.api.is_closed(self.window_id)
    }
  
@@ -1686,10 +1766,34 @@ diff --git a/runtime/ops/desktop.rs b/runtime/ops/desktop.rs
    fn close(&self) {
      if self.surface_taken.get() {
        // A WebGPU surface is referencing this window's native handles.
-@@ -1350,6 +1358,31 @@
+@@ -1350,6 +1363,55 @@
    {
      let _ = tx.send(Err(error));
    }
++}
++
++#[op2]
++#[serde]
++fn op_desktop_get_state_persistence(state: &OpState) -> Vec<bool> {
++  state.borrow::<Arc<dyn DesktopApi>>().state_persistence().to_vec()
++}
++#[op2(fast)]
++fn op_desktop_set_state_persistence(state: &OpState, zoom: bool, size: bool) {
++  state.borrow::<Arc<dyn DesktopApi>>().set_state_persistence(zoom, size);
++}
++#[op2]
++#[serde]
++fn op_desktop_saved_window_size(state: &OpState, #[string] key: &str) -> Vec<i32> {
++  state.borrow::<Arc<dyn DesktopApi>>().saved_window_size(key)
++}
++#[op2(fast)]
++fn op_desktop_record_window_size(state: &OpState, #[string] key: &str, width: i32, height: i32) {
++  state.borrow::<Arc<dyn DesktopApi>>().record_window_size(key, width, height);
++}
++#[op2]
++#[serde]
++fn op_desktop_window_metrics(state: &OpState, id: u32) -> Vec<i32> {
++  state.borrow::<Arc<dyn DesktopApi>>().window_metrics(id)
 +}
 +
 +#[op2]
@@ -1718,10 +1822,15 @@ diff --git a/runtime/ops/desktop.rs b/runtime/ops/desktop.rs
  }
  
  #[op2(fast)]
-@@ -2191,6 +2224,10 @@
+@@ -2191,6 +2253,15 @@
      op_desktop_verify_ed25519,
      op_desktop_confirm_update,
      op_desktop_init,
++    op_desktop_get_state_persistence,
++    op_desktop_set_state_persistence,
++    op_desktop_saved_window_size,
++    op_desktop_record_window_size,
++    op_desktop_window_metrics,
 +    op_desktop_get_zoom,
 +    op_desktop_set_zoom,
 +    op_desktop_get_zoom_shortcuts,
@@ -1791,10 +1900,15 @@ diff --git a/ext/fs/std_fs.rs b/ext/fs/std_fs.rs
 diff --git a/runtime/js/99_main.js b/runtime/js/99_main.js
 --- a/runtime/js/99_main.js
 +++ b/runtime/js/99_main.js
-@@ -722,6 +722,10 @@
+@@ -722,6 +722,15 @@
    "op_desktop_confirm_update",
    "op_desktop_verify_ed25519",
    "op_desktop_init",
++  "op_desktop_get_state_persistence",
++  "op_desktop_set_state_persistence",
++  "op_desktop_saved_window_size",
++  "op_desktop_record_window_size",
++  "op_desktop_window_metrics",
 +  "op_desktop_get_zoom",
 +  "op_desktop_set_zoom",
 +  "op_desktop_get_zoom_shortcuts",
@@ -1805,8 +1919,7 @@ diff --git a/runtime/js/99_main.js b/runtime/js/99_main.js
 diff --git a/ext/io/lib.rs b/ext/io/lib.rs
 --- a/ext/io/lib.rs
 +++ b/ext/io/lib.rs
-@@ -928,8 +928,25 @@
-     }
+@@ -929,6 +929,23 @@
    }
  }
  
@@ -1830,9 +1943,7 @@ diff --git a/ext/io/lib.rs b/ext/io/lib.rs
  #[async_trait::async_trait(?Send)]
  impl crate::fs::File for StdFileResourceInner {
    fn maybe_path(&self) -> Option<&Path> {
-     self.maybe_path.as_deref()
-@@ -1239,22 +1256,22 @@
-       .await
+@@ -1240,19 +1257,19 @@
    }
  
    fn datasync_sync(self: Rc<Self>) -> FsResult<()> {
@@ -1856,5 +1967,3 @@ diff --git a/ext/io/lib.rs b/ext/io/lib.rs
 +      .with_inner_blocking_task(|file| Ok(dnr_sync_file(file, false)?))
        .await
    }
- 
-   fn stat_sync(self: Rc<Self>) -> FsResult<FsStat> {

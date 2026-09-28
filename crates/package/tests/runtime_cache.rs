@@ -128,7 +128,8 @@ console.log('identity', Deno.mainModule);
         &["--no-code-cache", "--no-transpile-cache"],
     );
     assert!(disabled.0.contains("extension 47"));
-    assert!(!root.join("disabled").exists());
+    // Disabling compilation caches still records package usage in the catalog.
+    assert!(!root.join("disabled/v4").exists());
     let full = root.join("full");
     success(
         Command::new(&binary)

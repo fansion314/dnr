@@ -14,6 +14,7 @@ pub fn run(args: &[String]) -> Result<bool> {
     match args.first().map(String::as_str) {
         Some("install") => install(&args[1..], false)?,
         Some("cache") => cache(&args[1..])?,
+        Some("clean") => cache(args)?,
         _ => return Ok(false),
     }
     Ok(true)
@@ -94,7 +95,7 @@ pub fn install(args: &[String], require_directory: bool) -> Result<()> {
         }
         Err(e) => return Err(e.into()),
     };
-    lock.lock()?;
+    lock.try_lock().context("native installation is in use")?;
     let same = source.canonicalize()? == destination;
     if destination.exists() && !same {
         let existing = Package::open(&destination, 0).ok();
@@ -144,8 +145,8 @@ struct Cached {
 }
 fn scan(base: &Path) -> Result<Vec<Cached>> {
     let mut result = Vec::new();
-    let mut queue = vec![(base.join("v4"), 0)];
-    let max_depth = 3;
+    let mut queue = vec![(base.to_owned(), 0)];
+    let max_depth = 4;
     while let Some((path, depth)) = queue.pop() {
         let meta = match fs::symlink_metadata(&path) {
             Ok(m) => m,
@@ -155,7 +156,11 @@ fn scan(base: &Path) -> Result<Vec<Cached>> {
         if !meta.is_dir() || meta.file_type().is_symlink() || depth > max_depth {
             continue;
         }
-        if depth == max_depth {
+        if depth == max_depth
+            || (depth == 1
+                && (path.file_name().is_some_and(|n| n != "v4")
+                    || path.join("receipt.json").is_file()))
+        {
             let (receipt_path, partial) = if path.join("receipt.json").is_file() {
                 (path.join("receipt.json"), false)
             } else {
@@ -178,8 +183,9 @@ fn scan(base: &Path) -> Result<Vec<Cached>> {
                     && valid_id
                     && crate::config::identifier(&receipt.group).is_ok()
                     && crate::config::identifier(&receipt.target).is_ok()
-                    && id.file_name().unwrap() == receipt.package_id.as_str()
-                    && target.file_name().unwrap() == receipt.target.as_str()
+                    && (depth == 1
+                        || (id.file_name().unwrap() == receipt.package_id.as_str()
+                            && target.file_name().unwrap() == receipt.target.as_str()))
                     && (path.file_name().unwrap() == receipt.group.as_str()
                         || (partial
                             && path
@@ -199,7 +205,7 @@ fn scan(base: &Path) -> Result<Vec<Cached>> {
         }
         for entry in fs::read_dir(&path)? {
             let entry = entry?;
-            if entry.file_name() != ".locks" {
+            if entry.file_name() != ".locks" && entry.file_name() != ".preparing" {
                 queue.push((entry.path(), depth + 1));
             }
         }
@@ -208,7 +214,7 @@ fn scan(base: &Path) -> Result<Vec<Cached>> {
     Ok(result)
 }
 fn cache(args: &[String]) -> Result<()> {
-    const HELP: &str = "usage: dnr cache <list|info|clean|rebuild> [--directory <install-directory>] [--package <id-prefix>|--path <package-path>|--all|--stale] [--dry-run]";
+    const HELP: &str = "usage: dnr cache <list|info|clean|rebuild> [--directory <install-directory>] [--package <id-prefix>|--path <package-path>|--all|--stale] [--before <date>] [--max-size <size>] [--path-regex <regex>] [--dry-run] [--json]";
     if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
         println!("{HELP}");
         return Ok(());
@@ -224,6 +230,7 @@ fn cache(args: &[String]) -> Result<()> {
     let mut prefix = None;
     let mut all = false;
     let mut dry = false;
+    let mut options = crate::persistent::management::Options::default();
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -238,6 +245,23 @@ fn cache(args: &[String]) -> Result<()> {
                 }
                 i += 1;
             }
+            "--before" | "--max-size" | "--path-regex" => {
+                let value = args.get(i + 1).context("option requires a value")?;
+                match args[i].as_str() {
+                    "--before" => {
+                        options.before = Some(crate::persistent::management::parse_before(value)?)
+                    }
+                    "--max-size" => {
+                        options.max_size = Some(crate::persistent::management::parse_size(value)?)
+                    }
+                    _ => {
+                        options.path_regex =
+                            Some(regex::Regex::new(value).context("invalid path regex")?)
+                    }
+                }
+                i += 1;
+            }
+            "--json" => options.json = true,
             "--all" => all = true,
             "--stale" => stale = true,
             "--dry-run" => dry = true,
@@ -245,6 +269,16 @@ fn cache(args: &[String]) -> Result<()> {
         }
         i += 1;
     }
+    let smart =
+        options.before.is_some() || options.max_size.is_some() || options.path_regex.is_some();
+    ensure!(
+        !smart || (command == "clean" && directory.is_none()),
+        "smart selectors require user-cache clean (no --directory)"
+    );
+    ensure!(
+        !options.json || directory.is_none(),
+        "--json is supported for user-cache commands"
+    );
     ensure!(
         !(all && (prefix.is_some() || package_path.is_some())),
         "choose --all or a package selector"
@@ -258,7 +292,7 @@ fn cache(args: &[String]) -> Result<()> {
         "rebuild does not accept package selectors"
     );
     ensure!(
-        command != "clean" || all || prefix.is_some() || package_path.is_some() || stale,
+        command != "clean" || all || prefix.is_some() || package_path.is_some() || stale || smart,
         "clean requires --all, --package, --path or --stale"
     );
     if let Some(p) = &prefix {
@@ -285,14 +319,11 @@ fn cache(args: &[String]) -> Result<()> {
         prefix = ids.into_iter().next();
     }
     if directory.is_none() {
-        crate::persistent::catalog::command(
-            &cache_directory()?,
-            command,
-            package_path.as_deref(),
-            prefix.as_deref(),
-            stale,
-            dry,
-        )?;
+        options.path = package_path;
+        options.prefix = prefix;
+        options.stale = stale;
+        options.dry = dry;
+        crate::persistent::management::command(&cache_directory()?, command, &options)?;
         return Ok(());
     }
     let mut bases = Vec::new();

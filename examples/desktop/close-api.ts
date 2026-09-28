@@ -7,7 +7,14 @@ try { new Deno.BrowserWindow({ closeBehavior: "invalid" as "hide" }); } catch (e
 assert(invalid, "invalid behavior must fail before creating a window");
 const win = new Deno.BrowserWindow({ title: "DNR close API", closeBehavior: "hide" });
 let loads = 0;
-const loaded = new Promise<void>((resolve) => win.addEventListener("load", () => { loads++; resolve(); }));
+let lastPageToken;
+const loaded = new Promise<void>((resolve) => win.addEventListener("load", async () => {
+  try {
+    const value = (await win.executeJs("window.token") as { value: string }).value;
+    if (typeof value !== "string" || value === lastPageToken) return;
+    lastPageToken = value; loads++; resolve();
+  } catch { /* A prior document may complete while a close is in flight. */ }
+}));
 win.navigate("data:text/html,<h1>Close API test</h1><script>window.token=Math.random().toString(36)</script>");
 await loaded;
 const token = (await win.executeJs("window.token") as { value: string }).value;
@@ -40,10 +47,11 @@ force.destroy();
 await pause();
 assert(force.isClosed(), "explicit destroy ignores hide policy");
 const normal = new Deno.BrowserWindow();
-assert(normal.getCloseBehavior() === "destroy", "default behavior");
+assert(normal.getCloseBehavior() === "hide", "default behavior");
 normal.close();
 await pause();
-assert(normal.isClosed(), "default destruction");
+assert(!normal.isClosed() && !normal.isVisible(), "default hidden window");
+normal.destroy();
 const tray = new Deno.Tray();
 const panel = tray.attachPanel({ width: 200, height: 100 });
 panel.window.setCloseBehavior("hide");

@@ -118,9 +118,9 @@ dnc examples/desktop --entry main.ts --app-id com.example.desktop -o desktop.dnp
 
 需要 GUI 的桌面 API 被调用时，后端才会初始化。窗口、托盘和后台任务共同决定应用生命周期；关闭最后一个窗口不会自动终止仍在运行的服务。示例会在用户关窗时关闭 HTTP 服务。
 
-**桌面内容缩放**：`dnr zoom set 1.25` 保存用户全局内容倍率，重启应用生效；应用调用 `Deno.desktop.setZoomFactor(1.2)` 与之乘算，得到 150%。统一 Cmd/Ctrl `+`、`-`、`0` 快捷键调整当前应用进程的倍率。从 0.4.3 起，快捷键和 API 修改都会按应用自动保存，重启后恢复。详见[缩放设置与 API](docs/ZOOM.md)。
+**桌面内容缩放**：`dnr zoom set 1.25` 保存用户全局内容倍率，重启应用生效；应用调用 `Deno.desktop.setZoomFactor(1.2)` 与之乘算，得到 150%。统一 Cmd/Ctrl `+`、`-`、`0` 快捷键调整当前应用进程的倍率。从 0.4.3 起，快捷键和 API 修改都会按应用自动保存，重启后恢复。v0.5.0 同时记忆主窗口尺寸，缩放与尺寸在停止变化 5 秒后合并保存；应用可用 `Deno.desktop.setStatePersistence()` 分别关闭。详见[缩放设置与 API](docs/ZOOM.md)。
 
-**dnr 0.4.1 新增下游扩展**：`closeBehavior: "hide" | "destroy"`（默认销毁）、`setCloseBehavior()`、`getCloseBehavior()` 和 `destroy()`；固定上游 Deno Desktop 和已发布 dnr 0.4.0 均不包含这些接口。同时修复原生 `close` 事件可取消，并改变已有 `close()` 的行为，使其也分发该事件；`destroy()` 跳过事件。来源、兼容性和 Linux 托盘限制见[窗口生命周期](docs/WINDOW-LIFECYCLE.md)，维护记录见[上游补丁登记表](docs/PATCHES.md)。
+**dnr 0.4.1 新增下游扩展**：`closeBehavior: "hide" | "destroy"`（v0.5.0 起默认隐藏）、`setCloseBehavior()`、`getCloseBehavior()` 和 `destroy()`；固定上游 Deno Desktop 和已发布 dnr 0.4.0 均不包含这些接口。同时修复原生 `close` 事件可取消，并改变已有 `close()` 的行为，使其也分发该事件；`destroy()` 跳过事件。v0.5.0 默认隐藏 5 分钟后释放页面，原对象 `show()` 自动重建；需要保留页面内存时设置 `hiddenWindowPolicy: { mode: "keep" }`。来源、兼容性和 Linux 托盘限制见[窗口生命周期](docs/WINDOW-LIFECYCLE.md)，维护记录见[上游补丁登记表](docs/PATCHES.md)。
 
 如需带独立名称和图标的桌面入口，可以创建 JSON desktop manifest，并在目标平台构建：
 

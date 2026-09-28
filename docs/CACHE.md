@@ -46,6 +46,8 @@ Linux `${XDG_CACHE_HOME:-$HOME/.cache}/dnr`。应用数据仍按 appId 隔离，
 不在持久缓存保证内。写缓存失败或缓存损坏会回退到正常编译；原生文件无法准备则仍报错。
 
 SQLite 只用于管理和冷缓存去重查询。暖缓存不查数据库；文件发布后由后台线程批量更新。
+最后使用时间独立于索引更新时间：应用执行开始、运行中的缓存访问及退出时异步记录，
+同路径运行中更新最多每分钟一次；管理命令不刷新使用时间。正常退出补齐队列，异常终止可能漏记。
 索引可能滞后或在异常退出时漏更新，数据库不可用不影响执行。大小是逻辑文件大小，
 不能直接视为硬链接去重后的物理磁盘占用。同路径替换也不构成整个缓存中心的容量上限。
 
@@ -62,7 +64,11 @@ dnc install app.dnp ./staging --target linux_x64_glibc
 
 指定目录安装只写目标安装内容，不预编译代码、不访问用户缓存中心。运行时先选择完整
 有效的包旁原生组，再回退用户原生缓存；不会混合两个来源，也不会自动修改包旁副本。
-包旁布局为 `<package>.unpacked/v4/<contentHash>/<target>/<group>/root/...`。
+v0.5.0 的包旁布局为 `<package>.unpacked/<group>/root/<logical-path>`；
+同组的 `receipt.json` 保存格式、内容身份和平台。一个包旁目录只保存一个版本、一个目标平台。
+安装先准备完整暂存目录，取得安装与组租约后替换；运行中拒绝覆盖。
+读取仍兼容旧的 `v4/<contentHash>/<target>/<group>/root` 布局，不自动改写已有安装。
+组内原有目录、资源相对位置和符号链接保持不变；用户缓存的分代布局保持不变。
 V8/转译缓存始终在用户缓存中心生成，安装目录只读也不改变这一规则。
 
 `full` 恢复所有公共文件和选定平台文件的逻辑路径，保留资源、权限和符号链接，写入
@@ -76,11 +82,16 @@ V8/转译缓存始终在用户缓存中心生成，安装目录只读也不改�
 ## 管理与诊断
 
 ```sh
-dnr cache list
+dnr cache info                             # 总路径、逻辑大小和索引时间
+dnr cache list                             # 按来源路径展开明细
+dnr cache info --json                      # 整数 bytes 和完整标识
 dnr cache info --path /absolute/path/app.dnp
 dnr cache clean --path /absolute/path/app.dnp --dry-run
 dnr cache clean --stale --dry-run
 dnr cache clean --all
+dnr clean --before 2026-09-01               # 本地日期零点，也接受带时区 RFC 3339
+dnr clean --max-size 2GB                    # 按最后使用时间清理到小于目标
+dnr clean --path-regex '^/private/' --dry-run
 dnr cache rebuild
 dnr cache info --directory ./installed
 dnr --no-code-cache app.dnp
@@ -89,8 +100,19 @@ DNR_CACHE_STATS=1 dnr app.dnp
 DNR_PROFILE=1 dnr app.dnp                    # 本地转译与缓存写入耗时
 ```
 
-清理跳过占用中的缓存；`--stale` 选择已删除来源或非当前代，`rebuild` 从文件重建
-SQLite。默认 list/info 使用近似索引统计，指定路径时检查该路径的实际状态。
+`dnr clean` 是 `dnr cache clean` 的同义入口；直接运行名为 clean 的脚本请用 `dnr ./clean`。
+大小自动显示为 B/KB/MB/GB（十进制），标注逻辑大小；硬链接重复计入，不代表真实磁盘占用。
+无参数 info 汇总缓存路径、逻辑总大小、路径/缓存代数和索引更新时间；list 展开明细。
+指定路径时核对磁盘，显示应用身份、缓存位置、最后使用时间及租约状态。
+
+日期选择严格早于指定时刻的路径；未知使用时间不参与日期清理。
+容量清理按使用时间从旧到新，未知时间优先、同时间按路径排序。容量目标针对整个用户缓存，
+其他筛选条件取交集并限制可删除对象；无法达到目标会明确报告。
+正则匹配规范化的完整绝对来源路径，`^/private/` 表示该目录下全部路径，不使用 shell glob 语义。
+智能选项不接受 `--directory`，不清理包旁安装或应用配置。
+
+清理跳过存在任何活动缓存代的整个来源路径；`--stale` 选择已删除来源或非当前代，`rebuild` 从文件重建
+SQLite，保留可读的历史访问记录，不把重建时间当作使用时间。默认 list/info 使用近似索引统计，指定路径时检查该路径的实际状态。
 旧格式缓存不迁移、不访问，也不由新版缓存命令管理；确认旧版进程已退出后可另行删除旧 `v2/` 目录。
 独立于 dnr 生命周期的外部进程不继承租约，清理前应停止这类程序。
 

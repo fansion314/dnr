@@ -14,7 +14,7 @@ const server = mode === "idle" ? undefined : Deno.serve(
   { hostname: "127.0.0.1", port: 0 },
   () => new Response("<title>dnr close</title><h1>Close this window</h1>"),
 );
-const win = new Deno.BrowserWindow({ title: `dnr native close: ${mode}`, width: 500, height: 300 });
+const win = new Deno.BrowserWindow({ closeBehavior: "destroy", title: `dnr native close: ${mode}`, width: 500, height: 300 });
 win.addEventListener("close", () => {
   clearTimeout(watchdog);
   console.log("DNR_NATIVE_CLOSE_DELIVERED");

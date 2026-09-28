@@ -158,9 +158,8 @@ pub fn options() -> RunOptions {
             let zoom_tx = event_tx.0.clone();
             laufey::on_zoom_change(move |global_factor, app_factor, shortcut| {
                 // Both native shortcuts and Deno.desktop.setZoomFactor reach
-                // this callback. Save before publishing the event, including
-                // changes made before the first GUI window is created.
-                crate::dnr_zoom_config::persist_application_factor(app_factor);
+                // this callback. Queue one debounced application-state update.
+                crate::dnr_state::zoom_changed(app_factor);
                 let _ = zoom_tx.try_send(deno_runtime::ops::desktop::DesktopEvent::ZoomChange {
                     global_factor, app_factor, effective_factor: global_factor * app_factor,
                     source: if shortcut { "shortcut" } else { "api" }.into(),
@@ -254,6 +253,7 @@ pub fn main(args: Vec<String>, backend: &str) {
                     1
                 }
             };
+            crate::dnr_state::flush();
             let _ = tx.send(MainRequest::Finished(code));
             // Return the native loop to the main thread before exiting. GTK /
             // WebKit exit handlers and CEF shutdown must run on that thread.

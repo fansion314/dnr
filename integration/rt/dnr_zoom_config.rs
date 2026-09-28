@@ -2,48 +2,6 @@
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-
-static APPLICATION_PATH: OnceLock<PathBuf> = OnceLock::new();
-
-fn application_path(config: &Path, storage_id: &str) -> PathBuf {
-    // storage_id is the same SHA-256 identity used for application web storage,
-    // not a package path/version or an unchecked manifest string.
-    config
-        .parent()
-        .unwrap()
-        .join("app-zoom")
-        .join(format!("{storage_id}.json"))
-}
-
-pub fn load_application_factor(storage_id: &str) -> f64 {
-    match config_path() {
-        Ok(config) => {
-            let path = application_path(&config, storage_id);
-            let factor = read(&path);
-            let _ = APPLICATION_PATH.set(path);
-            match factor {
-                Ok(factor) => factor,
-                Err(error) => {
-                    eprintln!("dnr: cannot read application zoom: {error}; using 1.0");
-                    1.0
-                }
-            }
-        }
-        // The global zoom loader already reports configuration path errors.
-        Err(_) => 1.0,
-    }
-}
-
-pub fn persist_application_factor(factor: f64) {
-    if let Some(path) = APPLICATION_PATH.get()
-        && let Err(error) = write(path, factor)
-    {
-        // A read-only/full config directory must not break native input or
-        // terminate an application. The in-process setting still applies.
-        eprintln!("dnr: cannot save application zoom: {error}");
-    }
-}
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

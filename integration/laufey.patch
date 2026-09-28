@@ -6,7 +6,7 @@ diff --git a/capi/src/lib.rs b/capi/src/lib.rs
  pub const VERSION: &str = env!("CARGO_PKG_VERSION");
  
 -pub const LAUFEY_API_VERSION: u32 = 34;
-+pub const LAUFEY_API_VERSION: u32 = 35;
++pub const LAUFEY_API_VERSION: u32 = 36;
  
  /// Creation-time window style flags for [`Window::new_with_options`].
  /// Mirror the `LAUFEY_WINDOW_FLAG_*` constants in `laufey.h`.
@@ -124,6 +124,31 @@ diff --git a/capi/src/lib.rs b/capi/src/lib.rs
      if self.frameless {
        flags |= LAUFEY_WINDOW_FLAG_FRAMELESS;
      }
+@@ -818,6 +901,24 @@
+     if let Some(f) = api.set_window_size {
+       unsafe { f(api.backend_data, self.id, width, height) };
+     }
++  }
++
++  /// DNR metrics; an absent native window has exists=0.
++  pub fn forget(&self) {
++    keyboard::forget_window(self.id);
++    mouse::forget_window(self.id);
++    if let Some(bindings) = BINDINGS.get() { bindings.lock().unwrap().remove(&self.id); }
++    if let Some(handlers) = MENU_CLICK_HANDLERS.get() { handlers.lock().unwrap().remove(&self.id); }
++    if let Some(handlers) = CONTEXT_MENU_HANDLERS.get() { handlers.lock().unwrap().remove(&self.id); }
++  }
++
++  pub fn metrics(&self) -> [i32; 6] {
++    let mut metrics = [0; 6];
++    let api = api();
++    if let Some(f) = api.get_window_metrics {
++      unsafe { f(api.backend_data, self.id, metrics.as_mut_ptr()); }
++    }
++    metrics
+   }
+ 
+   pub fn get_size(&self) -> (i32, i32) {
 diff --git a/webview/src/runtime_loader.cc b/webview/src/runtime_loader.cc
 --- a/webview/src/runtime_loader.cc
 +++ b/webview/src/runtime_loader.cc
@@ -135,29 +160,42 @@ diff --git a/webview/src/runtime_loader.cc b/webview/src/runtime_loader.cc
  
  #include "laufey_backend_common.h"
  #include "laufey_external_links.h"
-@@ -210,6 +211,12 @@
-   return false;
+@@ -147,6 +148,11 @@
+   }
  }
  
++static void Backend_GetWindowMetrics(void* data, uint32_t id, int* metrics) {
++  auto* backend = static_cast<RuntimeLoader*>(data)->GetBackend();
++  if (backend) backend->GetWindowMetrics(id, metrics);
++}
++
+ static void Backend_GetWindowSize(void* data, uint32_t window_id, int* width,
+                                   int* height) {
+   RuntimeLoader* loader = static_cast<RuntimeLoader*>(data);
+@@ -208,6 +214,12 @@
+     return backend->IsAlwaysOnTop(window_id);
+   }
+   return false;
++}
++
 +static void Backend_SetContentZoom(void* data, double factor) {
 +  dnr_content_zoom.store(factor);
 +  auto* backend = static_cast<RuntimeLoader*>(data)->GetBackend();
 +  if (backend) backend->SetContentZoom();
-+}
-+
+ }
+ 
  static void Backend_SetWindowOpacity(void* data, uint32_t window_id,
-                                      double opacity) {
-   RuntimeLoader* loader = static_cast<RuntimeLoader*>(data);
-@@ -774,6 +781,8 @@
+@@ -774,6 +786,9 @@
    backend_api_.is_resizable = Backend_IsResizable;
    backend_api_.set_always_on_top = Backend_SetAlwaysOnTop;
    backend_api_.is_always_on_top = Backend_IsAlwaysOnTop;
++  backend_api_.get_window_metrics = Backend_GetWindowMetrics;
 +  backend_api_.set_content_zoom = Backend_SetContentZoom;
 +  backend_api_.set_zoom_shortcut_handler = DnrSetZoomShortcutHandler;
    backend_api_.set_window_opacity = Backend_SetWindowOpacity;
    backend_api_.get_window_opacity = Backend_GetWindowOpacity;
    backend_api_.set_click_passthrough = Backend_SetClickPassthrough;
-@@ -886,7 +895,15 @@
+@@ -886,7 +901,15 @@
    return instance_;
  }
  
@@ -173,7 +211,7 @@ diff --git a/webview/src/runtime_loader.cc b/webview/src/runtime_loader.cc
  #ifndef _WIN32
    library_handle_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
    if (!library_handle_) {
-@@ -968,7 +985,7 @@
+@@ -968,7 +991,7 @@
    }
  
    running_ = true;
@@ -193,7 +231,15 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
  #include "app.h"
  #include "laufey_backend_common.h"
  #include "scheme_handler.h"
-@@ -217,23 +218,35 @@
+@@ -31,6 +32,7 @@
+ #include "include/cef_registration.h"
+ #include "include/cef_task.h"
+ #include "include/views/cef_browser_view.h"
++#include "include/views/cef_display.h"
+ #include "include/views/cef_window.h"
+ #include "include/wrapper/cef_closure_task.h"
+ #include "include/wrapper/cef_helpers.h"
+@@ -217,23 +219,35 @@
    }
  
    // With callback: send IPC to renderer for eval with result
@@ -232,7 +278,34 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
  }
  
  static void Backend_SetWindowSize(void* data, uint32_t window_id, int width,
-@@ -421,6 +434,15 @@
+@@ -254,6 +268,26 @@
+                             },
+                             browser, width, height));
+   }
++}
++
++static void Backend_GetWindowMetrics(void* data, uint32_t id, int* metrics) {
++  auto* loader = static_cast<RuntimeLoader*>(data);
++  auto browser = loader->GetBrowserForWindow(id);
++  cef_invoke_sync([&] {
++    auto view = browser ? CefBrowserView::GetForBrowser(browser) : nullptr;
++    auto window = view ? view->GetWindow() : nullptr;
++    auto display = window ? window->GetDisplay() : CefDisplay::GetPrimaryDisplay();
++    if (display) {
++      auto area = display->GetWorkArea();
++      metrics[2] = area.width; metrics[3] = area.height;
++    }
++    if (window) {
++      auto size = view->GetSize();
++      metrics[0] = size.width; metrics[1] = size.height;
++      metrics[4] = !window->IsMaximized() && !window->IsFullscreen() && !window->IsMinimized();
++    }
++    metrics[5] = loader->WindowResourcesExist(id);
++  });
+ }
+ 
+ static void Backend_GetWindowSize(void* data, uint32_t window_id, int* width,
+@@ -421,6 +455,15 @@
      });
    }
    return result;
@@ -248,7 +321,15 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
  }
  
  static void Backend_SetWindowOpacity(void* data, uint32_t window_id,
-@@ -1629,8 +1651,10 @@
+@@ -1196,6 +1239,7 @@
+ #include <string>
+ 
+ #include "include/views/cef_browser_view.h"
++#include "include/views/cef_display.h"
+ #include "include/views/cef_window.h"
+ 
+ // Badge is implemented as a title prefix. Per window we remember the
+@@ -1629,8 +1673,10 @@
                      // OnAfterCreated can pop it. Both run on the UI
                      // thread so no race.
                      g_pending_laufey_ids.push(wid);
@@ -259,16 +340,17 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
                      CefRefPtr<CefDictionaryValue> extra_info =
                          CefDictionaryValue::Create();
                      extra_info->SetString(
-@@ -1779,6 +1803,8 @@
+@@ -1779,6 +1825,9 @@
    backend_api_.is_resizable = Backend_IsResizable;
    backend_api_.set_always_on_top = Backend_SetAlwaysOnTop;
    backend_api_.is_always_on_top = Backend_IsAlwaysOnTop;
++  backend_api_.get_window_metrics = Backend_GetWindowMetrics;
 +  backend_api_.set_content_zoom = Backend_SetContentZoom;
 +  backend_api_.set_zoom_shortcut_handler = DnrSetZoomShortcutHandler;
    backend_api_.set_window_opacity = Backend_SetWindowOpacity;
    backend_api_.get_window_opacity = Backend_GetWindowOpacity;
    backend_api_.set_click_passthrough = Backend_SetClickPassthrough;
-@@ -1830,6 +1856,10 @@
+@@ -1830,6 +1879,10 @@
    backend_api_.set_resize_handler = Backend_SetResizeHandler;
    backend_api_.set_move_handler = Backend_SetMoveHandler;
    backend_api_.set_close_requested_handler = Backend_SetCloseRequestedHandler;
@@ -279,7 +361,7 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
    backend_api_.test_trigger_close_requested = Backend_TestTriggerCloseRequested;
  
    backend_api_.poll_js_calls = [](void* data) {
-@@ -1980,7 +2010,15 @@
+@@ -1980,7 +2033,15 @@
    return instance_;
  }
  
@@ -295,7 +377,7 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
  #ifndef _WIN32
    library_handle_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
    if (!library_handle_) {
-@@ -2063,7 +2101,7 @@
+@@ -2063,7 +2124,7 @@
    }
  
    running_ = true;
@@ -304,7 +386,7 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
  
    std::cout << "Runtime started" << std::endl;
    return true;
-@@ -2084,6 +2122,27 @@
+@@ -2084,6 +2145,27 @@
  
    if (runtime_thread_.joinable()) {
      runtime_thread_.join();
@@ -527,7 +609,15 @@ diff --git a/webview/src/webview_linux.cc b/webview/src/webview_linux.cc
  
    RuntimeLoader::GetInstance()->DispatchKeyboardEvent(
        wid, state, key.c_str(), code.c_str(), modifiers, false);
-@@ -360,6 +364,7 @@
+@@ -353,6 +357,7 @@
+                  laufey_js_result_fn callback, void* callback_data) override;
+   void Quit() override;
+   void SetWindowSize(uint32_t window_id, int width, int height) override;
++  void GetWindowMetrics(uint32_t window_id, int* metrics) override;
+   void GetWindowSize(uint32_t window_id, int* width, int* height) override;
+   void SetWindowPosition(uint32_t window_id, int x, int y) override;
+   void GetWindowPosition(uint32_t window_id, int* x, int* y) override;
+@@ -360,6 +365,7 @@
    bool IsResizable(uint32_t window_id) override;
    void SetAlwaysOnTop(uint32_t window_id, bool always_on_top) override;
    bool IsAlwaysOnTop(uint32_t window_id) override;
@@ -535,7 +625,7 @@ diff --git a/webview/src/webview_linux.cc b/webview/src/webview_linux.cc
    void SetWindowOpacity(uint32_t window_id, double opacity) override;
    double GetWindowOpacity(uint32_t window_id) override;
    void SetClickPassthrough(uint32_t window_id, bool enabled) override;
-@@ -478,13 +483,7 @@
+@@ -478,13 +484,7 @@
    if (wid > 0) {
      UnregisterWidget(widget);
    }
@@ -550,7 +640,7 @@ diff --git a/webview/src/webview_linux.cc b/webview/src/webview_linux.cc
  }
  
  // "delete-event" fires when the user requests a close (e.g. clicks the
-@@ -671,6 +670,7 @@
+@@ -671,6 +671,7 @@
      static std::once_flag dark_theme_once;
      std::call_once(dark_theme_once, init_dark_theme_sync);
  
@@ -558,7 +648,7 @@ diff --git a/webview/src/webview_linux.cc b/webview/src/webview_linux.cc
      GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
      if (flags & LAUFEY_WINDOW_FLAG_FRAMELESS) {
        gtk_window_set_decorated(GTK_WINDOW(window), FALSE);
-@@ -745,6 +745,7 @@
+@@ -745,6 +746,7 @@
                       GUINT_TO_POINTER(window_id));
      g_signal_connect(webview, "create", G_CALLBACK(on_create), nullptr);
  
@@ -566,10 +656,39 @@ diff --git a/webview/src/webview_linux.cc b/webview/src/webview_linux.cc
      WebKitSettings* wk_settings = webkit_web_view_get_settings(webview);
      webkit_settings_set_enable_developer_extras(wk_settings, TRUE);
  
-@@ -1034,6 +1035,19 @@
-   return result;
+@@ -945,6 +947,26 @@
+   });
  }
  
++void WebKitGTKBackend::GetWindowMetrics(uint32_t id, int* metrics) {
++  gtk_invoke_sync([&] {
++    std::lock_guard<std::mutex> lock(windows_mutex_);
++    auto* state = GetWindow(id);
++    auto* display = gdk_display_get_default();
++    auto* native = state ? gtk_widget_get_window(state->window) : nullptr;
++    auto* monitor = native ? gdk_display_get_monitor_at_window(display, native) : gdk_display_get_primary_monitor(display);
++    if (monitor) {
++      GdkRectangle area; gdk_monitor_get_workarea(monitor, &area);
++      metrics[2] = area.width; metrics[3] = area.height;
++    }
++    if (state) {
++      gtk_window_get_size(GTK_WINDOW(state->window), &metrics[0], &metrics[1]);
++      auto flags = native ? gdk_window_get_state(native) : (GdkWindowState)0;
++      metrics[4] = !(flags & (GDK_WINDOW_STATE_MAXIMIZED | GDK_WINDOW_STATE_FULLSCREEN | GDK_WINDOW_STATE_ICONIFIED));
++      metrics[5] = 1;
++    }
++  });
++}
++
+ void WebKitGTKBackend::GetWindowSize(uint32_t window_id, int* width,
+                                      int* height) {
+   int w = 0, h = 0;
+@@ -1032,6 +1054,19 @@
+     }
+   });
+   return result;
++}
++
 +void WebKitGTKBackend::SetContentZoom() {
 +  // Always enqueue, including when invoked by a native key callback. The Rust
 +  // controller may still hold its lock while publishing the new factor.
@@ -581,11 +700,9 @@ diff --git a/webview/src/webview_linux.cc b/webview/src/webview_linux.cc
 +    }
 +    return G_SOURCE_REMOVE;
 +  }, this, nullptr);
-+}
-+
+ }
+ 
  void WebKitGTKBackend::SetWindowOpacity(uint32_t window_id, double opacity) {
-   if (opacity < 0.0)
-     opacity = 0.0;
 diff --git a/cef/src/app.cc b/cef/src/app.cc
 --- a/cef/src/app.cc
 +++ b/cef/src/app.cc
@@ -668,7 +785,16 @@ diff --git a/cef/src/app.cc b/cef/src/app.cc
    }
  }
  
-@@ -212,13 +245,34 @@
+@@ -205,6 +238,8 @@
+ 
+ void LaufeyHandler::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
+   CEF_REQUIRE_UI_THREAD();
++  auto* loader = RuntimeLoader::GetInstance();
++  loader->BrowserClosed(browser->GetIdentifier());
+ 
+   for (auto it = browser_list_.begin(); it != browser_list_.end(); ++it) {
+     if ((*it)->IsSame(browser)) {
+@@ -212,13 +247,34 @@
        break;
      }
    }
@@ -709,7 +835,7 @@ diff --git a/cef/src/app.cc b/cef/src/app.cc
    }
  }
  
-@@ -257,6 +311,58 @@
+@@ -257,6 +313,58 @@
  // Keyboard mapping lives in backend-common (laufey_common::VkToKey / VkToCode).
  // CEF normalizes every platform's key events to Windows VK codes, so the
  // same table works here.
@@ -768,7 +894,7 @@ diff --git a/cef/src/app.cc b/cef/src/app.cc
  
  bool LaufeyHandler::OnKeyEvent(CefRefPtr<CefBrowser> browser,
                                 const CefKeyEvent& event,
-@@ -282,13 +388,16 @@
+@@ -282,13 +390,16 @@
  
    std::string key = laufey_common::VkToKey(event.windows_key_code,
                                             event.character, false, false);
@@ -787,7 +913,7 @@ diff --git a/cef/src/app.cc b/cef/src/app.cc
  }
  
  bool LaufeyHandler::OnJSDialog(CefRefPtr<CefBrowser> browser,
-@@ -395,6 +504,17 @@
+@@ -395,6 +506,17 @@
      bool is_reload, CefRefPtr<CefJSDialogCallback> callback) {
    callback->Continue(true, "");
    return true;
@@ -897,7 +1023,30 @@ diff --git a/cef/src/runtime_loader.h b/cef/src/runtime_loader.h
    uint32_t AllocateWindowId() {
      return next_window_id_.fetch_add(1);
    }
-@@ -56,13 +67,16 @@
+@@ -44,7 +55,22 @@
+     std::lock_guard<std::mutex> lock(windows_mutex_);
+     browsers_[window_id] = browser;
+     browser_id_to_laufey_id_[browser->GetIdentifier()] = window_id;
++    live_browser_ids_[browser->GetIdentifier()] = window_id;
+     browser_ready_cv_.notify_all();
++  }
++
++  void BrowserClosed(int browser_id) {
++    std::lock_guard<std::mutex> lock(windows_mutex_);
++    live_browser_ids_.erase(browser_id);
++  }
++
++  bool WindowResourcesExist(uint32_t window_id) {
++    std::lock_guard<std::mutex> lock(windows_mutex_);
++    if (browsers_.count(window_id)) return true;
++    for (const auto& entry : live_browser_ids_) {
++      if (entry.second == window_id) return true;
++    }
++    return false;
+   }
+ 
+   // Block until the browser for window_id has been registered (with timeout).
+@@ -56,13 +82,16 @@
    }
  
    void UnregisterBrowser(uint32_t window_id) {
@@ -921,7 +1070,7 @@ diff --git a/cef/src/runtime_loader.h b/cef/src/runtime_loader.h
    }
  
    // Programmatic closes (close_window(), app quit) mark the window
-@@ -362,13 +376,15 @@
+@@ -362,13 +391,15 @@
      js_call_notify_data_ = notify_data;
    }
  
@@ -939,7 +1088,15 @@ diff --git a/cef/src/runtime_loader.h b/cef/src/runtime_loader.h
  
    void HandleEvalResult(uint64_t eval_id, CefRefPtr<CefValue> result,
                          const std::string& error);
-@@ -416,6 +432,10 @@
+@@ -398,6 +429,7 @@
+   std::atomic<bool> running_{false};
+ 
+   std::map<uint32_t, CefRefPtr<CefBrowser>> browsers_;
++  std::map<int, uint32_t> live_browser_ids_;
+   // Windows being closed programmatically; CanClose skips the
+   // close-requested negotiation for them (see MarkCloseAllowed).
+   std::set<uint32_t> close_allowed_;
+@@ -416,6 +448,10 @@
  
    laufey_backend_api_t backend_api_;
  
@@ -950,7 +1107,7 @@ diff --git a/cef/src/runtime_loader.h b/cef/src/runtime_loader.h
    laufey_js_call_fn js_call_handler_ = nullptr;
    void* js_call_user_data_ = nullptr;
    std::mutex handler_mutex_;
-@@ -471,6 +491,7 @@
+@@ -471,6 +507,7 @@
    mutable std::mutex js_namespace_mutex_;
  
    struct PendingEval {
@@ -1047,17 +1204,19 @@ diff --git a/capi/include/laufey.h b/capi/include/laufey.h
  #endif
  
 -#define LAUFEY_API_VERSION 34
-+#define LAUFEY_API_VERSION 35
++#define LAUFEY_API_VERSION 36
 +#define LAUFEY_WINDOW_FLAG_ZOOM_EXEMPT (1 << 5)
  
  // Window handle types for get_window_handle_type
  #define LAUFEY_WINDOW_HANDLE_UNKNOWN 0
-@@ -841,6 +842,11 @@
+@@ -841,6 +842,13 @@
    // false if the id is unknown or the backend doesn't support forwarding.
    // NULL on backends older than API version 34.
    bool (*is_click_passthrough_forward)(void* backend_data, uint32_t window_id);
 +
 +  // dnr API 35: process-wide page zoom, independent of system display scale.
++  // DNR: [content width, height, available width, height, normal, exists].
++  void (*get_window_metrics)(void* backend_data, uint32_t window_id, int* metrics);
 +  void (*set_content_zoom)(void* backend_data, double factor);
 +  // action: 0=query enabled, 1=in, -1=out, 2=reset. Must not initialize GUI.
 +  void (*set_zoom_shortcut_handler)(void* backend_data, bool (*handler)(int));
@@ -1075,7 +1234,15 @@ diff --git a/webview/src/webview_macos.mm b/webview/src/webview_macos.mm
  #include "laufey_backend_common.h"
  #include "laufey_json.h"
  #include "init_script.h"
-@@ -68,6 +69,7 @@
+@@ -61,6 +62,7 @@
+                  laufey_js_result_fn callback, void* callback_data) override;
+   void Quit() override;
+   void SetWindowSize(uint32_t window_id, int width, int height) override;
++  void GetWindowMetrics(uint32_t window_id, int* metrics) override;
+   void GetWindowSize(uint32_t window_id, int* width, int* height) override;
+   void SetWindowPosition(uint32_t window_id, int x, int y) override;
+   void GetWindowPosition(uint32_t window_id, int* x, int* y) override;
+@@ -68,6 +70,7 @@
    bool IsResizable(uint32_t window_id) override;
    void SetAlwaysOnTop(uint32_t window_id, bool always_on_top) override;
    bool IsAlwaysOnTop(uint32_t window_id) override;
@@ -1083,7 +1250,7 @@ diff --git a/webview/src/webview_macos.mm b/webview/src/webview_macos.mm
    void SetWindowOpacity(uint32_t window_id, double opacity) override;
    double GetWindowOpacity(uint32_t window_id) override;
    void SetClickPassthrough(uint32_t window_id, bool enabled) override;
-@@ -734,6 +736,9 @@
+@@ -734,6 +737,9 @@
                                           NSModifierFlagsToLaufey(
                                               [event modifierFlags]);
                                       bool repeat = [event isARepeat];
@@ -1093,7 +1260,7 @@ diff --git a/webview/src/webview_macos.mm b/webview/src/webview_macos.mm
  
                                       RuntimeLoader::GetInstance()
                                           ->DispatchKeyboardEvent(
-@@ -897,6 +902,7 @@
+@@ -897,6 +903,7 @@
    dispatch_async(dispatch_get_main_queue(), ^{
      @autoreleasepool {
        InstallGlobalMonitors();
@@ -1101,7 +1268,7 @@ diff --git a/webview/src/webview_macos.mm b/webview/src/webview_macos.mm
  
        bool frameless = (flags & LAUFEY_WINDOW_FLAG_FRAMELESS) != 0;
        bool no_activate = (flags & LAUFEY_WINDOW_FLAG_NO_ACTIVATE) != 0;
-@@ -1018,6 +1024,7 @@
+@@ -1018,6 +1025,7 @@
  
        WKWebView* webview = [[WKWebView alloc] initWithFrame:frame
                                                configuration:config];
@@ -1109,7 +1276,7 @@ diff --git a/webview/src/webview_macos.mm b/webview/src/webview_macos.mm
        if ([webview respondsToSelector:@selector(setInspectable:)]) {
          [webview setInspectable:YES];
        }
-@@ -1070,6 +1077,7 @@
+@@ -1070,6 +1078,7 @@
                        object:window
                         queue:nil
                    usingBlock:^(NSNotification*) {
@@ -1117,10 +1284,41 @@ diff --git a/webview/src/webview_macos.mm b/webview/src/webview_macos.mm
                      RuntimeLoader::GetInstance()->DispatchFocusedEvent(
                          window_id, 0);
                    }];
-@@ -1513,6 +1521,15 @@
-   return result;
+@@ -1405,6 +1414,28 @@
+   });
  }
  
++void WKWebViewBackend::GetWindowMetrics(uint32_t id, int* metrics) {
++  dispatch_sync(dispatch_get_main_queue(), ^{
++    std::lock_guard<std::mutex> lock(windows_mutex_);
++    auto* state = GetWindow(id);
++    NSScreen* screen = state ? [state->window screen] : [NSScreen mainScreen];
++    if (screen) {
++      NSRect available = screen.visibleFrame;
++      if (state) available = [state->window contentRectForFrameRect:available];
++      metrics[2] = (int)available.size.width;
++      metrics[3] = (int)available.size.height;
++    }
++    if (state) {
++      NSRect content = [state->window contentRectForFrameRect:[state->window frame]];
++      metrics[0] = (int)content.size.width;
++      metrics[1] = (int)content.size.height;
++      metrics[4] = ![state->window isZoomed] && ![state->window isMiniaturized] &&
++          !([state->window styleMask] & NSWindowStyleMaskFullScreen);
++      metrics[5] = 1;
++    }
++  });
++}
++
+ void WKWebViewBackend::GetWindowSize(uint32_t window_id, int* width,
+                                      int* height) {
+   __block int w = 0, h = 0;
+@@ -1511,6 +1542,15 @@
+     }
+   });
+   return result;
++}
++
 +void WKWebViewBackend::SetContentZoom() {
 +  dispatch_async(dispatch_get_main_queue(), ^{
 +    std::lock_guard<std::mutex> lock(windows_mutex_);
@@ -1128,15 +1326,24 @@ diff --git a/webview/src/webview_macos.mm b/webview/src/webview_macos.mm
 +      if (!dnr_zoom_exempt.contains(id)) state.webview.pageZoom = DnrWindowZoom(id);
 +    }
 +  });
-+}
-+
+ }
+ 
  void WKWebViewBackend::SetWindowOpacity(uint32_t window_id, double opacity) {
-   if (opacity < 0.0)
-     opacity = 0.0;
 diff --git a/webview/src/runtime_loader.h b/webview/src/runtime_loader.h
 --- a/webview/src/runtime_loader.h
 +++ b/webview/src/runtime_loader.h
-@@ -398,6 +398,7 @@
+@@ -388,6 +388,10 @@
+   virtual void ExecuteJs(uint32_t window_id, const std::string& script,
+                          laufey_js_result_fn callback, void* callback_data) = 0;
+   virtual void SetWindowSize(uint32_t window_id, int width, int height) = 0;
++  virtual void GetWindowMetrics(uint32_t window_id, int* metrics) {
++    GetWindowSize(window_id, &metrics[0], &metrics[1]);
++    metrics[4] = metrics[5] = metrics[0] > 0 && metrics[1] > 0;
++  }
+   virtual void GetWindowSize(uint32_t window_id, int* width, int* height) = 0;
+   virtual void SetWindowPosition(uint32_t window_id, int x, int y) = 0;
+   virtual void GetWindowPosition(uint32_t window_id, int* x, int* y) = 0;
+@@ -398,6 +402,7 @@
    // Overall window opacity in [0.0, 1.0] (1.0 == fully opaque). Fades the whole
    // window uniformly, unlike LAUFEY_WINDOW_FLAG_TRANSPARENT. Default no-op /
    // reports fully opaque; platform backends override.
@@ -1144,3 +1351,41 @@ diff --git a/webview/src/runtime_loader.h b/webview/src/runtime_loader.h
    virtual void SetWindowOpacity(uint32_t /*window_id*/, double /*opacity*/) {}
    virtual double GetWindowOpacity(uint32_t /*window_id*/) {
      return 1.0;
+diff --git a/capi/src/keyboard.rs b/capi/src/keyboard.rs
+--- a/capi/src/keyboard.rs
++++ b/capi/src/keyboard.rs
+@@ -39,6 +39,12 @@
+ fn keyboard_handlers_store(
+ ) -> &'static Mutex<HashMap<u32, Box<dyn Fn(KeyboardEvent) + Send + Sync>>> {
+   KEYBOARD_HANDLERS.get_or_init(|| Mutex::new(HashMap::new()))
++}
++
++pub(crate) fn forget_window(window_id: u32) {
++  if let Some(handlers) = KEYBOARD_HANDLERS.get() {
++    handlers.lock().unwrap().remove(&window_id);
++  }
+ }
+ 
+ static HANDLER_REGISTERED: std::sync::atomic::AtomicBool =
+diff --git a/capi/src/mouse.rs b/capi/src/mouse.rs
+--- a/capi/src/mouse.rs
++++ b/capi/src/mouse.rs
+@@ -109,6 +109,18 @@
+ handler_store!(move_handlers, MoveEvent);
+ handler_store!(close_requested_handlers, CloseRequestedEvent);
+ handler_store!(page_load_handlers, PageLoadEvent);
++
++pub(crate) fn forget_window(window_id: u32) {
++  mouse_click_handlers().lock().unwrap().remove(&window_id);
++  mouse_move_handlers().lock().unwrap().remove(&window_id);
++  wheel_handlers().lock().unwrap().remove(&window_id);
++  cursor_enter_leave_handlers().lock().unwrap().remove(&window_id);
++  focused_handlers().lock().unwrap().remove(&window_id);
++  resize_handlers().lock().unwrap().remove(&window_id);
++  move_handlers().lock().unwrap().remove(&window_id);
++  close_requested_handlers().lock().unwrap().remove(&window_id);
++  page_load_handlers().lock().unwrap().remove(&window_id);
++}
+ 
+ macro_rules! ensure_handler {
+   ($fn_name:ident, $api_field:ident, $trampoline:ident) => {

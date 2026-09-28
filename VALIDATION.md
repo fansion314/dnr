@@ -1648,3 +1648,61 @@ Xfce 的 ItemIsMenu 缺省策略限制仍存在。未构建或验证 system-CEF/
 
 - macOS dnr：`9748fc2ba9dc5f2faa1f9e90afc35692e9d57ae805a8c07242a1409d171ca679`
 - Linux dual dnr：`758b2d86a5034fa6b5ed6ebe6e9aab1a023c8c0b81cc8eaeb7033aa502900ee7`
+
+
+## v0.5.0 缓存管理、窗口状态与隐藏释放（2026-09-28，发布前）
+
+DNP 保持 v4；工作区和运行时版本更新为 0.5.0，下游 Laufey C ABI 为 36。
+本节只记录发布提交之前已经执行的验证，不预写 GitHub Actions、正式资产或本机安装成功。
+
+### 构建、缓存与接口回归
+
+- 保留 sccache；本机使用 `CARGO_CACHE_RUSTC_INFO=0 cargo run --locked -p xtask -- build --debug`。
+  Linux x86_64 在 xjtuse-arch-dev 增量同步源码、从固定 Deno/Laufey 准备干净树后，
+  使用 `build --backend dual --debug --runtime-only`。没有将 macOS .upstream/产物用于 Linux。
+- 两端工作区测试通过；本机 71 项非 ignored 测试。严格 workspace clippy、fmt 和补丁
+  独立快照应用/反向检查通过。18 项发布/Homebrew Python helper 测试通过。
+- 本机 26 项显式 runtime/native/groups/cache/backend/node-flags/zoom/state 测试通过。
+  Linux 同组检查通过；只读目录原生插件检查单独以 nobody 执行，避免 root 掩盖权限错误。
+- 新测试覆盖日期与容量解析、逻辑单位、LRU、活跃路径跳过、未知访问时间、dry-run、
+  索引重建保留访问记录，以及清理后索引一致性。使用时间与索引时间分开。
+- 新旧包旁布局、原始逻辑资源和符号链接、运行中安装锁/旧组租约拒绝覆盖均通过。
+  macOS 测试使用 canonical 路径比较，避免 /var 与 /private/var 的别名造成假失败。
+- 设置测试覆盖 5 秒防抖、连续操作合并、无变化不写入、关闭开关取消待写、显式退出补写、
+  旧 app-zoom 导入、跨进程字段合并、移动/更新身份延续及不初始化 GUI 的 API 路径。
+- 八份 Arch .SRCINFO 在 nobody 拥有的临时目录中用 makepkg 重新生成并逐字节比对通过。
+
+### 真实窗口与资源释放
+
+- macOS ARM64 WebView、Linux dual 的 WebView 与 system-CEF 均通过
+  `examples/desktop/window-state.ts`：默认策略、取消 close、keep 保留同页、show 取消计时、
+  重复 hide 不延后计时、原生实例实际释放、原对象重建、bindings 恢复及同步保存最终缩放/尺寸。
+- Linux 两后端重启恢复 880×600 / 1.25；禁用记忆后使用构造尺寸 760×520 / 默认倍率 1。
+  关闭 API 回归覆盖永久销毁、可取消/重入 close、默认隐藏及托盘面板无条件销毁。
+- 构建隔离 `DNR Window State Probe.app`，通过 CUA 点击真实 macOS 关闭按钮；应用控制端
+  确认 native exists=0、逻辑对象未永久关闭。再次 show 后逻辑 ID 不变、页面 token 改变，
+  实际点击重建后的按钮显示 pong:click；实际截图已查看。原生拖动到 830×580 后配置保存一致。
+- Linux 使用既有 `GUI_SESSION_SLOT=verify` KDE/KWin X11、1600×1000、软件渲染。
+  `scripts/test-linux-window-state.py` 通过窗口管理器发送原生关闭请求，验证释放、恢复、
+  新页面 token、稳定逻辑 ID、绑定及进程退出，生成结果和截图；截图已取回查看。
+- 固定页面分配 64 MiB 后，进程组 RSS 求和观察值：WebView 从 607016 KiB 降至
+  278980 KiB，CEF 从 1171804 KiB 降至 862260 KiB。页面进程/实例释放证据成立；
+  RSS 求和会重复计算共享页，不代表独占内存或恒定回收量，CEF 共享进程可以继续存在。
+- CEF 初始 about:blank 也会发 load；测试改为按实际页面 token 去重，并等待 load 完成，
+  没有用额外空白页事件冒充页面重建。早期失败与修复后结果分别保存。
+- 两个 Linux 后端的 HTTP 页面与 binding 烟雾测试通过。CEF 首轮被独立会话的
+  KWallet 首次设置提示阻塞并超时；重跑时根据实时可访问性树取消该提示后通过，
+  未创建钱包、未关闭系统密码存储保护。失败日志与通过日志分别保留。
+
+### 证据与限制
+
+- 本机证据：`dist/validation-v050/macos/` 的 workspace.log、runtime.log、
+  native-close-and-resize.json、隔离 bundle 和配置；Linux 取回记录在同级 linux/、linux-final/。
+  远端原始记录在 `.cache/validation/v050/`；此前生成树保存在 `.cache/v050-upstream-before/`。
+- xjtuse 曾连接超时；短暂启动本机 arch-dev 检查备用环境后，按用户要求停止。
+  本轮 Linux 验收来自恢复连接后的 xjtuse 原生 x86_64，并非 Apple Container 的翻译执行结果。
+- 未覆盖 Wayland、真实 Linux GPU、混合 DPI 显示器迁移和运行中 DPI 改变；两个单后端变体
+  尚未在本轮本地重建，其 release 构建由标签 Actions 执行。
+- macOS 的 `getNativeWindow()` WebGPU 句柄导出返回 unknown Laufey window handle type: 0；
+  Homebrew 已安装 0.4.3 对照复现同样限制。原有 surface_taken 保护保留，但此路径不计实机通过。
+- 没有替换本机已安装的 dnr/dnc、Pi、松间或其他应用；发布后的资产与 CI 结果不追加验收提交。

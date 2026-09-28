@@ -26,7 +26,8 @@ pub enum NativeUse {
 pub(crate) struct Groups {
     slots: HashMap<String, GroupSlot>,
     sidecar_target: Option<PathBuf>,
-    sidecar_present: OnceLock<bool>,
+    legacy_sidecar_target: Option<PathBuf>,
+    sidecar_candidates: OnceLock<Vec<PathBuf>>,
     cache: OnceLock<PathBuf>,
     cache_target: OnceLock<PathBuf>,
     stats: Counters,
@@ -43,6 +44,7 @@ struct Bound {
     ready: AtomicBool,
     lease: Mutex<Option<File>>,
     sidecar: bool,
+    install_lease: Mutex<Option<File>>,
 }
 struct Layout {
     nodes: HashMap<PathBuf, Option<usize>>,
@@ -73,10 +75,11 @@ impl Groups {
                 .iter()
                 .map(|g| (g.clone(), GroupSlot::default()))
                 .collect(),
-            sidecar_target: state
+            sidecar_target: state.has_groups().then(|| sidecar(path)),
+            sidecar_candidates: OnceLock::new(),
+            legacy_sidecar_target: state
                 .has_groups()
                 .then(|| sidecar(path).join("v4").join(&state.id).join(&state.target)),
-            sidecar_present: OnceLock::new(),
             cache: OnceLock::new(),
             cache_target: OnceLock::new(),
             stats: Counters::default(),
@@ -90,9 +93,10 @@ impl Groups {
             .unwrap_or_else(cache_directory)
     }
     fn alias_suffix<'a>(&self, path: &'a Path) -> Option<&'a Path> {
-        // Two generation prefixes, regardless of the number of groups. A group
+        // Fixed layout prefixes, regardless of the number of groups. A group
         // ID is one path component, followed by the fixed "root" component.
         for base in [
+            self.legacy_sidecar_target.as_deref(),
             self.sidecar_target.as_deref(),
             self.cache_target.get().map(PathBuf::as_path),
         ]
@@ -232,8 +236,7 @@ impl Package {
         Ok(())
     }
     pub(crate) fn group_directory(&self, base: &Path, group: &str) -> Result<PathBuf> {
-        let v = &self.index;
-        Ok(base.join("v4").join(&v.id).join(&v.target).join(group))
+        Ok(base.join(group))
     }
     pub(crate) fn group_records(&self, group: &str) -> Result<Vec<&Record>> {
         let v = &self.index;
@@ -391,26 +394,42 @@ impl Package {
         }
         self.check_platform()?;
         let mut selected = None;
-        if let Some(base) = &groups.sidecar_target {
-            let present = *groups.sidecar_present.get_or_init(|| {
-                groups.stats.sidecar_probes.fetch_add(1, Ordering::Relaxed);
-                real_directory(base).is_ok()
-            });
-            if present {
-                let directory = base.join(group);
-                // Validate once while holding the same lease used by loading.
-                // It also prevents our cleaner from invalidating issued URLs.
-                if let Ok(lease) = group_lock(&directory, false) {
-                    lease.lock_shared()?;
-                    if self.valid_group(&directory, group)? {
-                        selected = Some(Bound {
-                            root: directory.join("root"),
-                            directory,
-                            ready: AtomicBool::new(true),
-                            lease: Mutex::new(Some(lease)),
-                            sidecar: true,
-                        });
-                    }
+        let candidates = groups.sidecar_candidates.get_or_init(|| {
+            groups.stats.sidecar_probes.fetch_add(1, Ordering::Relaxed);
+            [&groups.sidecar_target, &groups.legacy_sidecar_target]
+                .into_iter()
+                .flatten()
+                .filter(|base| real_directory(base).is_ok())
+                .cloned()
+                .collect()
+        });
+        for base in candidates {
+            let install_path = self.source_path.parent().unwrap().join(".dnr-install.lock");
+            let install_lease = if install_path.exists() {
+                let meta = fs::symlink_metadata(&install_path)?;
+                ensure!(
+                    meta.is_file() && !meta.file_type().is_symlink(),
+                    "invalid install lock"
+                );
+                let lock = File::open(&install_path)?;
+                lock.lock_shared()?;
+                Some(lock)
+            } else {
+                None
+            };
+            let directory = base.join(group);
+            if let Ok(lease) = group_lock(&directory, false) {
+                lease.lock_shared()?;
+                if self.valid_group(&directory, group)? {
+                    selected = Some(Bound {
+                        root: directory.join("root"),
+                        directory,
+                        ready: AtomicBool::new(true),
+                        lease: Mutex::new(Some(lease)),
+                        sidecar: true,
+                        install_lease: Mutex::new(install_lease),
+                    });
+                    break;
                 }
             }
         }
@@ -432,6 +451,7 @@ impl Package {
                     ready: AtomicBool::new(false),
                     lease: Mutex::new(None),
                     sidecar: false,
+                    install_lease: Mutex::new(None),
                 }
             }
         };
@@ -574,22 +594,62 @@ impl Package {
     }
     pub(crate) fn prepare_at(&self, base: &Path) -> Result<()> {
         self.check_platform()?;
+        // The caller holds .dnr-install.lock. Lock old-layout groups too, for
+        // runtimes predating the installation lease and for removed groups.
+        let mut leases = Vec::new();
+        if base.exists() {
+            real_directory(base)?;
+            let mut queue = vec![(base.to_owned(), 0)];
+            while let Some((path, depth)) = queue.pop() {
+                if depth > 4 {
+                    continue;
+                }
+                for entry in fs::read_dir(path)? {
+                    let entry = entry?;
+                    if !entry.file_type()?.is_dir() {
+                        continue;
+                    }
+                    if entry.file_name() == ".locks" {
+                        for file in fs::read_dir(entry.path())? {
+                            let file = file?;
+                            ensure!(file.file_type()?.is_file(), "invalid native group lease");
+                            let lock = File::open(file.path())?;
+                            lock.try_lock().context("native installation is in use")?;
+                            leases.push(lock);
+                        }
+                    } else if entry.file_name() != "root" && entry.file_name() != ".preparing" {
+                        queue.push((entry.path(), depth + 1));
+                    }
+                }
+            }
+        }
+        let parent = base.parent().context("sidecar needs parent")?;
+        let stage = tempfile::Builder::new()
+            .prefix(".dnr-install-stage-")
+            .tempdir_in(parent)?;
         for group in &self.manifest.groups {
             if self.index.group_indices(group).is_none() {
                 continue;
             }
-            let directory = self.group_directory(base, group)?;
-            let guard = preparation_lock(&directory, true)?;
-            guard.lock()?;
-            let lock = group_lock(&directory, true)?;
-            lock.lock_shared()?;
-            if !self.valid_group(&directory, group)? {
-                lock.unlock()?;
-                lock.try_lock()
-                    .context("native group is in use or being prepared")?;
-                self.publish_group(&directory, group)?;
-            }
+            let directory = self.group_directory(stage.path(), group)?;
+            let _lock = group_lock(&directory, true)?;
+            self.publish_group(&directory, group)?;
         }
+        let backup = tempfile::Builder::new()
+            .prefix(".dnr-install-backup-")
+            .tempdir_in(parent)?;
+        let old = backup.path().join("old");
+        if base.exists() {
+            fs::rename(base, &old)?;
+        }
+        if let Err(error) = fs::rename(stage.path(), base) {
+            if old.exists() {
+                fs::rename(&old, base)?;
+            }
+            return Err(error.into());
+        }
+        File::open(parent)?.sync_all()?;
+        drop(leases);
         Ok(())
     }
     fn publish_group(&self, destination: &Path, group: &str) -> Result<()> {
@@ -723,6 +783,11 @@ impl Package {
                 let mut lease = bound.lease.lock().unwrap_or_else(|e| e.into_inner());
                 bound.ready.store(false, Ordering::Release);
                 lease.take();
+                bound
+                    .install_lease
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
             }
         }
     }

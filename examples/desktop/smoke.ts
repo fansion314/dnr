@@ -7,7 +7,7 @@ const server = Deno.serve({ hostname: "127.0.0.1", port: 0 }, () => new Response
   <button id="go" onclick="bindings.greet('browser').then(value => bindings.report(value))">Test binding</button>`,
   { headers: { "content-type": "text/html" } },
 ));
-const win = new Deno.BrowserWindow({ title: "dnr verification", width: 640, height: 400 });
+const win = new Deno.BrowserWindow({ closeBehavior: "destroy", title: "dnr verification", width: 640, height: 400 });
 win.bind("greet", (name: string) => `hello ${name}`);
 win.bind("report", async (value: string) => {
   if (value !== "hello browser") throw new Error(`Bad binding response: ${value}`);

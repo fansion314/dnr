@@ -17,7 +17,7 @@ fn application_zoom_survives_restart_and_package_relocation() {
 const d = Deno.desktop;
 console.log(JSON.stringify([d.getGlobalZoomFactor(), d.getZoomFactor(), d.getEffectiveZoomFactor()]));
 if (Deno.args.length) d.setZoomFactor(Number(Deno.args[0]));
-// No event-loop drain or graceful shutdown is needed to save the setting.
+// Explicit exit flushes the pending debounced application preference.
 Deno.exit(0);
 "#).unwrap();
     let run = |args: &[&str]| {
@@ -65,14 +65,28 @@ Deno.exit(0);
     run(&["zoom", "set", "2"]);
     probe("installed", Some("1"), "[2,1.5,3]");
     probe("moved.dnp", None, "[2,1,2]");
-    assert_eq!(fs::read_dir(config.join("app-zoom")).unwrap().count(), 2);
+    assert_eq!(
+        fs::read_dir(config.join("app-state"))
+            .unwrap()
+            .filter(|e| e
+                .as_ref()
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|e| e == "json"))
+            .count(),
+        2
+    );
     // A corrupt app file falls back independently of the global preference.
-    for entry in fs::read_dir(config.join("app-zoom")).unwrap() {
-        fs::write(entry.unwrap().path(), "broken").unwrap();
+    for entry in fs::read_dir(config.join("app-state")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "json") {
+            fs::write(path, "broken").unwrap();
+        }
     }
     let fallback = run(&["moved.dnp", "1.1"]);
     assert_eq!(String::from_utf8_lossy(&fallback.stdout).trim(), "[2,1,2]");
-    assert!(String::from_utf8_lossy(&fallback.stderr).contains("cannot read application zoom"));
+    assert!(String::from_utf8_lossy(&fallback.stderr).contains("cannot read application state"));
     probe("moved.dnp", None, "[2,1.1,2.2]");
 }
 

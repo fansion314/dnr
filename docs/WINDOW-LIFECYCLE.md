@@ -8,7 +8,7 @@ dnr 0.4.0 不包含这些接口；需要 dnr 0.4.1 或更新的兼容版本。
 
 | 接口 / 行为 | 上游基线与本轮改动 |
 | --- | --- |
-| `BrowserWindowOptions.closeBehavior` | dnr 新增，取值 `"hide"` / `"destroy"`，默认 `"destroy"` |
+| `BrowserWindowOptions.closeBehavior` | dnr 新增，取值 `"hide"` / `"destroy"`，v0.5.0 默认 `"hide"` |
 | `setCloseBehavior()` / `getCloseBehavior()` | dnr 新增，设置 / 查询关闭策略 |
 | `destroy()` | dnr 新增，跳过 close 事件；保留原有 WebGPU 句柄保护 |
 | 原生 `close` 事件可取消 | 修复上游已有事件：使 preventDefault 有效，原生回调等待 JS 决策 |
@@ -17,7 +17,7 @@ dnr 0.4.0 不包含这些接口；需要 dnr 0.4.1 或更新的兼容版本。
 
 既有 `tray.attachPanel().destroy()` 使用显式销毁入口，继续保持无条件销毁面板的语义。
 
-新 API 使用 JS 策略和既有原生 hide/close 实现，没有新增 Laufey C ABI。
+v0.5.0 增加逻辑窗口与原生实例分离，Laufey 下游 C ABI 36 提供真实窗口存在状态及普通尺寸/屏幕工作区查询。
 可取消协议修复与策略扩展分别记录在 `PATCHES.md`；未来上游修复事件后，
 不能把 dnr 新增策略 API 连同修复一起删除。
 
@@ -36,16 +36,41 @@ win.close();   // 分发可取消的 close，然后执行当前策略
 win.destroy(); // 跳过 close 事件，显式销毁
 ```
 
-默认 `destroy` 保持关闭即销毁的行为。`hide` 保留窗口及 WebView 实例、DOM 和页面内存；
-恢复时调用 `show()` / `focus()`，不重新导航。这也意味着隐藏不会释放页面内存，
-页面计时器/音频是否被后台节流仍由平台 WebView 决定。希望关窗释放页面内存的应用应使用
-`destroy`，托盘恢复时创建新窗口并从应用存储恢复状态。两种策略均不会卸载整个后端。
+## v0.5.0 隐藏后的内存策略
+
+**行为变化：** 未配置的窗口现在默认关闭为隐藏，并在隐藏 5 分钟后释放原生窗口和页面。
+需要继续关闭即永久销毁的应用显式设置 `closeBehavior: "destroy"`。
+需要长期保留 DOM、页面计时器和输入内容的应用设置 `hiddenWindowPolicy: { mode: "keep" }`。
+
+```ts
+const win = new Deno.BrowserWindow({
+  closeBehavior: "hide",
+  hiddenWindowPolicy: { mode: "delayed", delayMs: 300_000 },
+});
+win.setHiddenWindowPolicy({ mode: "immediate" });
+win.setHiddenWindowPolicy({ mode: "keep" });
+win.setHiddenWindowPolicy({ mode: "delayed", delayMs: 60_000 });
+console.log(win.getHiddenWindowPolicy());
+```
+
+策略适用于原生关闭、`close()` 和 `hide()`；最小化不触发。重复 hide 不重置同一次隐藏计时。
+`show()` / `focus()` 取消待释放任务；已经释放时自动重建，关闭尚未完成时排队恢复。
+CEF 必须实际完成原生关闭才进入已释放状态，不用发出关闭请求代替确认。
+
+释放保留 JS `BrowserWindow` 对象、稳定 windowId、宿主事件监听、bindings、窗口配置和
+最近一次宿主 `navigate()` 入口；重建先安装绑定再导航，页面重新触发 load。
+DOM、页面 JS 内存、历史栈和未保存输入不恢复。已经释放时 `executeJs()` 拒绝，不隐式重开；
+释放时未完成的页面调用失败。标题、尺寸等配置变更保存到描述中，供下次重建使用。
+
+`destroy()` 始终永久销毁、跳过 close 事件；释放状态的 `isClosed()` 仍为 false，永久销毁后为 true。
+永久销毁后的 show 不重建。两种行为均不卸载整个后端，也不保证共享浏览器进程立即退出。
+WebGPU 已导出原生句柄时保留上游保护，跳过释放并警告，防止悬空句柄。
 
 原生关闭按钮和 `close()` 走同一条路径：
 
 1. 原生后端延迟关闭，把请求送到 JS。
 2. 同步分发 `new Event("close", { cancelable: true })`。
-3. 未取消时执行当前 `closeBehavior`；只有真正销毁才更新关闭状态和窗口注册表。
+3. 未取消时执行当前 `closeBehavior`；默认动作进入隐藏/释放或永久销毁状态；旧原生实例的迟到事件不会派发给重建后的页面。
 
 ```ts
 win.addEventListener("close", (event) => {
@@ -61,7 +86,7 @@ win.addEventListener("close", (event) => {
 `destroy()` 保留上游 WebGPU 原生句柄保护：已取得 WebGPU surface 时仍降级为隐藏，
 因此此情况下不能假设 `isClosed()` 为 true。
 
-隐藏窗口仍计入应用生命周期。托盘/窗口/后台服务应由应用统一安排退出，例如托盘退出项
+隐藏且尚未释放的窗口仍计入生命周期；已经释放的逻辑窗口不单独保活，无托盘或后台任务时允许自然退出。托盘/窗口/后台服务应由应用统一安排退出，例如托盘退出项
 调用 `Deno.exit(0)`。没有托盘、重开入口或其他恢复方式时，不宜选择隐藏策略。
 
 Linux 左键回调要求系统加载的 AppIndicator 实现提供 `activate` 信号
