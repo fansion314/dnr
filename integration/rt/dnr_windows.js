@@ -47,6 +47,12 @@
   }
   function createNative(win, state) {
     const native = new nativeConstructor(state.options);
+    if (state.options.documentPolicy && !op_desktop_set_document_policy(native.windowId, state.options.documentPolicy.allowedOrigins)) {
+      native[privateDesktopClose]();
+      const reap = () => { if (op_desktop_window_metrics(native.windowId)[5]) setTimeout(reap, 10); };
+      reap();
+      throw new Error("The selected backend cannot enforce documentPolicy");
+    }
     state.native = native;
     state.epoch++;
     windows.set(native.windowId, win);
@@ -73,6 +79,7 @@
         state.wantVisible = false;
         stateKeys.delete(state.key);
         windowBindCallbacks.delete(state.id);
+        contextualBindings.delete(state.id);
       }
       return;
     }
@@ -87,11 +94,13 @@
     state.wantVisible = false;
     state.wantFocus = false;
     windows.delete(native.windowId); // Drop late input/load/binding events from this generation.
+    invalidateDocument(state.id);
     for (const reject of state.pending) reject(new Error("Window page was released"));
     state.pending.clear();
     if (permanent) {
       stateKeys.delete(state.key);
       windowBindCallbacks.delete(state.id);
+      contextualBindings.delete(state.id);
     }
     const complete = () => {
       // CEF close is asynchronous. A referenced timer keeps the runtime alive
@@ -120,6 +129,23 @@
       super();
       if (options === null || typeof options !== "object") throw new TypeError("window options must be an object");
       const hiddenPolicy = policy(options.hiddenWindowPolicy);
+      let documentPolicy;
+      if (options.documentPolicy !== undefined) {
+        const candidate = options.documentPolicy;
+        if (!candidate || typeof candidate !== "object" || Object.keys(candidate).some(k => k !== "allowedOrigins") ||
+            !Array.isArray(candidate.allowedOrigins) || candidate.allowedOrigins.length < 1 || candidate.allowedOrigins.length > 32) {
+          throw new TypeError("documentPolicy requires 1 through 32 allowedOrigins");
+        }
+        const origins = candidate.allowedOrigins.map(value => {
+          if (typeof value !== "string" || /[\\\s]/.test(value)) throw new TypeError("Invalid document origin");
+          const url = new URL(value);
+          if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+            throw new TypeError("documentPolicy accepts only HTTP(S) origins");
+          }
+          return url.origin;
+        });
+        documentPolicy = Object.freeze({ allowedOrigins: Object.freeze([...new Set(origins)]) });
+      }
       const behavior = closeBehavior(options.closeBehavior);
       if (options.rememberSize !== undefined && typeof options.rememberSize !== "boolean") throw new TypeError("rememberSize must be a boolean");
       let key = options.stateKey;
@@ -130,7 +156,7 @@
       if (key !== undefined && stateKeys.has(key)) throw new TypeError(`Window stateKey already in use: ${key}`);
       const remember = options.rememberSize !== false && key !== undefined;
       const restored = remember ? op_desktop_saved_window_size(key) : [];
-      const state = { options: { ...options }, key, remember, policy: hiddenPolicy, behavior,
+      const state = { options: { ...options, documentPolicy }, key, remember, policy: hiddenPolicy, behavior,
         native: null, id: 0, epoch: 0, hiddenAt: null, timer: undefined, releasing: false,
         destroyed: false, closing: false, wantVisible: true, wantFocus: false, pending: new Set(),
         url: undefined, menu: undefined };
@@ -184,12 +210,26 @@
       this.show();
       if (s.native && !s.releasing) s.native.focus();
     }
+    getDocumentPolicy() { return structuredClone(stateOf(this).options.documentPolicy ?? null); }
     navigate(url) {
       const s = stateOf(this);
       if (s.destroyed) throw new Error("Window is destroyed");
       if (typeof url !== "string") throw new TypeError("url must be a string");
-      s.url = url;
-      if (s.native && !s.releasing) s.native.navigate(url);
+      if (s.options.documentPolicy) {
+        const parsed = new URL(url);
+        if (parsed.username || parsed.password || !s.options.documentPolicy.allowedOrigins.includes(parsed.origin)) throw new TypeError("Navigation is outside documentPolicy");
+        const previous = s.url;
+        s.url = parsed.href;
+        if (previous !== undefined && s.native && !s.releasing) {
+          const visible = s.wantVisible, focus = s.wantFocus;
+          release(this);
+          if (s.native && !s.releasing) throw new Error("Protected document could not be released");
+          s.wantVisible = visible; s.wantFocus = focus;
+          if (!s.native && visible) createNative(this, s);
+          return;
+        }
+      } else { s.url = url; }
+      if (s.native && !s.releasing) s.native.navigate(s.url);
     }
     executeJs(script) {
       const s = stateOf(this);
@@ -200,7 +240,11 @@
         Promise.resolve(native.executeJs(script)).then(resolve, reject).finally(() => s.pending.delete(reject));
       });
     }
-    reload() { active(this).reload(); }
+    reload() {
+      const s = stateOf(this);
+      if (s.options.documentPolicy) { if (s.url !== undefined) this.navigate(s.url); }
+      else active(this).reload();
+    }
     openDevtools(options) { return active(this).openDevtools(options); }
     getNativeWindow() { return active(this).getNativeWindow(); }
     showContextMenu(...args) { return active(this).showContextMenu(...args); }

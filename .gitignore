@@ -1,4 +1,6 @@
 /target/
 /.upstream/
 /dist/
+/.cache/
+__pycache__/
 *.dnp

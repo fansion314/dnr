@@ -6,7 +6,7 @@ diff --git a/capi/src/lib.rs b/capi/src/lib.rs
  pub const VERSION: &str = env!("CARGO_PKG_VERSION");
  
 -pub const LAUFEY_API_VERSION: u32 = 34;
-+pub const LAUFEY_API_VERSION: u32 = 36;
++pub const LAUFEY_API_VERSION: u32 = 37;
  
  /// Creation-time window style flags for [`Window::new_with_options`].
  /// Mirror the `LAUFEY_WINDOW_FLAG_*` constants in `laufey.h`.
@@ -22,7 +22,7 @@ diff --git a/capi/src/lib.rs b/capi/src/lib.rs
    BACKEND_API.get().expect("Backend API not initialized")
  }
  
-@@ -126,9 +130,85 @@
+@@ -126,9 +130,112 @@
      return -2;
    }
    match BACKEND_API.set(api_ref) {
@@ -106,10 +106,72 @@ diff --git a/capi/src/lib.rs b/capi/src/lib.rs
 +  };
 +  change_zoom(&mut state, factor, true);
 +  true
++}
++
++type SystemEventHandler = Box<dyn Fn(&str) + Send + Sync>;
++static SYSTEM_EVENT_HANDLER: Mutex<Option<SystemEventHandler>> = Mutex::new(None);
++static SYSTEM_MONITOR_ACTIVE: AtomicBool = AtomicBool::new(false);
++pub fn system_monitor_active() -> bool { SYSTEM_MONITOR_ACTIVE.load(Ordering::Acquire) }
++unsafe extern "C" fn system_event_callback(_data: *mut c_void, event: *const c_char) {
++  if event.is_null() { return; }
++  let Ok(event) = CStr::from_ptr(event).to_str() else { return; };
++  if !matches!(event, "lock" | "suspend" | "resume") { return; }
++  if let Some(handler) = SYSTEM_EVENT_HANDLER.lock().unwrap().as_ref() { handler(event); }
++}
++pub fn start_system_monitor(handler: impl Fn(&str) + Send + Sync + 'static) -> u32 {
++  *SYSTEM_EVENT_HANDLER.lock().unwrap() = Some(Box::new(handler));
++  let capabilities = api().set_system_monitor.map(|set| unsafe {
++    set(api().backend_data, Some(system_event_callback), std::ptr::null_mut())
++  }).unwrap_or(0);
++  SYSTEM_MONITOR_ACTIVE.store(capabilities != 0, Ordering::Release);
++  capabilities
++}
++pub fn stop_system_monitor() {
++  *SYSTEM_EVENT_HANDLER.lock().unwrap() = None;
++  if let Some(set) = api().set_system_monitor { unsafe { set(api().backend_data, None, std::ptr::null_mut()); } }
++  SYSTEM_MONITOR_ACTIVE.store(false, Ordering::Release);
++}
++pub fn system_idle_seconds() -> f64 {
++  api().system_idle_seconds.map(|get| unsafe { get(api().backend_data) }).unwrap_or(-1.0)
  }
  
  pub fn shutdown() {
-@@ -701,11 +781,14 @@
+@@ -357,6 +464,7 @@
+   pub call_id: u64,
+   pub method: String,
+   pub args: Vec<Value>,
++  pub context: Value,
+ }
+ 
+ impl JsCall {
+@@ -403,7 +511,26 @@
+     }
+   };
+ 
++  let context = if let Some(get) = api().js_call_context {
++    let raw = get(api().backend_data, call_id);
++    let mut fields = HashMap::new();
++    if !raw.is_null() {
++      if let Some(get_field) = api().value_dict_get {
++        for key in ["windowId", "documentId", "url", "protected", "mainFrame"] {
++          let name = CString::new(key).unwrap();
++          let child = get_field(raw, name.as_ptr());
++          if !child.is_null() {
++            if let Some(value) = Value::from_raw(child) { fields.insert(key.to_owned(), value); }
++            if let Some(free) = api().value_free { free(child); }
++          }
++        }
++      }
++      if let Some(free) = api().value_free { free(raw); }
++    }
++    Value::Dict(fields)
++  } else { Value::Null };
+   let call = JsCall {
++    context,
+     window_id,
+     call_id,
+     method: method.clone(),
+@@ -701,11 +828,14 @@
    /// on macOS and Linux and by the Winit backend; ignored by the Windows
    /// WebView2 and CEF backends, which paint an opaque window background.
    pub transparent: bool,
@@ -124,7 +186,7 @@ diff --git a/capi/src/lib.rs b/capi/src/lib.rs
      if self.frameless {
        flags |= LAUFEY_WINDOW_FLAG_FRAMELESS;
      }
-@@ -818,6 +901,24 @@
+@@ -818,6 +948,37 @@
      if let Some(f) = api.set_window_size {
        unsafe { f(api.backend_data, self.id, width, height) };
      }
@@ -137,6 +199,19 @@ diff --git a/capi/src/lib.rs b/capi/src/lib.rs
 +    if let Some(bindings) = BINDINGS.get() { bindings.lock().unwrap().remove(&self.id); }
 +    if let Some(handlers) = MENU_CLICK_HANDLERS.get() { handlers.lock().unwrap().remove(&self.id); }
 +    if let Some(handlers) = CONTEXT_MENU_HANDLERS.get() { handlers.lock().unwrap().remove(&self.id); }
++  }
++
++  pub fn set_document_policy(&self, origins: &[String]) -> bool {
++    let Some(set) = api().set_window_document_policy else { return false; };
++    let Ok(values) = origins.iter().map(|origin| CString::new(origin.as_str())).collect::<Result<Vec<_>, _>>() else { return false; };
++    let pointers = values.iter().map(|value| value.as_ptr()).collect::<Vec<_>>();
++    unsafe { set(api().backend_data, self.id, pointers.as_ptr(), pointers.len()) }
++  }
++
++  pub fn is_document_current(&self, generation: &str) -> bool {
++    let Some(check) = api().is_document_current else { return false; };
++    let Ok(generation) = CString::new(generation) else { return false; };
++    unsafe { check(api().backend_data, self.id, generation.as_ptr()) }
 +  }
 +
 +  pub fn metrics(&self) -> [i32; 6] {
@@ -152,7 +227,9 @@ diff --git a/capi/src/lib.rs b/capi/src/lib.rs
 diff --git a/webview/src/runtime_loader.cc b/webview/src/runtime_loader.cc
 --- a/webview/src/runtime_loader.cc
 +++ b/webview/src/runtime_loader.cc
-@@ -1,6 +1,7 @@
+@@ -1,6 +1,9 @@
++#include "system_monitor.h"
++#include "document_security.h"
  // Copyright 2025 Divy Srivastava. All rights reserved. MIT license.
  
  #include "runtime_loader.h"
@@ -160,7 +237,7 @@ diff --git a/webview/src/runtime_loader.cc b/webview/src/runtime_loader.cc
  
  #include "laufey_backend_common.h"
  #include "laufey_external_links.h"
-@@ -147,6 +148,11 @@
+@@ -147,6 +150,11 @@
    }
  }
  
@@ -172,20 +249,73 @@ diff --git a/webview/src/runtime_loader.cc b/webview/src/runtime_loader.cc
  static void Backend_GetWindowSize(void* data, uint32_t window_id, int* width,
                                    int* height) {
    RuntimeLoader* loader = static_cast<RuntimeLoader*>(data);
-@@ -208,6 +214,12 @@
-     return backend->IsAlwaysOnTop(window_id);
-   }
+@@ -210,6 +218,12 @@
    return false;
-+}
-+
+ }
+ 
 +static void Backend_SetContentZoom(void* data, double factor) {
 +  dnr_content_zoom.store(factor);
 +  auto* backend = static_cast<RuntimeLoader*>(data)->GetBackend();
 +  if (backend) backend->SetContentZoom();
++}
++
+ static void Backend_SetWindowOpacity(void* data, uint32_t window_id,
+                                      double opacity) {
+   RuntimeLoader* loader = static_cast<RuntimeLoader*>(data);
+@@ -304,6 +318,43 @@
+   if (backend && task) {
+     backend->PostUiTask(task, task_data);
+   }
++}
++
++static uint32_t Backend_SetSystemMonitor(void* data, laufey_system_event_fn callback, void* user_data) {
++  auto* backend = static_cast<RuntimeLoader*>(data)->GetBackend();
++  return backend ? backend->SetSystemMonitor(callback, user_data) : 0;
++}
++static double Backend_SystemIdleSeconds(void* data) {
++  auto* backend = static_cast<RuntimeLoader*>(data)->GetBackend();
++  return backend ? backend->SystemIdleSeconds() : -1;
++}
++
++static bool Backend_SetDocumentPolicy(void* data, uint32_t id,
++                                       const char* const* origins, size_t count) {
++  if (!origins || count == 0 || count > 32) return false;
++  std::vector<std::string> values;
++  for (size_t i = 0; i < count; ++i) { if (!origins[i]) return false; values.emplace_back(origins[i]); }
++  auto* backend = static_cast<RuntimeLoader*>(data)->GetBackend();
++  if (!backend || !backend->SupportsDocumentPolicy()) return false;
++  return dnr_document::Configure(id, values);
++}
++
++static bool Backend_IsDocumentCurrent(void*, uint32_t id, const char* generation) {
++  const auto doc = dnr_document::Snapshot(id);
++  return generation && doc && doc->generation != 0 && std::to_string(doc->generation) == generation;
++}
++
++static laufey_value_t* Backend_JsCallContext(void*, uint64_t id) {
++  auto call = dnr_document::Lookup(id);
++  if (!call) return new laufey_value(laufey::Value::Null());
++  auto value = laufey::Value::Dict();
++  auto& fields = value->GetDict();
++  fields["windowId"] = laufey::Value::Double(call->window_id);
++  fields["documentId"] = laufey::Value::String(std::to_string(call->generation));
++  fields["url"] = laufey::Value::String(call->url);
++  fields["protected"] = laufey::Value::Bool(call->protected_document);
++  fields["mainFrame"] = laufey::Value::Bool(call->main_frame);
++  return new laufey_value(value);
  }
  
- static void Backend_SetWindowOpacity(void* data, uint32_t window_id,
-@@ -774,6 +786,9 @@
+ static void Backend_SetJsCallHandler(void* data, laufey_js_call_fn handler,
+@@ -316,7 +367,7 @@
+                                   laufey_value_t* result,
+                                   laufey_value_t* error) {
+   RuntimeLoader* loader = static_cast<RuntimeLoader*>(data);
+-  uint32_t window_id = loader->ConsumeCallWindow(call_id);
++  const uint32_t window_id = 0; // The immutable native call record supplies the owner.
+   laufey::ValuePtr resultPtr =
+       (result && result->value) ? result->value : laufey::Value::Null();
+   // Keep the absent-error case as a genuine null pointer. RespondToJsCall on
+@@ -774,6 +825,9 @@
    backend_api_.is_resizable = Backend_IsResizable;
    backend_api_.set_always_on_top = Backend_SetAlwaysOnTop;
    backend_api_.is_always_on_top = Backend_IsAlwaysOnTop;
@@ -195,7 +325,19 @@ diff --git a/webview/src/runtime_loader.cc b/webview/src/runtime_loader.cc
    backend_api_.set_window_opacity = Backend_SetWindowOpacity;
    backend_api_.get_window_opacity = Backend_GetWindowOpacity;
    backend_api_.set_click_passthrough = Backend_SetClickPassthrough;
-@@ -886,7 +901,15 @@
+@@ -791,6 +845,11 @@
+ 
+   backend_api_.set_js_call_handler = Backend_SetJsCallHandler;
+   backend_api_.js_call_respond = Backend_JsCallRespond;
++  backend_api_.set_window_document_policy = Backend_SetDocumentPolicy;
++  backend_api_.js_call_context = Backend_JsCallContext;
++  backend_api_.is_document_current = Backend_IsDocumentCurrent;
++  backend_api_.set_system_monitor = Backend_SetSystemMonitor;
++  backend_api_.system_idle_seconds = Backend_SystemIdleSeconds;
+ 
+   backend_api_.register_scheme_handler = Backend_RegisterSchemeHandler;
+   backend_api_.scheme_request_read_body = Backend_SchemeRequestReadBody;
+@@ -886,7 +945,15 @@
    return instance_;
  }
  
@@ -211,7 +353,7 @@ diff --git a/webview/src/runtime_loader.cc b/webview/src/runtime_loader.cc
  #ifndef _WIN32
    library_handle_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
    if (!library_handle_) {
-@@ -968,7 +991,7 @@
+@@ -968,7 +1035,7 @@
    }
  
    running_ = true;
@@ -220,10 +362,55 @@ diff --git a/webview/src/runtime_loader.cc b/webview/src/runtime_loader.cc
  
    std::cout << "Runtime started" << std::endl;
    return true;
+@@ -1033,7 +1100,6 @@
+ void RuntimeLoader::OnJsCall(uint32_t window_id, uint64_t call_id,
+                              const std::string& method_path,
+                              laufey::ValuePtr args) {
+-  StoreCallWindow(call_id, window_id);
+   {
+     std::lock_guard<std::mutex> lock(pending_mutex_);
+     pending_js_calls_.push({window_id, call_id, method_path, args});
+@@ -1067,6 +1133,11 @@
+   }
+ 
+   for (auto& call : calls) {
++    const auto context = dnr_document::Lookup(call.call_id);
++    if (!context || (context->protected_document && !dnr_document::Current(context->window_id, context->generation))) {
++      dnr_document::Take(call.call_id);
++      continue;
++    }
+     // Reserved bridge call from the injected external-link interceptor
+     // (laufey_external_links.h): open the URL in the OS browser instead of
+     // forwarding to the runtime, then resolve the page-side promise.
+@@ -1078,7 +1149,7 @@
+           url = list[0]->GetString();
+         }
+       }
+-      if (!url.empty()) {
++      if (!url.empty() && (!context->protected_document || url.rfind("https://", 0) == 0 || url.rfind("http://", 0) == 0 || url.rfind("mailto:", 0) == 0)) {
+         if (LaufeyBackend* backend = GetBackend()) {
+           backend->OpenExternalURL(url);
+         }
+@@ -1102,8 +1173,8 @@
+ void RuntimeLoader::JsCallRespond(uint32_t window_id, uint64_t call_id,
+                                   laufey::ValuePtr result,
+                                   laufey::ValuePtr error) {
++  auto call = dnr_document::Take(call_id);
++  if (!call || (call->protected_document && !dnr_document::Current(call->window_id, call->generation))) return;
+   LaufeyBackend* backend = GetBackend();
+-  if (backend) {
+-    backend->RespondToJsCall(window_id, call_id, result, error);
+-  }
+-}
++  if (backend) backend->RespondToJsCall(call->window_id, call->page_call_id, result, error);
++}
 diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
 --- a/cef/src/runtime_loader.cc
 +++ b/cef/src/runtime_loader.cc
-@@ -1,6 +1,7 @@
+@@ -1,6 +1,10 @@
++#include <cstdio>
++#include "system_monitor.h"
++#include "document_security.h"
  // Copyright 2025 Divy Srivastava. All rights reserved. MIT license.
  
  #include "runtime_loader.h"
@@ -231,7 +418,7 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
  #include "app.h"
  #include "laufey_backend_common.h"
  #include "scheme_handler.h"
-@@ -31,6 +32,7 @@
+@@ -31,6 +35,7 @@
  #include "include/cef_registration.h"
  #include "include/cef_task.h"
  #include "include/views/cef_browser_view.h"
@@ -239,7 +426,17 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
  #include "include/views/cef_window.h"
  #include "include/wrapper/cef_closure_task.h"
  #include "include/wrapper/cef_helpers.h"
-@@ -217,23 +219,35 @@
+@@ -158,6 +163,9 @@
+ // --- Backend API functions (cross-platform, using CEF Views) ---
+ 
+ static void Backend_Navigate(void* data, uint32_t window_id, const char* url) {
++  const bool allowed = url && dnr_document::BeginNavigation(window_id, url);
++  if (std::getenv("DNR_DOCUMENT_DIAGNOSTICS")) std::fprintf(stderr, "dnr host navigation: window=%u allowed=%d\n", window_id, allowed);
++  if (!allowed) return;
+   RuntimeLoader* loader = static_cast<RuntimeLoader*>(data);
+   CefRefPtr<CefBrowser> browser = loader->GetBrowserForWindow(window_id);
+   if (browser && url) {
+@@ -217,23 +225,35 @@
    }
  
    // With callback: send IPC to renderer for eval with result
@@ -278,7 +475,7 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
  }
  
  static void Backend_SetWindowSize(void* data, uint32_t window_id, int width,
-@@ -254,6 +268,26 @@
+@@ -254,6 +274,26 @@
                              },
                              browser, width, height));
    }
@@ -305,7 +502,7 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
  }
  
  static void Backend_GetWindowSize(void* data, uint32_t window_id, int* width,
-@@ -421,6 +455,15 @@
+@@ -421,6 +461,15 @@
      });
    }
    return result;
@@ -321,7 +518,64 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
  }
  
  static void Backend_SetWindowOpacity(void* data, uint32_t window_id,
-@@ -1196,6 +1239,7 @@
+@@ -844,6 +893,43 @@
+ 
+ // --- JS call/callback handling ---
+ 
++static uint32_t Backend_SetSystemMonitor(void*, laufey_system_event_fn callback, void* user_data) {
++  uint32_t capabilities = 0;
++  cef_invoke_sync([&] { capabilities = DnrSetSystemMonitor(callback, user_data); });
++  return capabilities;
++}
++static double Backend_SystemIdleSeconds(void*) {
++  double seconds = -1;
++  cef_invoke_sync([&] { seconds = DnrSystemIdleSeconds(); });
++  return seconds;
++}
++
++static bool Backend_SetDocumentPolicy(void* data, uint32_t id,
++                                       const char* const* origins, size_t count) {
++  if (!origins || count == 0 || count > 32) return false;
++  std::vector<std::string> values;
++  for (size_t i = 0; i < count; ++i) { if (!origins[i]) return false; values.emplace_back(origins[i]); }
++  return dnr_document::Configure(id, values);
++}
++
++static bool Backend_IsDocumentCurrent(void*, uint32_t id, const char* generation) {
++  const auto doc = dnr_document::Snapshot(id);
++  return generation && doc && doc->generation != 0 && std::to_string(doc->generation) == generation;
++}
++
++static laufey_value_t* Backend_JsCallContext(void*, uint64_t id) {
++  auto call = dnr_document::Lookup(id);
++  if (!call) return new laufey_value(laufey::Value::Null());
++  auto value = laufey::Value::Dict();
++  auto& fields = value->GetDict();
++  fields["windowId"] = laufey::Value::Double(call->window_id);
++  fields["documentId"] = laufey::Value::String(std::to_string(call->generation));
++  fields["url"] = laufey::Value::String(call->url);
++  fields["protected"] = laufey::Value::Bool(call->protected_document);
++  fields["mainFrame"] = laufey::Value::Bool(call->main_frame);
++  return new laufey_value(value);
++}
++
+ static void Backend_SetJsCallHandler(void* data, laufey_js_call_fn handler,
+                                      void* user_data) {
+   RuntimeLoader* loader = static_cast<RuntimeLoader*>(data);
+@@ -854,8 +940,10 @@
+                                   laufey_value_t* result,
+                                   laufey_value_t* error) {
+   RuntimeLoader* loader = static_cast<RuntimeLoader*>(data);
+-  uint32_t window_id = loader->ConsumeCallWindow(call_id);
+-  CefRefPtr<CefBrowser> browser = loader->GetBrowserForWindow(window_id);
++  auto call = dnr_document::Take(call_id);
++  if (!call || (call->protected_document && !dnr_document::Current(call->window_id, call->generation))) return;
++  call_id = call->page_call_id;
++  CefRefPtr<CefBrowser> browser = loader->GetBrowserForWindow(call->window_id);
+   if (!browser)
+     return;
+ 
+@@ -1196,6 +1284,7 @@
  #include <string>
  
  #include "include/views/cef_browser_view.h"
@@ -329,7 +583,7 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
  #include "include/views/cef_window.h"
  
  // Badge is implemented as a title prefix. Per window we remember the
-@@ -1629,8 +1673,10 @@
+@@ -1629,8 +1718,10 @@
                      // OnAfterCreated can pop it. Both run on the UI
                      // thread so no race.
                      g_pending_laufey_ids.push(wid);
@@ -340,7 +594,15 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
                      CefRefPtr<CefDictionaryValue> extra_info =
                          CefDictionaryValue::Create();
                      extra_info->SetString(
-@@ -1779,6 +1825,9 @@
+@@ -1661,6 +1752,7 @@
+ }
+ 
+ static void Backend_CloseWindow(void* data, uint32_t window_id) {
++  dnr_document::Close(window_id);
+   auto* loader = RuntimeLoader::GetInstance();
+   CefRefPtr<CefBrowser> browser = loader->GetBrowserForWindow(window_id);
+   if (browser) {
+@@ -1779,6 +1871,9 @@
    backend_api_.is_resizable = Backend_IsResizable;
    backend_api_.set_always_on_top = Backend_SetAlwaysOnTop;
    backend_api_.is_always_on_top = Backend_IsAlwaysOnTop;
@@ -350,7 +612,19 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
    backend_api_.set_window_opacity = Backend_SetWindowOpacity;
    backend_api_.get_window_opacity = Backend_GetWindowOpacity;
    backend_api_.set_click_passthrough = Backend_SetClickPassthrough;
-@@ -1830,6 +1879,10 @@
+@@ -1796,6 +1891,11 @@
+ 
+   backend_api_.set_js_call_handler = Backend_SetJsCallHandler;
+   backend_api_.js_call_respond = Backend_JsCallRespond;
++  backend_api_.set_window_document_policy = Backend_SetDocumentPolicy;
++  backend_api_.js_call_context = Backend_JsCallContext;
++  backend_api_.is_document_current = Backend_IsDocumentCurrent;
++  backend_api_.set_system_monitor = Backend_SetSystemMonitor;
++  backend_api_.system_idle_seconds = Backend_SystemIdleSeconds;
+ 
+   backend_api_.invoke_js_callback = Backend_InvokeJsCallback;
+   backend_api_.release_js_callback = Backend_ReleaseJsCallback;
+@@ -1830,6 +1930,10 @@
    backend_api_.set_resize_handler = Backend_SetResizeHandler;
    backend_api_.set_move_handler = Backend_SetMoveHandler;
    backend_api_.set_close_requested_handler = Backend_SetCloseRequestedHandler;
@@ -361,7 +635,7 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
    backend_api_.test_trigger_close_requested = Backend_TestTriggerCloseRequested;
  
    backend_api_.poll_js_calls = [](void* data) {
-@@ -1980,7 +2033,15 @@
+@@ -1980,7 +2084,15 @@
    return instance_;
  }
  
@@ -377,7 +651,7 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
  #ifndef _WIN32
    library_handle_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
    if (!library_handle_) {
-@@ -2063,7 +2124,7 @@
+@@ -2063,7 +2175,7 @@
    }
  
    running_ = true;
@@ -386,7 +660,7 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
  
    std::cout << "Runtime started" << std::endl;
    return true;
-@@ -2084,6 +2145,27 @@
+@@ -2084,6 +2196,27 @@
  
    if (runtime_thread_.joinable()) {
      runtime_thread_.join();
@@ -414,6 +688,26 @@ diff --git a/cef/src/runtime_loader.cc b/cef/src/runtime_loader.cc
    }
  }
  
+@@ -2123,7 +2256,6 @@
+     std::lock_guard<std::mutex> lock(pending_mutex_);
+     pending_js_calls_.push({window_id, call_id, method_path, owned_args});
+   }
+-  StoreCallWindow(call_id, window_id);
+ 
+   std::lock_guard<std::mutex> lock(notify_mutex_);
+   if (js_call_notify_fn_) {
+@@ -2153,6 +2285,11 @@
+   }
+ 
+   for (auto& call : calls) {
++    const auto context = dnr_document::Lookup(call.call_id);
++    if (!context || (context->protected_document && !dnr_document::Current(context->window_id, context->generation))) {
++      dnr_document::Take(call.call_id);
++      continue;
++    }
+     if (handler) {
+       CefRefPtr<CefValue> argsValue = CefValue::Create();
+       argsValue->SetList(call.args);
 diff --git a/webview/src/main_linux.cc b/webview/src/main_linux.cc
 --- a/webview/src/main_linux.cc
 +++ b/webview/src/main_linux.cc
@@ -584,7 +878,14 @@ diff --git a/webview/src/main_mac.mm b/webview/src/main_mac.mm
 diff --git a/webview/src/webview_linux.cc b/webview/src/webview_linux.cc
 --- a/webview/src/webview_linux.cc
 +++ b/webview/src/webview_linux.cc
-@@ -4,6 +4,7 @@
+@@ -1,9 +1,14 @@
++#include "system_monitor.h"
++#include "document_security.h"
++#include "document_bridge.h"
++#include <cmath>
+ // Copyright 2025 Divy Srivastava. All rights reserved. MIT license.
+ 
+ #include <gtk/gtk.h>
  #include <gdk/gdkkeysyms.h>
  
  #include "runtime_loader.h"
@@ -592,7 +893,7 @@ diff --git a/webview/src/webview_linux.cc b/webview/src/webview_linux.cc
  #include "laufey_backend_common.h"
  #include "laufey_json.h"
  #include "init_script.h"
-@@ -266,6 +267,7 @@
+@@ -266,6 +271,7 @@
    uint32_t wid = LaufeyIdForWidget(widget);
    if (wid == 0)
      return FALSE;
@@ -600,7 +901,46 @@ diff --git a/webview/src/webview_linux.cc b/webview/src/webview_linux.cc
    RuntimeLoader::GetInstance()->DispatchFocusedEvent(wid, 0);
    return FALSE;
  }
-@@ -325,6 +327,8 @@
+@@ -286,8 +292,37 @@
+ // (and the web process has content to composite). The window_id is passed
+ // directly as user_data because this signal is on the WebKitWebView, not the
+ // toplevel registered with LaufeyIdForWidget.
+-static void on_load_changed(WebKitWebView* /*webview*/,
++static gboolean on_document_policy(WebKitWebView*, WebKitPolicyDecision* decision,
++                                   WebKitPolicyDecisionType type, gpointer data) {
++  const uint32_t id = GPOINTER_TO_UINT(data);
++  const auto doc = dnr_document::Snapshot(id);
++  if (!doc) return FALSE;
++  if (type == WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION || type == WEBKIT_POLICY_DECISION_TYPE_NEW_WINDOW_ACTION) {
++    auto* navigation = WEBKIT_NAVIGATION_POLICY_DECISION(decision);
++    auto* action = webkit_navigation_policy_decision_get_navigation_action(navigation);
++    auto* request = webkit_navigation_action_get_request(action);
++    const char* uri = request ? webkit_uri_request_get_uri(request) : nullptr;
++    // This API doesn't reliably identify the source frame. Only the one host-
++    // authorized initial navigation is allowed; the private bridge handles calls.
++    if (type == WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION && doc->initial_navigation_pending && uri &&
++        dnr_document::AllowNavigation(id, uri, true)) webkit_policy_decision_use(decision);
++    else webkit_policy_decision_ignore(decision);
++    return TRUE;
++  }
++  return FALSE;
++}
++
++static void on_document_process_terminated(WebKitWebView*, WebKitWebProcessTerminationReason, gpointer data) {
++  dnr_document::Invalidate(GPOINTER_TO_UINT(data));
++}
++
++static void on_load_changed(WebKitWebView* webview,
+                             WebKitLoadEvent load_event, gpointer user_data) {
++  if (load_event == WEBKIT_LOAD_REDIRECTED && dnr_document::Protected(GPOINTER_TO_UINT(user_data))) {
++    dnr_document::Invalidate(GPOINTER_TO_UINT(user_data));
++    webkit_web_view_stop_loading(webview);
++    return;
++  }
+   if (load_event != WEBKIT_LOAD_FINISHED) {
+     return;
+   }
+@@ -325,6 +360,8 @@
    std::string key = keyboard::GdkKeyvalToKey(event->keyval);
    std::string code = keyboard::GdkKeycodeToCode(event->hardware_keycode);
    uint32_t modifiers = keyboard::GdkModifiersToLaufey(event->state);
@@ -609,7 +949,21 @@ diff --git a/webview/src/webview_linux.cc b/webview/src/webview_linux.cc
  
    RuntimeLoader::GetInstance()->DispatchKeyboardEvent(
        wid, state, key.c_str(), code.c_str(), modifiers, false);
-@@ -353,6 +357,7 @@
+@@ -341,6 +378,13 @@
+   WebKitGTKBackend();
+   ~WebKitGTKBackend() override;
+ 
++  bool SupportsDocumentPolicy() const override { return true; }
++  uint32_t SetSystemMonitor(laufey_system_event_fn callback, void* data) override {
++    uint32_t capabilities = 0; gtk_invoke_sync([&] { capabilities = DnrSetSystemMonitor(callback, data); }); return capabilities;
++  }
++  double SystemIdleSeconds() override {
++    double value = -1; gtk_invoke_sync([&] { value = DnrSystemIdleSeconds(); }); return value;
++  }
+   void CreateWindow(uint32_t window_id, int width, int height) override;
+   void CreateWindowEx(uint32_t window_id, int width, int height,
+                       uint32_t flags) override;
+@@ -353,6 +397,7 @@
                   laufey_js_result_fn callback, void* callback_data) override;
    void Quit() override;
    void SetWindowSize(uint32_t window_id, int width, int height) override;
@@ -617,7 +971,7 @@ diff --git a/webview/src/webview_linux.cc b/webview/src/webview_linux.cc
    void GetWindowSize(uint32_t window_id, int* width, int* height) override;
    void SetWindowPosition(uint32_t window_id, int x, int y) override;
    void GetWindowPosition(uint32_t window_id, int* x, int* y) override;
-@@ -360,6 +365,7 @@
+@@ -360,6 +405,7 @@
    bool IsResizable(uint32_t window_id) override;
    void SetAlwaysOnTop(uint32_t window_id, bool always_on_top) override;
    bool IsAlwaysOnTop(uint32_t window_id) override;
@@ -625,7 +979,7 @@ diff --git a/webview/src/webview_linux.cc b/webview/src/webview_linux.cc
    void SetWindowOpacity(uint32_t window_id, double opacity) override;
    double GetWindowOpacity(uint32_t window_id) override;
    void SetClickPassthrough(uint32_t window_id, bool enabled) override;
-@@ -478,13 +484,7 @@
+@@ -478,13 +524,7 @@
    if (wid > 0) {
      UnregisterWidget(widget);
    }
@@ -640,7 +994,7 @@ diff --git a/webview/src/webview_linux.cc b/webview/src/webview_linux.cc
  }
  
  // "delete-event" fires when the user requests a close (e.g. clicks the
-@@ -671,6 +671,7 @@
+@@ -671,6 +711,7 @@
      static std::once_flag dark_theme_once;
      std::call_once(dark_theme_once, init_dark_theme_sync);
  
@@ -648,15 +1002,61 @@ diff --git a/webview/src/webview_linux.cc b/webview/src/webview_linux.cc
      GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
      if (flags & LAUFEY_WINDOW_FLAG_FRAMELESS) {
        gtk_window_set_decorated(GTK_WINDOW(window), FALSE);
-@@ -745,6 +746,7 @@
+@@ -743,8 +784,11 @@
+                      nullptr);
+     g_signal_connect(webview, "load-changed", G_CALLBACK(on_load_changed),
                       GUINT_TO_POINTER(window_id));
++    g_signal_connect(webview, "decide-policy", G_CALLBACK(on_document_policy), GUINT_TO_POINTER(window_id));
++    g_signal_connect(webview, "web-process-terminated", G_CALLBACK(on_document_process_terminated), GUINT_TO_POINTER(window_id));
      g_signal_connect(webview, "create", G_CALLBACK(on_create), nullptr);
  
 +    webkit_web_view_set_zoom_level(webview, DnrWindowZoom(window_id));
      WebKitSettings* wk_settings = webkit_web_view_get_settings(webview);
      webkit_settings_set_enable_developer_extras(wk_settings, TRUE);
  
-@@ -945,6 +947,26 @@
+@@ -800,6 +844,7 @@
+ }
+ 
+ void WebKitGTKBackend::CloseWindow(uint32_t window_id) {
++  dnr_document::Close(window_id);
+   gtk_invoke_sync([&] {
+     std::lock_guard<std::mutex> lock(windows_mutex_);
+     auto* state = GetWindow(window_id);
+@@ -815,10 +860,29 @@
+ }
+ 
+ void WebKitGTKBackend::Navigate(uint32_t window_id, const std::string& url) {
+-  gtk_invoke_sync([&] {
+-    std::lock_guard<std::mutex> lock(windows_mutex_);
+-    auto* state = GetWindow(window_id);
+-    if (state) {
++  if (!dnr_document::BeginNavigation(window_id, url)) return;
++  gtk_invoke_sync([&] {
++    std::lock_guard<std::mutex> lock(windows_mutex_);
++    auto* state = GetWindow(window_id);
++    if (state) {
++      const auto doc = dnr_document::Snapshot(window_id);
++      if (doc) {
++        WebKitUserContentManager* manager = webkit_web_view_get_user_content_manager(state->webview);
++        webkit_user_content_manager_remove_all_scripts(manager);
++        webkit_user_content_manager_unregister_script_message_handler(manager, "laufey");
++        if (!webkit_user_content_manager_register_script_message_handler_in_world(manager, "laufey", "dnr-private")) return;
++        const auto private_source = DnrPrivateBridge(doc->bridge_token);
++        WebKitUserScript* private_script = webkit_user_script_new_for_world(private_source.c_str(),
++            WEBKIT_USER_CONTENT_INJECT_TOP_FRAME, WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
++            "dnr-private", nullptr, nullptr);
++        webkit_user_content_manager_add_script(manager, private_script);
++        webkit_user_script_unref(private_script);
++        const auto public_source = BuildInitScript(RuntimeLoader::GetInstance()->GetJsNamespace(), DnrPublicPostMessage());
++        WebKitUserScript* public_script = webkit_user_script_new(public_source.c_str(),
++            WEBKIT_USER_CONTENT_INJECT_TOP_FRAME, WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, nullptr, nullptr);
++        webkit_user_content_manager_add_script(manager, public_script);
++        webkit_user_script_unref(public_script);
++      }
+       webkit_web_view_load_uri(state->webview, url.c_str());
+     }
+   });
+@@ -945,6 +1009,26 @@
    });
  }
  
@@ -683,7 +1083,7 @@ diff --git a/webview/src/webview_linux.cc b/webview/src/webview_linux.cc
  void WebKitGTKBackend::GetWindowSize(uint32_t window_id, int* width,
                                       int* height) {
    int w = 0, h = 0;
-@@ -1032,6 +1054,19 @@
+@@ -1032,6 +1116,19 @@
      }
    });
    return result;
@@ -703,10 +1103,44 @@ diff --git a/webview/src/webview_linux.cc b/webview/src/webview_linux.cc
  }
  
  void WebKitGTKBackend::SetWindowOpacity(uint32_t window_id, double opacity) {
+@@ -1236,7 +1333,9 @@
+   if (callIdIt->second->IsInt()) {
+     call_id = static_cast<uint64_t>(callIdIt->second->GetInt());
+   } else if (callIdIt->second->IsDouble()) {
+-    call_id = static_cast<uint64_t>(callIdIt->second->GetDouble());
++    const double value = callIdIt->second->GetDouble();
++    if (!std::isfinite(value) || value < 1 || value > 9007199254740991.0 || std::floor(value) != value) return;
++    call_id = static_cast<uint64_t>(value);
+   }
+ 
+   std::string method =
+@@ -1244,7 +1343,17 @@
+   laufey::ValuePtr args =
+       (argsIt != dict.end()) ? argsIt->second : laufey::Value::List();
+ 
+-  RuntimeLoader::GetInstance()->OnJsCall(window_id, call_id, method, args);
++  std::string token;
++  auto tokenIt = dict.find("_dnrToken");
++  if (tokenIt != dict.end() && tokenIt->second->IsString()) token = tokenIt->second->GetString();
++  std::string native_url;
++  { std::lock_guard<std::mutex> lock(windows_mutex_);
++    auto* state = GetWindow(window_id);
++    const char* uri = state ? webkit_web_view_get_uri(state->webview) : nullptr;
++    if (uri) native_url = uri;
++  }
++  const auto global_id = dnr_document::RegisterCall(window_id, call_id, true, native_url, token);
++  if (global_id) RuntimeLoader::GetInstance()->OnJsCall(window_id, global_id, method, args);
+ }
+ 
+ // ============================================================================
 diff --git a/cef/src/app.cc b/cef/src/app.cc
 --- a/cef/src/app.cc
 +++ b/cef/src/app.cc
-@@ -2,6 +2,7 @@
+@@ -1,7 +1,11 @@
++#include <cstdio>
++#include "document_security.h"
++#include <cmath>
+ // Copyright 2025 Divy Srivastava. All rights reserved. MIT license.
  
  #include "app.h"
  #include "runtime_loader.h"
@@ -714,7 +1148,7 @@ diff --git a/cef/src/app.cc b/cef/src/app.cc
  #include "laufey_backend_common.h"
  #include "laufey_external_links.h"
  #include "scheme_handler.h"
-@@ -10,6 +11,10 @@
+@@ -10,6 +14,10 @@
  
  #ifdef __linux__
  #include <gtk/gtk.h>
@@ -725,7 +1159,7 @@ diff --git a/cef/src/app.cc b/cef/src/app.cc
  #endif
  
  #ifdef __APPLE__
-@@ -24,6 +29,7 @@
+@@ -24,6 +32,7 @@
  
  #include "include/base/cef_callback.h"
  #include "include/cef_browser.h"
@@ -733,7 +1167,7 @@ diff --git a/cef/src/app.cc b/cef/src/app.cc
  #include "include/views/cef_browser_view.h"
  #include "include/views/cef_window.h"
  #include "include/wrapper/cef_closure_task.h"
-@@ -37,10 +43,35 @@
+@@ -37,10 +46,35 @@
  LaufeyHandler* g_handler = nullptr;
  }
  
@@ -769,7 +1203,7 @@ diff --git a/cef/src/app.cc b/cef/src/app.cc
  
    // Register native window for event routing. Non-activating panels
    // (LAUFEY_WINDOW_FLAG_NO_ACTIVATE) are reconfigured before the first Show()
-@@ -90,6 +121,7 @@
+@@ -90,6 +124,7 @@
  void LaufeyWindowDelegate::OnWindowActivationChanged(
      CefRefPtr<CefWindow> window, bool active) {
    if (laufey_id_ > 0) {
@@ -777,15 +1211,52 @@ diff --git a/cef/src/app.cc b/cef/src/app.cc
      RuntimeLoader::GetInstance()->DispatchFocusedEvent(laufey_id_, active);
    }
  }
-@@ -171,6 +203,7 @@
+@@ -171,13 +206,31 @@
      uint32_t laufey_id = g_pending_laufey_ids.front();
      g_pending_laufey_ids.pop();
      loader->RegisterBrowser(laufey_id, browser);
+-  }
 +    if (!dnr_zoom_exempt.contains(laufey_id)) browser->GetHost()->SetZoomLevel(DnrCefZoomLevel(laufey_id));
-   }
++  }
++}
++
++bool LaufeyHandler::OnBeforeBrowse(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
++                                    CefRefPtr<CefRequest> request, bool, bool is_redirect) {
++  const uint32_t id = RuntimeLoader::GetInstance()->GetLaufeyIdForBrowser(browser);
++  if (!dnr_document::Protected(id)) return false;
++  const auto before = dnr_document::Snapshot(id);
++  const bool allowed = !is_redirect && frame && request && dnr_document::AllowNavigation(id, request->GetURL().ToString(), frame->IsMain());
++  if (std::getenv("DNR_DOCUMENT_DIAGNOSTICS")) std::fprintf(stderr,
++      "dnr document navigation: window=%u main=%d redirect=%d initial=%d allowed=%d\n",
++      id, frame && frame->IsMain(), is_redirect, before && before->initial_navigation_pending, allowed);
++  return !allowed;
++}
++
++void LaufeyHandler::OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser, TerminationStatus,
++                                              int, const CefString&) {
++  dnr_document::Invalidate(RuntimeLoader::GetInstance()->GetLaufeyIdForBrowser(browser));
  }
  
-@@ -205,6 +238,8 @@
+ bool LaufeyHandler::OnBeforePopup(
+     CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int popup_id,
+     const CefString& target_url, const CefString& target_frame_name,
+-    WindowOpenDisposition target_disposition, bool user_gesture,
++    cef_window_open_disposition_t target_disposition, bool user_gesture,
+     const CefPopupFeatures& popupFeatures, CefWindowInfo& windowInfo,
+     CefRefPtr<CefClient>& client, CefBrowserSettings& settings,
+     CefRefPtr<CefDictionaryValue>& extra_info, bool* no_javascript_access) {
+@@ -185,6 +238,10 @@
+   // `target="_blank"` / `window.open()` aren't seen by the page's Navigation
+   // API listener. Cancel the popup and route http(s) destinations to the OS
+   // browser; return true to prevent the new browser from being created.
++  const uint32_t window_id = RuntimeLoader::GetInstance()->GetLaufeyIdForBrowser(browser);
++  const auto doc = dnr_document::Snapshot(window_id);
++  if (dnr_document::Protected(window_id) && (!doc || !frame || !frame->IsMain() ||
++      !user_gesture || !dnr_document::OriginAllowed(frame->GetURL().ToString(), doc->origins))) return true;
+   std::string url = target_url.ToString();
+   if (url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0) {
+     LaufeyOpenExternalURL(url);
+@@ -205,6 +262,8 @@
  
  void LaufeyHandler::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
    CEF_REQUIRE_UI_THREAD();
@@ -794,7 +1265,7 @@ diff --git a/cef/src/app.cc b/cef/src/app.cc
  
    for (auto it = browser_list_.begin(); it != browser_list_.end(); ++it) {
      if ((*it)->IsSame(browser)) {
-@@ -212,13 +247,34 @@
+@@ -212,13 +271,41 @@
        break;
      }
    }
@@ -808,6 +1279,13 @@ diff --git a/cef/src/app.cc b/cef/src/app.cc
      CefQuitMessageLoop();
 -#endif
 +  }
++}
++
++void LaufeyHandler::OnLoadError(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
++                                ErrorCode error_code, const CefString&, const CefString&) {
++  if (std::getenv("DNR_DOCUMENT_DIAGNOSTICS")) std::fprintf(stderr,
++      "dnr load error: window=%u main=%d code=%d\n",
++      RuntimeLoader::GetInstance()->GetLaufeyIdForBrowser(browser), frame && frame->IsMain(), error_code);
 +}
 +
 +void LaufeyHandler::OnLoadStart(CefRefPtr<CefBrowser> browser,
@@ -835,7 +1313,7 @@ diff --git a/cef/src/app.cc b/cef/src/app.cc
    }
  }
  
-@@ -257,6 +313,58 @@
+@@ -257,6 +344,58 @@
  // Keyboard mapping lives in backend-common (laufey_common::VkToKey / VkToCode).
  // CEF normalizes every platform's key events to Windows VK codes, so the
  // same table works here.
@@ -894,7 +1372,7 @@ diff --git a/cef/src/app.cc b/cef/src/app.cc
  
  bool LaufeyHandler::OnKeyEvent(CefRefPtr<CefBrowser> browser,
                                 const CefKeyEvent& event,
-@@ -282,13 +390,16 @@
+@@ -282,13 +421,16 @@
  
    std::string key = laufey_common::VkToKey(event.windows_key_code,
                                             event.character, false, false);
@@ -913,7 +1391,7 @@ diff --git a/cef/src/app.cc b/cef/src/app.cc
  }
  
  bool LaufeyHandler::OnJSDialog(CefRefPtr<CefBrowser> browser,
-@@ -395,6 +506,17 @@
+@@ -395,6 +537,17 @@
      bool is_reload, CefRefPtr<CefJSDialogCallback> callback) {
    callback->Continue(true, "");
    return true;
@@ -931,18 +1409,58 @@ diff --git a/cef/src/app.cc b/cef/src/app.cc
  }
  
  void LaufeyHandler::CloseAllBrowsers(bool force_close) {
+@@ -444,7 +597,14 @@
+     }
+ 
+     CefRefPtr<CefListValue> args = message->GetArgumentList();
+-    uint64_t call_id = static_cast<uint64_t>(args->GetDouble(0));
++    const double page_call = args->GetDouble(0);
++    if (!std::isfinite(page_call) || page_call < 1 || page_call > 9007199254740991.0 || std::floor(page_call) != page_call) return true;
++    uint64_t call_id = static_cast<uint64_t>(page_call);
++    const uint32_t source_window = RuntimeLoader::GetInstance()->GetLaufeyIdForBrowser(browser);
++    const auto document = dnr_document::Snapshot(source_window);
++    const uint64_t host_call_id = dnr_document::RegisterCall(source_window, call_id, frame->IsMain(),
++        frame->GetURL().ToString(), document ? document->bridge_token : "");
++    if (!host_call_id) return true;
+     std::string method_path = args->GetString(1).ToString();
+     CefRefPtr<CefListValue> callArgs = args->GetList(2);
+ 
+@@ -455,7 +615,7 @@
+       if (callArgs && callArgs->GetSize() > 0 &&
+           callArgs->GetType(0) == VTYPE_STRING) {
+         std::string url = callArgs->GetString(0).ToString();
+-        if (!url.empty()) {
++        if (!url.empty() && (!document || url.rfind("https://", 0) == 0 || url.rfind("http://", 0) == 0 || url.rfind("mailto:", 0) == 0)) {
+           LaufeyOpenExternalURL(url);
+         }
+       }
+@@ -466,11 +626,12 @@
+       replyArgs->SetNull(1);
+       replyArgs->SetString(2, "");
+       frame->SendProcessMessage(PID_RENDERER, reply);
++      dnr_document::Take(host_call_id);
+       return true;
+     }
+ 
+     uint32_t wid = RuntimeLoader::GetInstance()->GetLaufeyIdForBrowser(browser);
+-    RuntimeLoader::GetInstance()->OnJsCall(wid, call_id, method_path, callArgs);
++    RuntimeLoader::GetInstance()->OnJsCall(wid, host_call_id, method_path, callArgs);
+     return true;
+   }
+ 
 diff --git a/cef/src/app.h b/cef/src/app.h
 --- a/cef/src/app.h
 +++ b/cef/src/app.h
-@@ -13,6 +13,7 @@
+@@ -13,6 +13,8 @@
  #include "include/cef_app.h"
  #include "include/cef_client.h"
  #include "include/cef_jsdialog_handler.h"
 +#include "include/cef_load_handler.h"
++#include "include/cef_request_handler.h"
  #include "include/views/cef_browser_view.h"
  #include "include/views/cef_window.h"
  
-@@ -119,8 +120,10 @@
+@@ -119,15 +121,34 @@
  
  class LaufeyHandler : public CefClient,
                        public CefLifeSpanHandler,
@@ -951,12 +1469,20 @@ diff --git a/cef/src/app.h b/cef/src/app.h
                        public CefKeyboardHandler,
 +                      public CefCommandHandler,
                        public CefDragHandler,
-                       public CefJSDialogHandler {
+-                      public CefJSDialogHandler {
++                      public CefJSDialogHandler,
++                      public CefRequestHandler {
   public:
-@@ -129,12 +132,23 @@
+   LaufeyHandler();
+   ~LaufeyHandler() override;
  
    static LaufeyHandler* GetInstance();
- 
++  CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
++  bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
++                      CefRefPtr<CefRequest> request, bool user_gesture, bool is_redirect) override;
++  void OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser, TerminationStatus status,
++                                 int error_code, const CefString& error_string) override;
++
 +  CefRefPtr<CefLoadHandler> GetLoadHandler() override {
 +    return this;
 +  }
@@ -964,10 +1490,13 @@ diff --git a/cef/src/app.h b/cef/src/app.h
 +                   TransitionType transition_type) override;
 +  void OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
 +                 int http_status_code) override;
-+
++  void OnLoadError(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
++                   ErrorCode error_code, const CefString& error_text,
++                   const CefString& failed_url) override;
+ 
    CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override {
      return this;
-   }
+@@ -135,6 +156,9 @@
    CefRefPtr<CefDisplayHandler> GetDisplayHandler() override {
      return this;
    }
@@ -977,7 +1506,16 @@ diff --git a/cef/src/app.h b/cef/src/app.h
    CefRefPtr<CefKeyboardHandler> GetKeyboardHandler() override {
      return this;
    }
-@@ -170,6 +184,8 @@
+@@ -158,7 +182,7 @@
+   bool OnBeforePopup(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
+                      int popup_id, const CefString& target_url,
+                      const CefString& target_frame_name,
+-                     WindowOpenDisposition target_disposition,
++                     cef_window_open_disposition_t target_disposition,
+                      bool user_gesture, const CefPopupFeatures& popupFeatures,
+                      CefWindowInfo& windowInfo, CefRefPtr<CefClient>& client,
+                      CefBrowserSettings& settings,
+@@ -170,6 +194,8 @@
    void OnTitleChange(CefRefPtr<CefBrowser> browser,
                       const CefString& title) override;
  
@@ -986,7 +1524,7 @@ diff --git a/cef/src/app.h b/cef/src/app.h
    bool OnKeyEvent(CefRefPtr<CefBrowser> browser, const CefKeyEvent& event,
                    CefEventHandle os_event) override;
  
-@@ -188,6 +204,7 @@
+@@ -188,6 +214,7 @@
                                  CefProcessId source_process,
                                  CefRefPtr<CefProcessMessage> message) override;
  
@@ -994,7 +1532,7 @@ diff --git a/cef/src/app.h b/cef/src/app.h
    void CloseAllBrowsers(bool force_close);
    bool IsClosing() const {
      return is_closing_;
-@@ -196,6 +213,7 @@
+@@ -196,6 +223,7 @@
   private:
    std::list<CefRefPtr<CefBrowser>> browser_list_;
    bool is_closing_ = false;
@@ -1204,12 +1742,21 @@ diff --git a/capi/include/laufey.h b/capi/include/laufey.h
  #endif
  
 -#define LAUFEY_API_VERSION 34
-+#define LAUFEY_API_VERSION 36
++#define LAUFEY_API_VERSION 37
 +#define LAUFEY_WINDOW_FLAG_ZOOM_EXEMPT (1 << 5)
  
  // Window handle types for get_window_handle_type
  #define LAUFEY_WINDOW_HANDLE_UNKNOWN 0
-@@ -841,6 +842,13 @@
+@@ -76,6 +77,8 @@
+ 
+ typedef struct laufey_value laufey_value_t;
+ 
++typedef void (*laufey_system_event_fn)(void* user_data, const char* state);
++
+ typedef void (*laufey_js_call_fn)(void* user_data, uint32_t window_id,
+                                   uint64_t call_id, const char* method_path,
+                                   laufey_value_t* args);
+@@ -841,6 +844,22 @@
    // false if the id is unknown or the backend doesn't support forwarding.
    // NULL on backends older than API version 34.
    bool (*is_click_passthrough_forward)(void* backend_data, uint32_t window_id);
@@ -1220,13 +1767,29 @@ diff --git a/capi/include/laufey.h b/capi/include/laufey.h
 +  void (*set_content_zoom)(void* backend_data, double factor);
 +  // action: 0=query enabled, 1=in, -1=out, 2=reset. Must not initialize GUI.
 +  void (*set_zoom_shortcut_handler)(void* backend_data, bool (*handler)(int));
++
++  // DNR API 37: optional immutable document policy and native call provenance.
++  bool (*set_window_document_policy)(void* backend_data, uint32_t window_id,
++                                    const char* const* origins, size_t count);
++  laufey_value_t* (*js_call_context)(void* backend_data, uint64_t call_id);
++  bool (*is_document_current)(void* backend_data, uint32_t window_id,
++                              const char* generation);
++  uint32_t (*set_system_monitor)(void* backend_data, laufey_system_event_fn handler, void* user_data);
++  double (*system_idle_seconds)(void* backend_data);
  };
  
  #ifdef __cplusplus
 diff --git a/webview/src/webview_macos.mm b/webview/src/webview_macos.mm
 --- a/webview/src/webview_macos.mm
 +++ b/webview/src/webview_macos.mm
-@@ -5,6 +5,7 @@
+@@ -1,3 +1,6 @@
++#include "system_monitor.h"
++#include "document_security.h"
++#include <cmath>
+ // Copyright 2025 Divy Srivastava. All rights reserved. MIT license.
+ 
+ #import <Cocoa/Cocoa.h>
+@@ -5,6 +8,7 @@
  #import <WebKit/WebKit.h>
  
  #include "runtime_loader.h"
@@ -1234,7 +1797,17 @@ diff --git a/webview/src/webview_macos.mm b/webview/src/webview_macos.mm
  #include "laufey_backend_common.h"
  #include "laufey_json.h"
  #include "init_script.h"
-@@ -61,6 +62,7 @@
+@@ -48,6 +52,9 @@
+  public:
+   WKWebViewBackend();
+   ~WKWebViewBackend() override;
++  bool SupportsDocumentPolicy() const override { return true; }
++  uint32_t SetSystemMonitor(laufey_system_event_fn callback, void* data) override { return DnrSetSystemMonitor(callback, data); }
++  double SystemIdleSeconds() override { return DnrSystemIdleSeconds(); }
+ 
+   void CreateWindow(uint32_t window_id, int width, int height) override;
+   void CreateWindowEx(uint32_t window_id, int width, int height,
+@@ -61,6 +68,7 @@
                   laufey_js_result_fn callback, void* callback_data) override;
    void Quit() override;
    void SetWindowSize(uint32_t window_id, int width, int height) override;
@@ -1242,7 +1815,7 @@ diff --git a/webview/src/webview_macos.mm b/webview/src/webview_macos.mm
    void GetWindowSize(uint32_t window_id, int* width, int* height) override;
    void SetWindowPosition(uint32_t window_id, int x, int y) override;
    void GetWindowPosition(uint32_t window_id, int* x, int* y) override;
-@@ -68,6 +70,7 @@
+@@ -68,6 +76,7 @@
    bool IsResizable(uint32_t window_id) override;
    void SetAlwaysOnTop(uint32_t window_id, bool always_on_top) override;
    bool IsAlwaysOnTop(uint32_t window_id) override;
@@ -1250,7 +1823,78 @@ diff --git a/webview/src/webview_macos.mm b/webview/src/webview_macos.mm
    void SetWindowOpacity(uint32_t window_id, double opacity) override;
    double GetWindowOpacity(uint32_t window_id) override;
    void SetClickPassthrough(uint32_t window_id, bool enabled) override;
-@@ -734,6 +737,9 @@
+@@ -243,8 +252,12 @@
+ 
+ - (void)userContentController:(WKUserContentController*)userContentController
+       didReceiveScriptMessage:(WKScriptMessage*)message {
+-  if (![message.name isEqualToString:@"laufey"])
++  if (![message.name isEqualToString:@"laufey"] || !message.frameInfo.isMainFrame)
+     return;
++  NSString* source = message.frameInfo.request.URL.absoluteString;
++  const std::string native_url = source ? [source UTF8String] : "";
++  const auto document = dnr_document::Snapshot(self.windowId);
++  if (document && !dnr_document::OriginAllowed(native_url, document->origins)) return;
+ 
+   if (![message.body isKindOfClass:[NSDictionary class]])
+     return;
+@@ -255,10 +268,12 @@
+   NSString* method = body[@"method"];
+   id argsJson = body[@"args"];
+ 
+-  if (!callIdNum || !method)
+-    return;
+-
+-  uint64_t call_id = [callIdNum unsignedLongLongValue];
++  if (![callIdNum isKindOfClass:[NSNumber class]] || ![method isKindOfClass:[NSString class]]) return;
++  const double page_id = [callIdNum doubleValue];
++  if (!std::isfinite(page_id) || page_id < 1 || page_id > 9007199254740991.0 || std::floor(page_id) != page_id) return;
++  uint64_t call_id = dnr_document::RegisterCall(self.windowId, static_cast<uint64_t>(page_id), true,
++      native_url, document ? document->bridge_token : "");
++  if (!call_id) return;
+   std::string methodStr = [method UTF8String];
+ 
+   laufey::ValuePtr args = laufey::Value::List();
+@@ -577,6 +592,39 @@
+ @end
+ 
+ @implementation LaufeyNavigationDelegate
++
++- (void)webView:(WKWebView*)webView decidePolicyForNavigationAction:(WKNavigationAction*)action
++    decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
++  if (!dnr_document::Protected(self.windowId)) { decisionHandler(WKNavigationActionPolicyAllow); return; }
++  NSString* target = action.request.URL.absoluteString;
++  const std::string url = target ? [target UTF8String] : "";
++  const bool main_frame = action.targetFrame && action.targetFrame.isMainFrame;
++  decisionHandler(dnr_document::AllowNavigation(self.windowId, url, main_frame)
++      ? WKNavigationActionPolicyAllow : WKNavigationActionPolicyCancel);
++}
++
++- (void)webViewWebContentProcessDidTerminate:(WKWebView*)webView {
++  // Leave the policy installed, but invalidate the dead document and its calls.
++  dnr_document::Invalidate(self.windowId);
++}
++
++- (void)webView:(WKWebView*)webView didReceiveServerRedirectForProvisionalNavigation:(WKNavigation*)navigation {
++  if (dnr_document::Protected(self.windowId)) {
++    dnr_document::Invalidate(self.windowId);
++    [webView stopLoading];
++  }
++}
++
++- (void)webView:(WKWebView*)webView decidePolicyForNavigationResponse:(WKNavigationResponse*)response
++    decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler {
++  if (!dnr_document::Protected(self.windowId)) { decisionHandler(WKNavigationResponsePolicyAllow); return; }
++  const auto document = dnr_document::Snapshot(self.windowId);
++  NSString* target = response.response.URL.absoluteString;
++  const std::string url = target ? [target UTF8String] : "";
++  const bool allowed = document && document->generation && response.isForMainFrame &&
++      dnr_document::WithoutFragment(url) == dnr_document::WithoutFragment(document->url);
++  decisionHandler(allowed ? WKNavigationResponsePolicyAllow : WKNavigationResponsePolicyCancel);
++}
+ 
+ // Fired when a main-frame navigation finishes loading. Used to reveal a window
+ // created with LAUFEY_WINDOW_FLAG_HIDDEN once it has real content to show.
+@@ -734,6 +782,9 @@
                                           NSModifierFlagsToLaufey(
                                               [event modifierFlags]);
                                       bool repeat = [event isARepeat];
@@ -1260,7 +1904,7 @@ diff --git a/webview/src/webview_macos.mm b/webview/src/webview_macos.mm
  
                                       RuntimeLoader::GetInstance()
                                           ->DispatchKeyboardEvent(
-@@ -897,6 +903,7 @@
+@@ -897,6 +948,7 @@
    dispatch_async(dispatch_get_main_queue(), ^{
      @autoreleasepool {
        InstallGlobalMonitors();
@@ -1268,7 +1912,7 @@ diff --git a/webview/src/webview_macos.mm b/webview/src/webview_macos.mm
  
        bool frameless = (flags & LAUFEY_WINDOW_FLAG_FRAMELESS) != 0;
        bool no_activate = (flags & LAUFEY_WINDOW_FLAG_NO_ACTIVATE) != 0;
-@@ -1018,6 +1025,7 @@
+@@ -1018,6 +1070,7 @@
  
        WKWebView* webview = [[WKWebView alloc] initWithFrame:frame
                                                configuration:config];
@@ -1276,7 +1920,7 @@ diff --git a/webview/src/webview_macos.mm b/webview/src/webview_macos.mm
        if ([webview respondsToSelector:@selector(setInspectable:)]) {
          [webview setInspectable:YES];
        }
-@@ -1070,6 +1078,7 @@
+@@ -1070,6 +1123,7 @@
                        object:window
                         queue:nil
                    usingBlock:^(NSNotification*) {
@@ -1284,7 +1928,23 @@ diff --git a/webview/src/webview_macos.mm b/webview/src/webview_macos.mm
                      RuntimeLoader::GetInstance()->DispatchFocusedEvent(
                          window_id, 0);
                    }];
-@@ -1405,6 +1414,28 @@
+@@ -1148,6 +1202,7 @@
+ }
+ 
+ void WKWebViewBackend::CloseWindow(uint32_t window_id) {
++  dnr_document::Close(window_id);
+   dispatch_async(dispatch_get_main_queue(), ^{
+     @autoreleasepool {
+       NSWindow* win = nil;
+@@ -1180,6 +1235,7 @@
+ }
+ 
+ void WKWebViewBackend::Navigate(uint32_t window_id, const std::string& url) {
++  if (!dnr_document::BeginNavigation(window_id, url)) return;
+   std::string urlCopy = url;
+   dispatch_async(dispatch_get_main_queue(), ^{
+     @autoreleasepool {
+@@ -1405,6 +1461,28 @@
    });
  }
  
@@ -1313,7 +1973,7 @@ diff --git a/webview/src/webview_macos.mm b/webview/src/webview_macos.mm
  void WKWebViewBackend::GetWindowSize(uint32_t window_id, int* width,
                                       int* height) {
    __block int w = 0, h = 0;
-@@ -1511,6 +1542,15 @@
+@@ -1511,6 +1589,15 @@
      }
    });
    return result;
@@ -1332,7 +1992,17 @@ diff --git a/webview/src/webview_macos.mm b/webview/src/webview_macos.mm
 diff --git a/webview/src/runtime_loader.h b/webview/src/runtime_loader.h
 --- a/webview/src/runtime_loader.h
 +++ b/webview/src/runtime_loader.h
-@@ -388,6 +388,10 @@
+@@ -370,6 +370,9 @@
+ class LaufeyBackend {
+  public:
+   virtual ~LaufeyBackend() = default;
++  virtual bool SupportsDocumentPolicy() const { return false; }
++  virtual uint32_t SetSystemMonitor(laufey_system_event_fn, void*) { return 0; }
++  virtual double SystemIdleSeconds() { return -1; }
+ 
+   // Window lifecycle
+   virtual void CreateWindow(uint32_t window_id, int width, int height) = 0;
+@@ -388,6 +391,10 @@
    virtual void ExecuteJs(uint32_t window_id, const std::string& script,
                           laufey_js_result_fn callback, void* callback_data) = 0;
    virtual void SetWindowSize(uint32_t window_id, int width, int height) = 0;
@@ -1343,7 +2013,7 @@ diff --git a/webview/src/runtime_loader.h b/webview/src/runtime_loader.h
    virtual void GetWindowSize(uint32_t window_id, int* width, int* height) = 0;
    virtual void SetWindowPosition(uint32_t window_id, int x, int y) = 0;
    virtual void GetWindowPosition(uint32_t window_id, int* x, int* y) = 0;
-@@ -398,6 +402,7 @@
+@@ -398,6 +405,7 @@
    // Overall window opacity in [0.0, 1.0] (1.0 == fully opaque). Fades the whole
    // window uniformly, unlike LAUFEY_WINDOW_FLAG_TRANSPARENT. Default no-op /
    // reports fully opaque; platform backends override.
@@ -1389,3 +2059,33 @@ diff --git a/capi/src/mouse.rs b/capi/src/mouse.rs
  
  macro_rules! ensure_handler {
    ($fn_name:ident, $api_field:ident, $trampoline:ident) => {
+diff --git a/cef/src/render_process_handler.cc b/cef/src/render_process_handler.cc
+--- a/cef/src/render_process_handler.cc
++++ b/cef/src/render_process_handler.cc
+@@ -68,6 +68,17 @@
+     return true;
+   }
+ 
++  // A same-origin child can borrow a function from the parent's bridge. Use
++  // the entered native context, not the frame captured when that function was
++  // created, to establish which frame initiated the call.
++  const auto entered = CefV8Context::GetEnteredContext();
++  const auto source_frame = entered ? entered->GetFrame() : nullptr;
++  if (!source_frame || !source_frame->IsMain() ||
++      source_frame->GetIdentifier() != frame_->GetIdentifier()) {
++    exception = "Only the owning main frame may invoke host bindings";
++    return true;
++  }
++
+   uint64_t call_id = g_render_handler->GetNextCallId();
+ 
+   retval = CefV8Value::CreatePromise();
+@@ -114,7 +125,7 @@
+   msgArgs->SetString(1, method_path);
+   msgArgs->SetList(2, argsList);
+ 
+-  frame_->SendProcessMessage(PID_BROWSER, msg);
++  source_frame->SendProcessMessage(PID_BROWSER, msg);
+ 
+   return true;
+ }

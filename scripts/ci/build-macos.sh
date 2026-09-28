@@ -28,6 +28,8 @@ for upstream in deno laufey; do
 done
 cargo run --locked -p xtask -- prepare --deno "$upstreams/deno" --laufey "$upstreams/laufey"
 cargo run --locked -p xtask -- build --backend webview
+c++ -std=c++17 -pthread integration/native/tests/document_security.cc -o dist/document-security-test
+dist/document-security-test
 cargo test --locked --workspace
 DNR_BIN="$root/dist/dnr" cargo test --locked -p dnr-package \
     --test runtime --test runtime_native --test runtime_groups --test runtime_cache \

@@ -94,7 +94,7 @@ pub extern "C" fn laufey_runtime_shutdown() {}
 
 pub fn has_live_objects() -> bool {
     LIVE.get().is_some_and(|api| {
-        !api.open_windows.lock().unwrap().is_empty() || !api.trays.lock().unwrap().is_empty()
+        !api.open_windows.lock().unwrap().is_empty() || !api.trays.lock().unwrap().is_empty() || laufey::system_monitor_active()
     })
 }
 

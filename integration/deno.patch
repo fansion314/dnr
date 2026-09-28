@@ -1141,7 +1141,7 @@ diff --git a/cli/rt/run.rs b/cli/rt/run.rs
 diff --git a/cli/tsc/dts/lib.deno.desktop.d.ts b/cli/tsc/dts/lib.deno.desktop.d.ts
 --- a/cli/tsc/dts/lib.deno.desktop.d.ts
 +++ b/cli/tsc/dts/lib.deno.desktop.d.ts
-@@ -377,7 +377,44 @@
+@@ -377,7 +377,68 @@
      deno?: boolean;
    }
  
@@ -1166,14 +1166,38 @@ diff --git a/cli/tsc/dts/lib.deno.desktop.d.ts b/cli/tsc/dts/lib.deno.desktop.d.
 +    addEventListener(type: string, listener: EventListenerOrEventListenerObject | null,
 +      options?: boolean | AddEventListenerOptions): void;
 +  }
-+  export const desktop: DesktopZoom;
++  export const desktop: DesktopZoom & {
++    /** Reports the API contract; a backend that cannot enforce a requested policy
++     * rejects protected window construction before loading application content. */
++    getSecurityCapabilities(): {readonly apiVersion: 1; readonly documentPolicy: true; readonly bindingContext: true};
++    /** Keeps the process alive until stopped. Unsupported capabilities are false. */
++    startSystemMonitoring(): {readonly lock: boolean; readonly suspend: boolean; readonly resume: boolean; readonly idleTime: boolean};
++    stopSystemMonitoring(): void;
++    /** Session idle time in seconds; null when reliable measurement is unavailable. */
++    getSystemIdleTime(): number | null;
++    addEventListener(type: "systemstatechange", listener: (event: CustomEvent<{state: "lock" | "suspend" | "resume"}>) => void, options?: boolean | AddEventListenerOptions): void;
++  };
 +
 +  export type HiddenWindowPolicy =
 +    | { mode: "immediate" }
 +    | { mode: "keep" }
 +    | { mode: "delayed"; delayMs?: number };
 +
++  /** Native-enforced origin policy. Full navigations are performed by the host;
++   * protected navigate()/reload() recreate the native page and revoke old calls. */
++  export interface DocumentPolicy { allowedOrigins: string[]; }
++  /** Host-only, native-verified provenance. Never accepted from page arguments. */
++  export interface BindingContext {
++    readonly trusted: true;
++    readonly mainFrame: true;
++    readonly documentId: string;
++    readonly url: string;
++    readonly origin: string;
++    readonly currentDocument: boolean;
++    readonly signal: AbortSignal;
++  }
    export interface BrowserWindowOptions {
++    documentPolicy?: DocumentPolicy;
 +    /** dnr 0.4.1 extension; absent from pinned upstream Deno Desktop.
 +     * Default action after an uncanceled close request. Default: "hide".
 +     * "hide" follows hiddenWindowPolicy; defaults to release after five minutes. */
@@ -1186,7 +1210,17 @@ diff --git a/cli/tsc/dts/lib.deno.desktop.d.ts b/cli/tsc/dts/lib.deno.desktop.d.
      title?: string;
      /** @default {800} */
      width?: number;
-@@ -644,6 +681,15 @@
+@@ -614,6 +675,9 @@
+       name: N,
+       fn: F & BrowserWindowSerializableCheck<F>,
+     ): void;
++    /** Requires documentPolicy; the first argument is supplied by the host. */
++    bindWithContext(name: string, fn: (context: BindingContext, ...args: BrowserWindowValue[]) => BrowserWindowValue | Promise<BrowserWindowValue>): void;
++    getDocumentPolicy(): DocumentPolicy | null;
+     unbind<N extends keyof T>(name: N): void;
+     /** @throws {BrowserWindowValue} */
+     executeJs(script: string): Promise<BrowserWindowValue>;
+@@ -644,6 +708,15 @@
  
      isClosed(): boolean;
      close(): void;
@@ -1202,7 +1236,7 @@ diff --git a/cli/tsc/dts/lib.deno.desktop.d.ts b/cli/tsc/dts/lib.deno.desktop.d.
  
      isVisible(): boolean;
      show(): void;
-@@ -720,8 +766,8 @@
+@@ -720,8 +793,8 @@
    /** App-level dock / taskbar handle.
     *
     * A `"reopen"` event fires on macOS when the user clicks the dock icon;
@@ -1446,7 +1480,7 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
  (() => {
    const internals = Deno[Deno.internal];
    const {
-@@ -24,6 +24,15 @@
+@@ -24,6 +24,20 @@
      Tray,
      Notification: NotificationNative,
      op_desktop_init,
@@ -1455,6 +1489,11 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
 +    op_desktop_saved_window_size,
 +    op_desktop_record_window_size,
 +    op_desktop_window_metrics,
++    op_desktop_set_document_policy,
++    op_desktop_is_document_current,
++    op_desktop_start_system_monitor,
++    op_desktop_stop_system_monitor,
++    op_desktop_system_idle_seconds,
 +    op_desktop_get_zoom,
 +    op_desktop_set_zoom,
 +    op_desktop_get_zoom_shortcuts,
@@ -1462,7 +1501,7 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
      op_desktop_recv_event,
      op_desktop_resolve_bind_call,
      op_desktop_reject_bind_call,
-@@ -35,8 +44,36 @@
+@@ -35,8 +49,45 @@
      op_desktop_request_notification_permission,
      op_desktop_query_notification_permission,
    } = internals.core.ops;
@@ -1470,6 +1509,15 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
 -  Object.setPrototypeOf(BrowserWindowPrototype, EventTarget.prototype);
 +  const desktop = new EventTarget();
 +  Object.assign(desktop, {
++    startSystemMonitoring() {
++      const mask = op_desktop_start_system_monitor();
++      return Object.freeze({ lock: !!(mask & 1), suspend: !!(mask & 2), resume: !!(mask & 4), idleTime: !!(mask & 8) });
++    },
++    stopSystemMonitoring() { op_desktop_stop_system_monitor(); },
++    getSystemIdleTime() { const seconds = op_desktop_system_idle_seconds(); return Number.isFinite(seconds) && seconds >= 0 ? seconds : null; },
++    getSecurityCapabilities() {
++      return Object.freeze({ apiVersion: 1, documentPolicy: true, bindingContext: true });
++    },
 +    getStatePersistence() {
 +      const [zoom, windowSize] = op_desktop_get_state_persistence();
 +      return { zoom, windowSize };
@@ -1501,7 +1549,7 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
    const privateDesktopBind = Symbol.for("Deno_privateDesktopBind");
    const privateDesktopUnbind = Symbol.for("Deno_privateDesktopUnbind");
  
-@@ -176,19 +213,7 @@
+@@ -176,19 +227,7 @@
      internals.setEventTargetData,
    );
  
@@ -1522,7 +1570,87 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
    internals.defineEventHandler(BrowserWindowPrototype, "keydown");
    internals.defineEventHandler(BrowserWindowPrototype, "keyup");
    internals.defineEventHandler(BrowserWindowPrototype, "mousedown");
-@@ -455,7 +480,8 @@
+@@ -210,6 +249,47 @@
+ 
+   // Per-window bind callback registry: windowId -> Map<name, fn>
+   const windowBindCallbacks = new Map();
++  const contextualBindings = new Map();
++  const documentContexts = new Map();
++  const bindingInFlight = new Map();
++  let documentWatch;
++  function invalidateDocument(windowId) {
++    const old = documentContexts.get(windowId);
++    if (old) old.controller.abort();
++    documentContexts.delete(windowId);
++    for (const [id, call] of bindingInFlight) {
++      if (call.windowId === windowId) {
++        bindingInFlight.delete(id);
++        op_desktop_reject_bind_call(id, "Document was released");
++      }
++    }
++  }
++  function watchDocuments() {
++    if (documentWatch !== undefined) return;
++    documentWatch = setInterval(() => {
++      for (const [windowId, entry] of documentContexts) {
++        if (!entry.context.currentDocument) invalidateDocument(windowId);
++      }
++      if (bindingInFlight.size === 0) { clearInterval(documentWatch); documentWatch = undefined; }
++    }, 100);
++  }
++  function bindingContext(windowId, metadata) {
++    if (!metadata?.protected || !metadata.mainFrame || !op_desktop_is_document_current(metadata.windowId, metadata.documentId)) {
++      throw new Error("Untrusted or obsolete document");
++    }
++    const cached = documentContexts.get(windowId);
++    if (cached && cached.context.documentId === metadata.documentId && cached.nativeId === metadata.windowId) return cached.context;
++    if (cached) cached.controller.abort();
++    const controller = new AbortController();
++    const nativeId = metadata.windowId, documentId = metadata.documentId;
++    const context = Object.freeze({
++      trusted: true, mainFrame: true, documentId, url: metadata.url,
++      origin: new URL(metadata.url).origin, signal: controller.signal,
++      get currentDocument() { return !controller.signal.aborted && op_desktop_is_document_current(nativeId, documentId); },
++    });
++    documentContexts.set(windowId, {context, controller, nativeId});
++    return context;
++  }
+ 
+   // Binding-call correlation: when --inspect is active, both the Deno
+   // and renderer consoles emit matching console.debug messages so the
+@@ -235,6 +315,7 @@
+     if (!windowBindCallbacks.has(windowId)) {
+       windowBindCallbacks.set(windowId, new Map());
+     }
++    contextualBindings.get(windowId)?.delete(name);
+     windowBindCallbacks.get(windowId).set(name, fn.bind(this));
+     BrowserWindowPrototype[privateDesktopBind].call(this, name);
+ 
+@@ -242,7 +323,7 @@
+     // every binding call. The wrapper waits for the native binding to
+     // appear (CEF registers it asynchronously via IPC) and then
+     // replaces it with a logging shim.
+-    if (bindingTrace) {
++    if (bindingTrace && !stateOf(this).options.documentPolicy) {
+       const escapedName = JSON.stringify(name);
+       // Cap retries at ~2s (200 × 10ms). CEF registers bindings via async
+       // IPC; missing them after that long means navigation tore down the
+@@ -280,7 +361,14 @@
+     }
+   };
+ 
++  BrowserWindowPrototype.bindWithContext = function(name, fn) {
++    if (!stateOf(this).options.documentPolicy) throw new TypeError("bindWithContext requires documentPolicy");
++    this.bind(name, fn);
++    if (!contextualBindings.has(this.windowId)) contextualBindings.set(this.windowId, new Set());
++    contextualBindings.get(this.windowId).add(name);
++  };
+   BrowserWindowPrototype.unbind = function(name) {
++    contextualBindings.get(this.windowId)?.delete(name);
+     const windowId = this.windowId;
+     const callbacks = windowBindCallbacks.get(windowId);
+     if (callbacks) callbacks.delete(name);
+@@ -455,7 +543,8 @@
        destroy() {
          tray.removeEventListener("click", onTrayClick);
          if (onBlur) window.removeEventListener("blur", onBlur);
@@ -1532,10 +1660,13 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
        },
      };
    };
-@@ -781,6 +807,13 @@
+@@ -781,6 +870,16 @@
          const ev = await p;
          if (ev == null) break;
          switch (ev.kind) {
++          case "systemState":
++            desktop.dispatchEvent(new CustomEvent("systemstatechange", {detail: {state: ev.state}}));
++            break;
 +          case "zoomChange": {
 +            const { globalFactor, appFactor, effectiveFactor, source } = ev;
 +            desktop.dispatchEvent(new CustomEvent("zoomchange", {
@@ -1546,7 +1677,7 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
            case "appMenuClick": {
              const target = windows.get(ev.windowId);
              if (!target) break;
-@@ -808,7 +841,7 @@
+@@ -808,7 +907,7 @@
              break;
            }
            case "bindCall": {
@@ -1555,7 +1686,51 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
              const fn_ = callbacks?.get(ev.name);
              if (!fn_) {
                op_desktop_reject_bind_call(ev.callId, "No callback bound for: " + ev.name);
-@@ -914,6 +947,7 @@
+@@ -816,21 +915,32 @@
+             }
+             // Run async so it doesn't block the event loop
+             (async () => {
++              let registered = false;
+               try {
+                 const args = Array.isArray(ev.args) ? ev.args : [];
+-                if (bindingTrace) {
+-                  console.debug("[binding:call]", ev.name, ":" + ev.callId, args);
++                const owner = windows.get(ev.windowId);
++                const logicalId = owner?.windowId;
++                const protectedDocument = owner && stateOf(owner).options.documentPolicy;
++                const context = protectedDocument ? bindingContext(logicalId, ev.context) : null;
++                bindingInFlight.set(ev.callId, {windowId: logicalId});
++                registered = true;
++                if (context) watchDocuments();
++                if (bindingTrace && !protectedDocument) console.debug("[binding:call]", ev.name, ":" + ev.callId, args);
++                const result = contextualBindings.get(logicalId)?.has(ev.name) ? await fn_(context, ...args) : await fn_(...args);
++                if (context && !context.currentDocument) throw new Error("Document was released");
++                if (bindingTrace && !protectedDocument) console.debug("[binding:return]", ev.name, ":" + ev.callId, result);
++                if (bindingInFlight.has(ev.callId)) {
++                  op_desktop_resolve_bind_call(ev.callId, result ?? null);
++                  bindingInFlight.delete(ev.callId);
+                 }
+-                const result = await fn_(...args);
+-                if (bindingTrace) {
+-                  console.debug("[binding:return]", ev.name, ":" + ev.callId, result);
++              } catch (e) {
++                const protectedDocument = ev.context?.protected;
++                if (bindingTrace && !protectedDocument) console.debug("[binding:error]", ev.name, ":" + ev.callId, String(e));
++                // Release already rejected removed calls. Keep serialization
++                // failures registered until rejection, avoiding orphaned calls.
++                if (!registered || bindingInFlight.delete(ev.callId)) {
++                  op_desktop_reject_bind_call(ev.callId, protectedDocument ? "Protected binding failed" : String(e));
+                 }
+-                op_desktop_resolve_bind_call(ev.callId, result ?? null);
+-              } catch (e) {
+-                if (bindingTrace) {
+-                  console.debug("[binding:error]", ev.name, ":" + ev.callId, String(e));
+-                }
+-                op_desktop_reject_bind_call(ev.callId, String(e));
+               }
+             })();
+             break;
+@@ -914,6 +1024,7 @@
            case "windowResize": {
              const target = windows.get(ev.windowId);
              if (!target) break;
@@ -1563,7 +1738,7 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
              target.dispatchEvent(new CustomEvent("resize", {
                detail: { width: ev.width, height: ev.height },
              }));
-@@ -936,7 +970,7 @@
+@@ -936,7 +1047,7 @@
            case "closeRequested": {
              const target = windows.get(ev.windowId);
              if (!target) break;
@@ -1572,7 +1747,7 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
              break;
            }
            case "runtimeError": {
-@@ -1018,7 +1052,7 @@
+@@ -1018,7 +1129,7 @@
      }
    })();
  })();
@@ -1589,7 +1764,7 @@ diff --git a/cli/rt_desktop/lib.rs b/cli/rt_desktop/lib.rs
  /// launch".
  const _: () = assert!(
 -  laufey::LAUFEY_API_VERSION == 34,
-+  laufey::LAUFEY_API_VERSION == 36,
++  laufey::LAUFEY_API_VERSION == 37,
    "LAUFEY_API_VERSION mismatch: update this assert and the prebuilt backend release pin in cli/tools/desktop.rs when laufey bumps its API version",
  );
  
@@ -1632,7 +1807,7 @@ diff --git a/cli/rt_desktop/lib.rs b/cli/rt_desktop/lib.rs
          hidden: true,
          transparent: false,
        },
-@@ -260,6 +255,25 @@
+@@ -260,6 +255,43 @@
  }
  
  impl denort::desktop::DesktopApi for WefDesktopApi {
@@ -1642,6 +1817,24 @@ diff --git a/cli/rt_desktop/lib.rs b/cli/rt_desktop/lib.rs
 +  }
 +  fn saved_window_size(&self, key: &str) -> Vec<i32> { denort::dnr_state::size(key).map(|s| s.to_vec()).unwrap_or_default() }
 +  fn record_window_size(&self, key: &str, width: i32, height: i32) { denort::dnr_state::record_size(key, width, height); }
++  fn start_system_monitor(&self) -> u32 {
++    let tx = self.event_tx.clone();
++    laufey::start_system_monitor(move |state| {
++      deno_runtime::ops::desktop::queue_system_state(state);
++      let _ = tx.try_send(deno_runtime::ops::desktop::DesktopEvent::SystemWake);
++    })
++  }
++  fn stop_system_monitor(&self) {
++    laufey::stop_system_monitor();
++    deno_runtime::ops::desktop::clear_system_states();
++  }
++  fn system_idle_seconds(&self) -> f64 { laufey::system_idle_seconds() }
++  fn set_document_policy(&self, id: u32, origins: &[String]) -> bool {
++    laufey::Window::from_id(id).set_document_policy(origins)
++  }
++  fn is_document_current(&self, id: u32, generation: &str) -> bool {
++    laufey::Window::from_id(id).is_document_current(generation)
++  }
 +  fn window_metrics(&self, id: u32) -> Vec<i32> {
 +    let metrics = laufey::Window::from_id(id).metrics();
 +    if metrics[5] == 0 && self.closed_windows.lock().unwrap().remove(&id) {
@@ -1658,7 +1851,7 @@ diff --git a/cli/rt_desktop/lib.rs b/cli/rt_desktop/lib.rs
    fn create_window(
      &self,
      width: i32,
-@@ -276,6 +290,7 @@
+@@ -276,6 +308,7 @@
          frameless,
          no_activate,
          transparent_titlebar,
@@ -1666,7 +1859,7 @@ diff --git a/cli/rt_desktop/lib.rs b/cli/rt_desktop/lib.rs
          hidden: false,
          transparent,
        },
-@@ -288,12 +303,12 @@
+@@ -288,12 +321,12 @@
  
    fn close_window(&self, window_id: u32) {
      self.closed_windows.lock().unwrap().insert(window_id);
@@ -1680,7 +1873,7 @@ diff --git a/cli/rt_desktop/lib.rs b/cli/rt_desktop/lib.rs
    }
  
    fn set_title(&self, window_id: u32, title: &str) {
-@@ -377,7 +392,9 @@
+@@ -377,7 +410,9 @@
        log::info!(
          "[desktop] openDevtools(renderer={renderer}, deno={deno}) → {url}"
        );
@@ -1691,6 +1884,23 @@ diff --git a/cli/rt_desktop/lib.rs b/cli/rt_desktop/lib.rs
        window.set_title("Deno Desktop DevTools");
        window.navigate(&url);
        let window = self.setup_window_events(window, false);
+@@ -450,6 +485,8 @@
+               return;
+             }
+           };
++          let context = laufey_value_to_desktop_value(std::mem::replace(&mut js_call.context, laufey::Value::Null))
++            .unwrap_or(deno_runtime::ops::desktop::DesktopValue::Null);
+           let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+           let call_id =
+             deno_runtime::ops::desktop::register_bind_call(&responses, resp_tx);
+@@ -465,6 +502,7 @@
+             name,
+             args,
+             call_id,
++            context,
+           };
+           if let Err(err) = tx.try_send(event) {
+             let msg = match err {
 diff --git a/ext/fs/interface.rs b/ext/fs/interface.rs
 --- a/ext/fs/interface.rs
 +++ b/ext/fs/interface.rs
@@ -1731,16 +1941,51 @@ diff --git a/ext/fs/interface.rs b/ext/fs/interface.rs
 diff --git a/runtime/ops/desktop.rs b/runtime/ops/desktop.rs
 --- a/runtime/ops/desktop.rs
 +++ b/runtime/ops/desktop.rs
-@@ -313,6 +313,8 @@
+@@ -309,10 +309,35 @@
+   pub deno: Option<bool>,
+ }
+ 
++// Security-relevant OS transitions must survive saturation of the ordinary
++// mouse/keyboard queue. Coalesce states, prioritizing lock and suspend over resume.
++static PENDING_SYSTEM_STATES: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
++pub fn queue_system_state(state: &str) {
++  let bit = match state { "lock" => 1, "suspend" => 2, "resume" => 4, _ => return };
++  PENDING_SYSTEM_STATES.fetch_or(bit, std::sync::atomic::Ordering::Release);
++}
++pub fn clear_system_states() { PENDING_SYSTEM_STATES.store(0, std::sync::atomic::Ordering::Release); }
++fn take_system_state() -> Option<DesktopEvent> {
++  use std::sync::atomic::Ordering;
++  let mut pending = PENDING_SYSTEM_STATES.load(Ordering::Acquire);
++  while pending != 0 {
++    let bit = pending & pending.wrapping_neg();
++    match PENDING_SYSTEM_STATES.compare_exchange_weak(pending, pending & !bit, Ordering::AcqRel, Ordering::Acquire) {
++      Ok(_) => return Some(DesktopEvent::SystemState { state: match bit {1 => "lock", 2 => "suspend", _ => "resume"}.to_owned() }),
++      Err(value) => pending = value,
++    }
++  }
++  None
++}
++
+ /// A single event type that flows from the laufey backend to the Deno runtime.
  #[derive(Debug, serde::Serialize)]
  #[serde(tag = "kind", rename_all = "camelCase")]
  pub enum DesktopEvent {
++  SystemWake,
++  SystemState { state: String },
 +  #[serde(rename_all = "camelCase")]
 +  ZoomChange { global_factor: f64, app_factor: f64, effective_factor: f64, source: String },
    #[serde(rename_all = "camelCase")]
    AppMenuClick { window_id: u32, id: String },
    #[serde(rename_all = "camelCase")]
-@@ -510,6 +512,15 @@
+@@ -335,6 +360,7 @@
+     name: String,
+     args: Vec<DesktopValue>,
+     call_id: u32,
++    context: DesktopValue,
+   },
+   #[serde(rename_all = "camelCase")]
+   MouseClick {
+@@ -510,6 +536,20 @@
  ///
  /// All per-window methods take a `window_id` identifying the target window.
  pub trait DesktopApi: Send + Sync + 'static {
@@ -1749,6 +1994,11 @@ diff --git a/runtime/ops/desktop.rs b/runtime/ops/desktop.rs
 +  fn saved_window_size(&self, _key: &str) -> Vec<i32> { Vec::new() }
 +  fn record_window_size(&self, _key: &str, _width: i32, _height: i32) {}
 +  fn window_metrics(&self, _id: u32) -> Vec<i32> { vec![0; 6] }
++  fn set_document_policy(&self, _id: u32, _origins: &[String]) -> bool { false }
++  fn is_document_current(&self, _id: u32, _generation: &str) -> bool { false }
++  fn start_system_monitor(&self) -> u32 { 0 }
++  fn stop_system_monitor(&self) {}
++  fn system_idle_seconds(&self) -> f64 { -1.0 }
 +  fn desktop_zoom(&self) -> [f64; 3] { [1.0, 1.0, 1.0] }
 +  fn set_desktop_zoom(&self, _factor: f64) {}
 +  fn zoom_shortcuts_enabled(&self) -> bool { false }
@@ -1756,7 +2006,7 @@ diff --git a/runtime/ops/desktop.rs b/runtime/ops/desktop.rs
    /// Create a new window with the given dimensions and return its ID.
    ///
    /// `frameless` drops the title bar and standard window chrome.
-@@ -924,7 +935,9 @@
+@@ -924,7 +964,9 @@
      self.api.is_closed(self.window_id)
    }
  
@@ -1766,7 +2016,21 @@ diff --git a/runtime/ops/desktop.rs b/runtime/ops/desktop.rs
    fn close(&self) {
      if self.surface_taken.get() {
        // A WebGPU surface is referencing this window's native handles.
-@@ -1350,6 +1363,55 @@
+@@ -1295,7 +1337,12 @@
+     s.try_borrow::<DesktopEventReceiver>().map(|r| r.0.clone())
+   };
+   if let Some(rx) = rx {
+-    rx.lock().await.recv().await
++    loop {
++      if let Some(event) = take_system_state() { return Some(event); }
++      let event = rx.lock().await.recv().await;
++      if matches!(event, Some(DesktopEvent::SystemWake)) { continue; }
++      return event;
++    }
+   } else {
+     std::future::pending().await
+   }
+@@ -1350,6 +1397,80 @@
    {
      let _ = tx.send(Err(error));
    }
@@ -1796,6 +2060,31 @@ diff --git a/runtime/ops/desktop.rs b/runtime/ops/desktop.rs
 +  state.borrow::<Arc<dyn DesktopApi>>().window_metrics(id)
 +}
 +
++#[op2(fast)]
++fn op_desktop_start_system_monitor(state: &OpState) -> u32 { state.borrow::<Arc<dyn DesktopApi>>().start_system_monitor() }
++#[op2(fast)]
++fn op_desktop_stop_system_monitor(state: &OpState) { state.borrow::<Arc<dyn DesktopApi>>().stop_system_monitor(); }
++#[op2(fast)]
++fn op_desktop_system_idle_seconds(state: &OpState) -> f64 { state.borrow::<Arc<dyn DesktopApi>>().system_idle_seconds() }
++
++#[op2]
++fn op_desktop_set_document_policy(state: &OpState, id: u32, #[serde] origins: Vec<String>) -> Result<bool, deno_error::JsErrorBox> {
++  if origins.is_empty() || origins.len() > 32 {
++    return Err(deno_error::JsErrorBox::type_error("documentPolicy requires 1 through 32 origins"));
++  }
++  for origin in &origins {
++    let parsed = deno_core::url::Url::parse(origin).map_err(|_| deno_error::JsErrorBox::type_error("invalid document origin"))?;
++    if !matches!(parsed.scheme(), "http" | "https") || parsed.origin().ascii_serialization() != *origin || !parsed.username().is_empty() || parsed.password().is_some() {
++      return Err(deno_error::JsErrorBox::type_error("document origins must be canonical HTTP(S) origins"));
++    }
++  }
++  Ok(state.borrow::<Arc<dyn DesktopApi>>().set_document_policy(id, &origins))
++}
++#[op2(fast)]
++fn op_desktop_is_document_current(state: &OpState, id: u32, #[string] generation: &str) -> bool {
++  state.borrow::<Arc<dyn DesktopApi>>().is_document_current(id, generation)
++}
++
 +#[op2]
 +#[serde]
 +fn op_desktop_get_zoom(state: &OpState) -> Vec<f64> {
@@ -1822,7 +2111,7 @@ diff --git a/runtime/ops/desktop.rs b/runtime/ops/desktop.rs
  }
  
  #[op2(fast)]
-@@ -2191,6 +2253,15 @@
+@@ -2191,6 +2312,20 @@
      op_desktop_verify_ed25519,
      op_desktop_confirm_update,
      op_desktop_init,
@@ -1831,6 +2120,11 @@ diff --git a/runtime/ops/desktop.rs b/runtime/ops/desktop.rs
 +    op_desktop_saved_window_size,
 +    op_desktop_record_window_size,
 +    op_desktop_window_metrics,
++    op_desktop_set_document_policy,
++    op_desktop_is_document_current,
++    op_desktop_start_system_monitor,
++    op_desktop_stop_system_monitor,
++    op_desktop_system_idle_seconds,
 +    op_desktop_get_zoom,
 +    op_desktop_set_zoom,
 +    op_desktop_get_zoom_shortcuts,
@@ -1838,6 +2132,51 @@ diff --git a/runtime/ops/desktop.rs b/runtime/ops/desktop.rs
      op_desktop_recv_event,
      op_desktop_resolve_bind_call,
      op_desktop_reject_bind_call,
+@@ -2222,6 +2357,7 @@
+   use super::dylib_magic_ok;
+   use super::permission_state_to_web_string;
+   use super::register_bind_call;
++  use super::{clear_system_states, queue_system_state, take_system_state};
+   use super::verify_ed25519_b64;
+ 
+   // These tests pin the wire format that the DESKTOP_JS event-loop
+@@ -2496,6 +2632,7 @@
+     );
+     assert_eq!(
+       kind_of(DesktopEvent::BindCall {
++        context: DesktopValue::Null,
+         window_id: 0,
+         name: "".into(),
+         args: vec![],
+@@ -2641,6 +2778,7 @@
+     // it transparently (not nested under "args.value" or with a Some()
+     // wrapper) so the renderer sees exactly what was passed.
+     let ev = DesktopEvent::BindCall {
++      context: DesktopValue::Null,
+       window_id: 1,
+       name: "greet".into(),
+       args: vec![DesktopValue::Dict(vec![
+@@ -3104,4 +3242,19 @@
+     // still verifies.
+     assert!(verify_ed25519_b64(&pk, &sg, message));
+   }
+-}
++  #[test]
++  fn system_states_survive_saturated_input_and_are_coalesced() {
++    clear_system_states();
++    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
++    tx.try_send(DesktopEvent::AppMenuClick { window_id: 1, id: "busy".into() }).unwrap();
++    queue_system_state("resume");
++    queue_system_state("lock");
++    queue_system_state("lock");
++    assert!(tx.try_send(DesktopEvent::SystemWake).is_err());
++    assert!(matches!(take_system_state(), Some(DesktopEvent::SystemState { state }) if state == "lock"));
++    assert!(matches!(take_system_state(), Some(DesktopEvent::SystemState { state }) if state == "resume"));
++    assert!(take_system_state().is_none());
++    assert!(rx.try_recv().is_ok());
++  }
++
++}
 diff --git a/ext/fs/std_fs.rs b/ext/fs/std_fs.rs
 --- a/ext/fs/std_fs.rs
 +++ b/ext/fs/std_fs.rs
@@ -1897,25 +2236,6 @@ diff --git a/ext/fs/std_fs.rs b/ext/fs/std_fs.rs
 +    );
 +  }
 +}
-diff --git a/runtime/js/99_main.js b/runtime/js/99_main.js
---- a/runtime/js/99_main.js
-+++ b/runtime/js/99_main.js
-@@ -722,6 +722,15 @@
-   "op_desktop_confirm_update",
-   "op_desktop_verify_ed25519",
-   "op_desktop_init",
-+  "op_desktop_get_state_persistence",
-+  "op_desktop_set_state_persistence",
-+  "op_desktop_saved_window_size",
-+  "op_desktop_record_window_size",
-+  "op_desktop_window_metrics",
-+  "op_desktop_get_zoom",
-+  "op_desktop_set_zoom",
-+  "op_desktop_get_zoom_shortcuts",
-+  "op_desktop_set_zoom_shortcuts",
-   "op_desktop_recv_event",
-   "op_desktop_resolve_bind_call",
-   "op_desktop_reject_bind_call",
 diff --git a/ext/io/lib.rs b/ext/io/lib.rs
 --- a/ext/io/lib.rs
 +++ b/ext/io/lib.rs
@@ -1943,7 +2263,7 @@ diff --git a/ext/io/lib.rs b/ext/io/lib.rs
  #[async_trait::async_trait(?Send)]
  impl crate::fs::File for StdFileResourceInner {
    fn maybe_path(&self) -> Option<&Path> {
-@@ -1240,19 +1257,19 @@
+@@ -1240,20 +1257,20 @@
    }
  
    fn datasync_sync(self: Rc<Self>) -> FsResult<()> {
@@ -1967,3 +2287,28 @@ diff --git a/ext/io/lib.rs b/ext/io/lib.rs
 +      .with_inner_blocking_task(|file| Ok(dnr_sync_file(file, false)?))
        .await
    }
+ 
+diff --git a/runtime/js/99_main.js b/runtime/js/99_main.js
+--- a/runtime/js/99_main.js
++++ b/runtime/js/99_main.js
+@@ -722,6 +722,20 @@
+   "op_desktop_confirm_update",
+   "op_desktop_verify_ed25519",
+   "op_desktop_init",
++  "op_desktop_get_state_persistence",
++  "op_desktop_set_state_persistence",
++  "op_desktop_saved_window_size",
++  "op_desktop_record_window_size",
++  "op_desktop_window_metrics",
++  "op_desktop_set_document_policy",
++  "op_desktop_is_document_current",
++  "op_desktop_start_system_monitor",
++  "op_desktop_stop_system_monitor",
++  "op_desktop_system_idle_seconds",
++  "op_desktop_get_zoom",
++  "op_desktop_set_zoom",
++  "op_desktop_get_zoom_shortcuts",
++  "op_desktop_set_zoom_shortcuts",
+   "op_desktop_recv_event",
+   "op_desktop_resolve_bind_call",
+   "op_desktop_reject_bind_call",

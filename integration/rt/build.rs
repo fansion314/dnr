@@ -85,6 +85,7 @@ fn main() {
         for framework in [
             "Cocoa",
             "WebKit",
+            "CoreGraphics",
             "UserNotifications",
             "UniformTypeIdentifiers",
             "QuartzCore",

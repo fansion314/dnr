@@ -1,14 +1,15 @@
 # Maintainer: Peilin Fan <peilin.fan@foxmail.com>
 pkgname=dnr-webview
-pkgver=0.5.0
+pkgver=0.5.1
 pkgrel=1
 pkgdesc='Shared Deno runtime (WebView)'
 arch=('x86_64')
 url='https://github.com/fansion314/dnr'
 license=('MIT' 'Apache-2.0' 'BSD-3-Clause')
 depends=('glibc' 'gcc-libs' 'gtk3' 'glib2' 'cairo' 'zlib' 'webkit2gtk-4.1' 'libsoup3')
-makedepends=('git' 'rust' 'clang' 'cmake' 'python' 'pkgconf')
-optdepends=('libayatana-appindicator: system tray support'
+makedepends=('git' 'rust' 'clang' 'cmake' 'python' 'pkgconf' 'libxss')
+optdepends=('libxss: X11 session idle time monitoring'
+            'libayatana-appindicator: system tray support'
             'libnotify: desktop notifications via notify-send')
 provides=("dnr=$pkgver")
 conflicts=('dnr' 'dnr-bin' 'dnr-cef' 'dnr-cef-bin' 'dnr-webview-bin')
@@ -34,6 +35,8 @@ build() {
 
 check() {
     cd "$srcdir/dnr"
+    c++ -std=c++17 -pthread integration/native/tests/document_security.cc -o "$srcdir/document-security-test"
+    "$srcdir/document-security-test"
     cargo test --locked -p dnr-package -p xtask
     DNR_BIN="$srcdir/dnr/dist/dnr" cargo test --locked -p dnr-package \
         --test runtime --test runtime_native --test runtime_groups --test runtime_cache --test runtime_backend --test runtime_node_flags --test runtime_zoom --test runtime_state -- --ignored

@@ -4,6 +4,10 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_program(DNR_READELF readelf REQUIRED)
 set(import_manifest "common|$<TARGET_FILE:laufey_backend_common>\ncef|$<JOIN:$<TARGET_OBJECTS:dnr_bridge>,\ncef|>\n")
 set(import_dependencies dnr_laufey laufey_backend_common)
+if(TARGET dnr_system_monitor)
+  string(APPEND import_manifest "common|$<JOIN:$<TARGET_OBJECTS:dnr_system_monitor>,\ncommon|>\n")
+  list(APPEND import_dependencies dnr_system_monitor)
+endif()
 # backend-common's pkg-config result is scoped to its subdirectory; GTK is
 # already included in either backend's native library list above.
 set(import_libraries ${CEF_NATIVE_LIBRARIES} ${WEBVIEW_NATIVE_LIBRARIES})
