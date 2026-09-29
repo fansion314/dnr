@@ -186,6 +186,27 @@ diff --git a/capi/src/lib.rs b/capi/src/lib.rs
      if self.frameless {
        flags |= LAUFEY_WINDOW_FLAG_FRAMELESS;
      }
+@@ -769,6 +899,20 @@
+     let win = Window { id };
++    // macOS centers the default native frame before applying this requested
++    // content size. Keep its center; later set_size calls retain their position.
++    let centered_position = (cfg!(target_os = "macos")
++      && api.get_window_size.is_some()
++      && api.get_window_position.is_some()
++      && api.set_window_position.is_some())
++    .then(|| {
++      let (old_width, old_height) = win.get_size();
++      let (x, y) = win.get_position();
++      (x + (old_width - width) / 2, y + (old_height - height) / 2)
++    });
+     if let Some(f) = api.set_window_size {
+       unsafe { f(api.backend_data, id, width, height) };
+     }
++    if let Some((x, y)) = centered_position {
++      win.set_position(x, y);
++    }
+     win
+   }
 @@ -818,6 +948,37 @@
      if let Some(f) = api.set_window_size {
        unsafe { f(api.backend_data, self.id, width, height) };

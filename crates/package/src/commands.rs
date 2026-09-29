@@ -214,7 +214,7 @@ fn scan(base: &Path) -> Result<Vec<Cached>> {
     Ok(result)
 }
 fn cache(args: &[String]) -> Result<()> {
-    const HELP: &str = "usage: dnr cache <list|info|clean|rebuild> [--directory <install-directory>] [--package <id-prefix>|--path <package-path>|--all|--stale] [--before <date>] [--max-size <size>] [--path-regex <regex>] [--dry-run] [--json]";
+    const HELP: &str = "usage: dnr cache <list|info|clean|rebuild> [--directory <install-directory>] [--package <id-prefix>|--path <path-glob>|--all|--stale|--trace] [--before <date>] [--max-size <size>] [--path-regex <regex>] [--dry-run] [--json]";
     if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
         println!("{HELP}");
         return Ok(());
@@ -227,6 +227,7 @@ fn cache(args: &[String]) -> Result<()> {
     let mut directory = None;
     let mut package_path = None;
     let mut stale = false;
+    let mut trace = false;
     let mut prefix = None;
     let mut all = false;
     let mut dry = false;
@@ -264,6 +265,7 @@ fn cache(args: &[String]) -> Result<()> {
             "--json" => options.json = true,
             "--all" => all = true,
             "--stale" => stale = true,
+            "--trace" => trace = true,
             "--dry-run" => dry = true,
             value => bail!("unknown cache option: {value}"),
         }
@@ -284,17 +286,25 @@ fn cache(args: &[String]) -> Result<()> {
         "choose --all or a package selector"
     );
     ensure!(
-        directory.is_none() || (package_path.is_none() && !stale && command != "rebuild"),
-        "--directory cannot be combined with --path, --stale or rebuild"
+        directory.is_none() || (package_path.is_none() && !stale && !trace && command != "rebuild"),
+        "--directory cannot be combined with --path, --stale, --trace or rebuild"
     );
     ensure!(
-        command != "rebuild" || (!all && !stale && prefix.is_none() && package_path.is_none()),
+        command != "rebuild"
+            || (!all && !stale && !trace && prefix.is_none() && package_path.is_none()),
         "rebuild does not accept package selectors"
     );
     ensure!(
-        command != "clean" || all || prefix.is_some() || package_path.is_some() || stale || smart,
-        "clean requires --all, --package, --path or --stale"
+        command != "clean"
+            || all
+            || prefix.is_some()
+            || package_path.is_some()
+            || stale
+            || trace
+            || smart,
+        "clean requires --all, --package, --path, --stale or --trace"
     );
+    ensure!(!trace || command == "clean", "--trace requires clean");
     if let Some(p) = &prefix {
         ensure!(
             !p.is_empty() && p.len() <= 64 && p.bytes().all(|b| b.is_ascii_hexdigit()),
@@ -322,6 +332,7 @@ fn cache(args: &[String]) -> Result<()> {
         options.path = package_path;
         options.prefix = prefix;
         options.stale = stale;
+        options.trace = trace;
         options.dry = dry;
         crate::persistent::management::command(&cache_directory()?, command, &options)?;
         return Ok(());

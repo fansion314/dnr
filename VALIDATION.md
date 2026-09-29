@@ -1,5 +1,13 @@
 # 验证记录
 
+## v0.5.2 窗口居中与缓存清理候选验证（2026-09-29）
+
+- 从固定 Deno/Laufey 源码重新准备；两份补丁在独立干净快照上应用及反向检查通过，重复 `xtask prepare` 通过。旧 `.upstream` 缓存树保留为 `deno-pre-v052` 与 `laufey-pre-v052`，未作为实现来源。
+- macOS ARM64 WebView debug runtime 构建通过，`dist/dnr --version` 与 `dist/dnc --version` 均报告 0.5.2。`python3 scripts/test-macos-window-center.py --dnr dist/dnr` 真实 GUI 两次启动：初次 760×520 位于 `(580,159)`，保存并恢复 880×600 后位于 `(520,119)`；两个中心点均为 `(960,419)`。显式 `(200,180)` 坐标在创建及随后 `setSize(900,620)` 后保持不变。仅验证了本机当前显示器布局。
+- macOS `cargo test --locked --workspace`：74 项通过、29 项按设计忽略；严格 Clippy、格式检查及缓存管理 7 项通过。独立临时目录中的真实 DNP 运行生成缓存后，`--path '*.dnp'` dry-run 选中该来源；删除包后 `--trace` JSON dry-run 显示 `would-remove`，实际清理显示 `removed`。发布 helper 18 项通过。
+- xjtuse-arch-dev 原生 Linux x86_64 增量同步后运行 `cargo test --locked -p dnr-package --test cache_management`：7 项通过，覆盖单层/跨层路径通配符、DNP 内容换代、缺失来源、损坏来源保留、完整安装描述与租约清理规则。Linux GUI 本轮未重测；macOS 专属居中分支不会在 Linux 执行。
+- 八份 AUR `.SRCINFO` 用 Arch 非 root `makepkg --printsrcinfo` 重建。尚未执行 v0.5.2 Release/Actions 构建、发布、安装或 Linux runtime 全量复验；这些结果不计为通过。
+
 ## v0.4.3 应用缩放持久化（2026-09-28）
 
 - macOS ARM64 WebView 和 xjtuse Arch Linux x86_64 dual 的 debug runtime 构建通过，

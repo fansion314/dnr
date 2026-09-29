@@ -86,12 +86,13 @@ dnr cache info                             # 总路径、逻辑大小和索引�
 dnr cache list                             # 按来源路径展开明细
 dnr cache info --json                      # 整数 bytes 和完整标识
 dnr cache info --path /absolute/path/app.dnp
-dnr cache clean --path /absolute/path/app.dnp --dry-run
+dnr cache clean --path '/absolute/path/*.dnp' --dry-run
 dnr cache clean --stale --dry-run
+dnr cache clean --trace --dry-run
 dnr cache clean --all
 dnr clean --before 2026-09-01               # 本地日期零点，也接受带时区 RFC 3339
 dnr clean --max-size 2GB                    # 按最后使用时间清理到小于目标
-dnr clean --path-regex '^/private/' --dry-run
+dnr clean --path '/private/**/*.dnp' --dry-run
 dnr cache rebuild
 dnr cache info --directory ./installed
 dnr --no-code-cache app.dnp
@@ -108,10 +109,11 @@ DNR_PROFILE=1 dnr app.dnp                    # 本地转译与缓存写入耗时
 日期选择严格早于指定时刻的路径；未知使用时间不参与日期清理。
 容量清理按使用时间从旧到新，未知时间优先、同时间按路径排序。容量目标针对整个用户缓存，
 其他筛选条件取交集并限制可删除对象；无法达到目标会明确报告。
-正则匹配规范化的完整绝对来源路径，`^/private/` 表示该目录下全部路径，不使用 shell glob 语义。
+`--path` 匹配规范化的完整绝对来源路径。没有通配符时精确匹配；`*`、`?` 和 `[]` 匹配单层路径片段，`**` 可以跨目录。请给通配符参数加引号，避免由 shell 提前展开。相对模式从当前工作目录解析。原有 `--path-regex` 仍可用于高级正则筛选。
+`--trace` 遍历缓存收据记载的来源路径：来源 `.dnp` 或完整安装描述已不存在时清理该路径的缓存；来源仍存在时比较其 v4 内容身份，只清理不匹配的旧代。无法读取或验证的来源会显示 `skipped-unreadable` 并保留缓存以供人工处理。`--trace` 支持 `--dry-run`、`--json` 和其他筛选条件。
 智能选项不接受 `--directory`，不清理包旁安装或应用配置。
 
-清理跳过存在任何活动缓存代的整个来源路径；`--stale` 选择已删除来源或非当前代，`rebuild` 从文件重建
+清理跳过存在任何活动缓存代的整个来源路径；`--stale` 选择已删除来源或非当前代，但不会读取当前 `.dnp` 核对版本。`rebuild` 从文件重建
 SQLite，保留可读的历史访问记录，不把重建时间当作使用时间。默认 list/info 使用近似索引统计，指定路径时检查该路径的实际状态。
 旧格式缓存不迁移、不访问，也不由新版缓存命令管理；确认旧版进程已退出后可另行删除旧 `v2/` 目录。
 独立于 dnr 生命周期的外部进程不继承租约，清理前应停止这类程序。

@@ -1,6 +1,7 @@
 //! Human-readable management. SQLite is an index; deletion always checks disk and leases.
 use super::*;
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
+use globset::{GlobBuilder, GlobMatcher};
 use regex::Regex;
 use rusqlite::params;
 use std::collections::{BTreeMap, BTreeSet};
@@ -10,6 +11,7 @@ pub struct Options {
     pub path: Option<PathBuf>,
     pub prefix: Option<String>,
     pub stale: bool,
+    pub trace: bool,
     pub dry: bool,
     pub json: bool,
     pub before: Option<i64>,
@@ -104,13 +106,100 @@ pub struct Report {
 }
 
 fn normalized(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| {
-        crate::materialize::lexical(&if path.is_absolute() {
-            path.to_owned()
-        } else {
-            std::env::current_dir().unwrap_or_default().join(path)
-        })
-    })
+    let absolute = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    let mut prefix = crate::materialize::lexical(&absolute);
+    let mut suffix = Vec::new();
+    loop {
+        if let Ok(mut real) = prefix.canonicalize() {
+            for part in suffix.iter().rev() {
+                real.push(part);
+            }
+            return real;
+        }
+        let Some(name) = prefix.file_name() else {
+            return crate::materialize::lexical(&absolute);
+        };
+        suffix.push(name.to_os_string());
+        prefix.pop();
+    }
+}
+
+fn path_pattern(path: &Path) -> Result<GlobMatcher> {
+    let pattern = normalized(path).to_string_lossy().into_owned();
+    Ok(GlobBuilder::new(&pattern)
+        .literal_separator(true)
+        .build()
+        .context("invalid path glob")?
+        .compile_matcher())
+}
+
+enum SourceVersion {
+    Missing,
+    Current(String),
+    Unreadable,
+}
+
+fn package_version(path: &Path) -> Result<String> {
+    let stamp = SourceStamp::read(path)?;
+    let mut file = fs::File::open(path)?;
+    let offset = crate::zip_offset(&mut file)?;
+    let bytes =
+        crate::metadata::read_prefix(&mut file, offset)?.context("source is not a v4 DNP")?;
+    let metadata = crate::metadata::decode(&bytes)?;
+    // An old cached path can now point at a package for another platform.
+    // Validate one available logical view before trusting its content hash.
+    let target = metadata.manifest.targets.keys().next().map(String::as_str);
+    let content = crate::Package::open_for_target(path, 0, target)?
+        .package_id()
+        .to_owned();
+    ensure!(
+        SourceStamp::read(path)? == stamp,
+        "source changed during trace"
+    );
+    Ok(content)
+}
+
+fn installed_version(path: &Path, descriptor: &Path) -> Result<String> {
+    let stamp = SourceStamp::read(descriptor)?;
+    let (_, content) = crate::metadata::installed_manifest(path)?;
+    ensure!(
+        SourceStamp::read(descriptor)? == stamp,
+        "installation changed during trace"
+    );
+    Ok(content)
+}
+
+fn source_version(path: &Path) -> SourceVersion {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return SourceVersion::Missing;
+        }
+        Err(_) => return SourceVersion::Unreadable,
+    };
+    if meta.file_type().is_symlink() {
+        return SourceVersion::Unreadable;
+    }
+    if meta.is_dir() {
+        let descriptor = path.join(crate::metadata::INSTALL);
+        match fs::symlink_metadata(&descriptor) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => SourceVersion::Missing,
+            Ok(_) => installed_version(path, &descriptor)
+                .map(SourceVersion::Current)
+                .unwrap_or(SourceVersion::Unreadable),
+            Err(_) => SourceVersion::Unreadable,
+        }
+    } else if meta.is_file() {
+        package_version(path)
+            .map(SourceVersion::Current)
+            .unwrap_or(SourceVersion::Unreadable)
+    } else {
+        SourceVersion::Unreadable
+    }
 }
 
 fn disk_entries(base: &Path) -> Result<Vec<Entry>> {
@@ -202,8 +291,11 @@ pub fn inspect(base: &Path, command: &str, options: &Options) -> Result<Report> 
     let lease = lock_file(&base.join(".catalog.lock"))?;
     // This serializes reconciliation/deletion with index publication, never the module loader.
     lease.lock()?;
-    let detailed =
-        command == "clean" || options.path.is_some() || options.prefix.is_some() || options.stale;
+    let detailed = command == "clean"
+        || options.path.is_some()
+        || options.prefix.is_some()
+        || options.stale
+        || options.trace;
     let mut indexed = !detailed;
     let mut entries = if detailed {
         disk_entries(&base)?
@@ -237,7 +329,7 @@ pub fn inspect(base: &Path, command: &str, options: &Options) -> Result<Report> 
         .len();
     let generation_count = entries.len();
     let indexed_at = entries.iter().filter_map(|e| e.indexed_at).max();
-    let selected = options.path.as_deref().map(normalized);
+    let selected = options.path.as_deref().map(path_pattern).transpose()?;
     let mut groups = BTreeMap::<PathBuf, Vec<Entry>>::new();
     for entry in entries.drain(..) {
         groups.entry(entry.path.clone()).or_default().push(entry);
@@ -247,7 +339,7 @@ pub fn inspect(base: &Path, command: &str, options: &Options) -> Result<Report> 
         groups.sort_by(|a, b| a.1[0].last_used.cmp(&b.1[0].last_used).then(a.0.cmp(&b.0)));
     }
     for (path, mut group) in groups {
-        if selected.as_ref().is_some_and(|p| p != &path)
+        if selected.as_ref().is_some_and(|p| !p.is_match(&path))
             || options
                 .path_regex
                 .as_ref()
@@ -291,12 +383,23 @@ pub fn inspect(base: &Path, command: &str, options: &Options) -> Result<Report> 
             }
         }
         let current = fs::read_to_string(root.join("current")).unwrap_or_default();
+        let source = if options.trace {
+            Some(source_version(&path))
+        } else {
+            None
+        };
+        let unreadable = matches!(&source, Some(SourceVersion::Unreadable));
         group.retain(|e| {
             !options
                 .prefix
                 .as_ref()
                 .is_some_and(|p| !e.content_hash.starts_with(p))
                 && (!options.stale || !path.exists() || e.content_hash != current)
+                && match &source {
+                    None | Some(SourceVersion::Missing) => true,
+                    Some(SourceVersion::Current(hash)) => e.content_hash != hash.as_str(),
+                    Some(SourceVersion::Unreadable) => true,
+                }
         });
         for mut entry in group {
             if detailed {
@@ -309,7 +412,9 @@ pub fn inspect(base: &Path, command: &str, options: &Options) -> Result<Report> 
                 entry.state = if active { "in-use" } else { "ready" }.into();
             }
             if command == "clean" {
-                if active {
+                if unreadable {
+                    entry.action = Some("skipped-unreadable".into());
+                } else if active {
                     entry.action = Some("skipped-in-use".into());
                 } else {
                     if !options.dry {
@@ -393,8 +498,11 @@ pub fn command(base: &Path, command: &str, options: &Options) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
-    let summary =
-        command == "info" && options.path.is_none() && options.prefix.is_none() && !options.stale;
+    let summary = command == "info"
+        && options.path.is_none()
+        && options.prefix.is_none()
+        && !options.stale
+        && !options.trace;
     if !summary {
         for entry in &report.entries {
             println!(

@@ -118,6 +118,8 @@ dnr ./source                               # preserves appId and v4 compilation 
 dnc inspect app.dnp --json                  # no runtime/GUI required
 dnc install app.dnp ./staging               # headless installation for package builders
 dnr cache rebuild                          # rebuild the optional SQLite catalog
+dnr cache clean --path '/apps/**/*.dnp' --dry-run
+dnr cache clean --trace --dry-run           # inspect missing sources and old package versions
 ```
 
 Runtime native loading prefers validated sidecars; V8 and transpilation caches always use the

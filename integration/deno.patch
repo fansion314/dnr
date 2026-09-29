@@ -2006,6 +2006,51 @@ diff --git a/runtime/ops/desktop.rs b/runtime/ops/desktop.rs
    /// Create a new window with the given dimensions and return its ID.
    ///
    /// `frameless` drops the title bar and standard window chrome.
+@@ -765,6 +776,7 @@
+-    let window_id = state
++    let initial_window_id = state
+       .try_borrow::<InitialWindowId>()
+-      .and_then(|iw| iw.0.lock().unwrap().take())
+-      .unwrap_or_else(|| {
++      .and_then(|iw| iw.0.lock().unwrap().take());
++    let was_initial = initial_window_id.is_some();
++    let window_id = initial_window_id.unwrap_or_else(|| {
+         let width = options.as_ref().and_then(|o| o.width).unwrap_or(800);
+         let height = options.as_ref().and_then(|o| o.height).unwrap_or(600);
+@@ -806,13 +818,31 @@
+     if let Some(options) = &options {
+       if let Some(title) = &options.title {
+         api.set_title(window_id, title);
+       }
++      let width = options.width.unwrap_or(800);
++      let height = options.height.unwrap_or(600);
++      // The initial macOS window was centered before JS supplied its size.
++      // Keep that center when applying requested or restored dimensions.
++      let centered_position = if cfg!(target_os = "macos")
++        && was_initial
++        && options.x.is_none()
++        && options.y.is_none()
++      {
++        let (old_width, old_height) = api.get_window_size(window_id);
++        let (x, y) = api.get_window_position(window_id);
++        Some((x + (old_width - width) / 2, y + (old_height - height) / 2))
++      } else {
++        None
++      };
+       api.set_window_size(
+         window_id,
+-        options.width.unwrap_or(800),
+-        options.height.unwrap_or(600),
++        width,
++        height,
+       );
++      if let Some((x, y)) = centered_position {
++        api.set_window_position(window_id, x, y);
++      }
+       if let (Some(x), Some(y)) = (options.x, options.y) {
+         api.set_window_position(window_id, x, y);
+       }
+       if let Some(resizable) = options.resizable {
 @@ -924,7 +964,9 @@
      self.api.is_closed(self.window_id)
    }

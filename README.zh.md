@@ -153,6 +153,8 @@ macOS `.app` 使用原生启动器，并进行本地 ad-hoc 签名；Linux 软�
 使用 `dnc scan prepared --output dnr.package.json` 生成建议配置，检查后通过
 `--package-config dnr.package.json` 打包。`dnr install app.dnp` 预热用户缓存，附加目标目录
 则复制包并准备旁置文件。使用 `dnr cache info` 查看、`dnr cache clean --all` 清理。
+`dnr cache clean --path '/apps/**/*.dnp' --dry-run` 按 Shell 通配符预览清理；
+`dnr cache clean --trace --dry-run` 回溯来源路径和包内容版本，预览失效缓存。
 跨平台变体、路径兼容性及完整配置见[原生打包](docs/NATIVE-PACKAGING.md)。
 
 Linux 可在入口路径前传入 `--backend auto|system-cef|webview`，例如：
