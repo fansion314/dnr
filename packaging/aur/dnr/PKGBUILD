@@ -1,6 +1,6 @@
 # Maintainer: Peilin Fan <peilin.fan@foxmail.com>
 pkgname=dnr
-pkgver=0.5.2
+pkgver=0.5.3
 pkgrel=1
 pkgdesc='Shared Deno runtime (system CEF + WebView)'
 arch=('x86_64')
@@ -18,7 +18,7 @@ optdepends=('libxss: X11 session idle time monitoring'
 conflicts=('dnr-bin' 'dnr-cef' 'dnr-cef-bin' 'dnr-webview' 'dnr-webview-bin')
 # xtask handles Rust LTO and stripping; avoid distro C/C++ LTO and debug packages.
 options=('!lto' '!debug')
-_deno_commit=abd22074e47c6a5cd14e9e4e84743f084aa5a575
+_deno_commit=fe7ed012d92c642fd8e5607ac5a45d517538b5c5
 _laufey_commit=1fe87874288e8359fa3de04d18cc14f56957b000
 source=("dnr::git+https://github.com/fansion314/dnr.git#tag=v${pkgver}"
         "deno::git+https://github.com/denoland/deno.git#commit=${_deno_commit}"

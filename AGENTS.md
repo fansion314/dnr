@@ -59,7 +59,7 @@ ZIP 覆盖层辅助实现放在 `integration/rt/dnr_vfs.rs`，编译缓存适配
 
 ## 开发与构建约定
 
-- 不修改用户提供的 mirror 源仓库。当前固定 Deno `abd22074e4`、Laufey `1fe8787`；升级时同时核对补丁、snapshot、Laufey C ABI、CEF API 和测试。
+- 不修改用户提供的 mirror 源仓库。当前固定 Deno `fe7ed012d9`、Laufey `1fe8787`；升级时同时核对补丁、snapshot、Laufey C ABI、CEF API 和测试。
 - 保留 `Cargo.lock` 和 `integration/deno.Cargo.lock`。新增依赖尽量使用兼容的最新稳定版，不因“最新”破坏固定上游的兼容关系。
 - 保留已安装并配置的 sccache；遇到沙箱权限问题申请提权，不清空 `RUSTC_WRAPPER` 绕过。按用户要求，本地未安装 sccache 时直接构建，不必另行安装。
 - 遵循宿主环境的 RTK 约定。下面展示原生命令以便跨机器复用；执行时按环境要求加 `rtk` 或 `rtk proxy`。

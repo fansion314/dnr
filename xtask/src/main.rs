@@ -100,7 +100,7 @@ fn main() -> Result<()> {
     match Args::parse().command {
         Task::Prepare { deno, laufey } => {
             for (source, name, revision) in
-                [(deno, "deno", "abd22074e4"), (laufey, "laufey", "1fe8787")]
+                [(deno, "deno", "fe7ed012d9"), (laufey, "laufey", "1fe8787")]
             {
                 let output = Command::new("git")
                     .arg("-C")

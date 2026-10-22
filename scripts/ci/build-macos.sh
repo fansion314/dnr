@@ -17,7 +17,7 @@ upstreams=$(mktemp -d "${RUNNER_TEMP:?}/dnr-upstreams.XXXXXX")
 trap 'rm -rf "$upstreams"' EXIT
 for upstream in deno laufey; do
     case $upstream in
-        deno) url=https://github.com/denoland/deno.git; revision=abd22074e47c6a5cd14e9e4e84743f084aa5a575 ;;
+        deno) url=https://github.com/denoland/deno.git; revision=fe7ed012d92c642fd8e5607ac5a45d517538b5c5 ;;
         laufey) url=https://github.com/littledivy/laufey.git; revision=1fe87874288e8359fa3de04d18cc14f56957b000 ;;
     esac
     git init "$upstreams/$upstream"

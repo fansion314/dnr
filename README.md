@@ -201,7 +201,7 @@ Prepare dedicated upstream checkouts at the pinned revisions:
 ```sh
 mkdir -p ../dnr-upstream
 git clone https://github.com/denoland/deno.git ../dnr-upstream/deno
-git -C ../dnr-upstream/deno checkout --detach abd22074e4
+git -C ../dnr-upstream/deno checkout --detach fe7ed012d9
 
 git clone https://github.com/littledivy/laufey.git ../dnr-upstream/laufey
 git -C ../dnr-upstream/laufey checkout --detach 1fe8787

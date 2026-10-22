@@ -35,7 +35,7 @@ def check(repo, revision, patch):
 def main():
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
-    for name, revision in [("deno", "abd22074e4"), ("laufey", "1fe8787")]:
+    for name, revision in [("deno", "fe7ed012d9"), ("laufey", "1fe8787")]:
         parser.add_argument(f"--{name}", type=Path, default=root.parent / "mirror" / name)
         parser.add_argument(f"--{name}-revision", default=revision)
     args = parser.parse_args()
