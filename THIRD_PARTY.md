@@ -10,7 +10,7 @@ available through the following references:
 
 | Component | Pinned source | Local changes |
 | --- | --- | --- |
-| Deno | https://github.com/denoland/deno at `abd22074e4` | `integration/deno.patch` and `integration/rt/` |
+| Deno | https://github.com/denoland/deno at `fe7ed012d9` | `integration/deno.patch` and `integration/rt/` |
 | Laufey | https://github.com/littledivy/laufey at `1fe8787` | `integration/laufey.patch` and `integration/native/` |
 | Rust dependencies | Cargo.lock and integration/deno.Cargo.lock | Locked dependency versions |
 
