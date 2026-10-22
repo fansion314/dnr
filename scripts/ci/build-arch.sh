@@ -88,6 +88,10 @@ if [[ $variant == dnc ]]; then
 fi
 [[ -x installed/usr/bin/$binary && ! -e installed/usr/bin/$excluded_binary ]]
 installed/usr/bin/"$binary" --version | tee "$output/$variant-version.txt"
+if [[ $binary == dnr ]]; then
+    expected_deno=$(cat "$build_root/src/deno/cli/lib/version.txt")
+    grep -F "(Deno $expected_deno;" "$output/$variant-version.txt"
+fi
 ldd installed/usr/bin/"$binary" | tee "$output/$variant-libraries.txt"
 if grep -q 'not found' "$output/$variant-libraries.txt"; then
     exit 1

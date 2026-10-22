@@ -28,6 +28,8 @@ for upstream in deno laufey; do
 done
 cargo run --locked -p xtask -- prepare --deno "$upstreams/deno" --laufey "$upstreams/laufey"
 cargo run --locked -p xtask -- build --backend webview
+expected_deno=$(cat .upstream/deno/cli/lib/version.txt)
+dist/dnr --version | grep -F "(Deno $expected_deno;"
 c++ -std=c++17 -pthread integration/native/tests/document_security.cc -o dist/document-security-test
 dist/document-security-test
 cargo test --locked --workspace
