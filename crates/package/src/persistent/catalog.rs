@@ -295,34 +295,34 @@ mod tests {
     }
 
     #[test]
-    fn flush_uses_one_deadline_for_queue_and_acknowledgement() {
+    fn expired_deadline_applies_to_queue_admission_and_acknowledgement() {
         let (sender, receiver) = mpsc::sync_channel(1);
         assert!(
             sender
                 .try_send(Event::Access(PathBuf::new(), PathBuf::new(), 0))
                 .is_ok()
         );
-        let (release, held) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(200));
-            assert!(matches!(
-                receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
-                Event::Access(..)
-            ));
-            let Event::Flush(reply) = receiver.recv_timeout(Duration::from_secs(1)).unwrap() else {
-                panic!("expected flush barrier");
-            };
-            // Keep the acknowledgement alive until the timed wait has ended.
-            held.recv_timeout(Duration::from_secs(1)).unwrap();
-            drop(reply);
-        });
-        let start = Instant::now();
-        let result = flush_until(&sender, start + Duration::from_millis(250));
-        let elapsed = start.elapsed();
-        release.send(()).unwrap();
-        worker.join().unwrap();
-        assert!(result.is_err());
-        assert!(elapsed < Duration::from_millis(350), "{elapsed:?}");
+        let deadline = Instant::now();
+        // An expired admission wait leaves the queued event untouched.
+        assert!(flush_until(&sender, deadline).is_err());
+        assert!(matches!(receiver.try_recv().unwrap(), Event::Access(..)));
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        // Freeing the queue must not start a fresh acknowledgement budget.
+        // Keep the reply sender alive so this fails specifically on the
+        // original deadline, rather than a disconnected writer.
+        let result = flush_until(&sender, deadline).unwrap_err();
+        assert_eq!(
+            result.downcast_ref::<mpsc::RecvTimeoutError>(),
+            Some(&mpsc::RecvTimeoutError::Timeout)
+        );
+        let Event::Flush(reply) = receiver.try_recv().unwrap() else {
+            panic!("expected flush barrier");
+        };
+        assert!(reply.send(()).is_err());
     }
 
     #[test]
