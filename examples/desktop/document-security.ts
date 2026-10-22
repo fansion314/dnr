@@ -77,6 +77,11 @@ try {
   finishPending!('STALE_RESPONSE_SENTINEL');
   await pause(200);
   assert(!String((await win.executeJs('JSON.stringify(window.received)')).value).includes('STALE_RESPONSE_SENTINEL'), 'old response reached new document');
+  const completedContext = activeContext!;
+  assert(!completedContext.signal.aborted, 'completed binding context should start current');
+  win.hide();
+  await until(() => completedContext.signal.aborted && !completedContext.currentDocument,
+    'completed binding context was not revoked after release');
 
   a = new Deno.BrowserWindow({stateKey:'security-a',documentPolicy:{allowedOrigins:[origin]}});
   b = new Deno.BrowserWindow({stateKey:'security-b',documentPolicy:{allowedOrigins:[origin]}});

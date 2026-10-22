@@ -1,6 +1,7 @@
 # 跟踪上游与补丁边界
 
-固定源版本为 Deno `fe7ed012d9`、Laufey `1fe8787`（Deno v2.9.8）。
+固定源版本由 `integration/upstreams.json` 记录：Deno `fe7ed012d9`、
+Laufey `1fe8787`（Deno v2.9.8）。xtask、补丁检查和 CI 使用其中的完整提交号。
 
 ## 实现放在哪里
 
@@ -24,11 +25,19 @@
 
 ```sh
 python3 scripts/check-upstream-patches.py
+# 若本地 mirror 没有固定提交，指定包含该提交的独立检出。
+python3 scripts/check-upstream-patches.py --deno /path/to/deno --laufey /path/to/laufey
 # 先只读检查候选提交；不切换 mirror 分支，不更新项目的固定版本。
 python3 scripts/check-upstream-patches.py --deno-revision <候选提交> --laufey-revision <候选提交>
 ```
 
 脚本从给定仓库的 Git 对象读取补丁涉及的文件，在临时目录执行正向检查、实际应用和反向检查，并报告文件数、hunk 数和增删行。它不会复制未提交的 mirror 改动，不会修改 mirror、`.upstream` 或 Git 索引。通过只表示补丁可应用，不代表 API/ABI 或运行时兼容。
+
+`xtask prepare` 从固定提交归档两个上游，先在临时目录应用补丁，再发布准备树。
+已有过期准备树会移到 `.upstream/<name>.backup-*`，调试改动可从备份恢复。
+每棵准备树的 `.dnr-provenance.json` 记录上游提交、补丁摘要和源码文件清单；
+`xtask build` 在同步接入代码和构建 dnc 前校验完整清单。接入源码与锁文件仍由
+`integration/` 和 xtask 同步管理。备份确认不再需要后才手工清理。
 
 ## 升级步骤
 

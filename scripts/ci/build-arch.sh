@@ -46,9 +46,11 @@ if [[ $variant != dnc ]]; then
     upstreams=(deno laufey)
 fi
 for upstream in "${upstreams[@]}"; do
+    pin=$(python3 -c 'import json,sys; item=next(p for p in json.load(open("integration/upstreams.json")) if p["name"] == sys.argv[1]); print(item["repository"], item["revision"])' "$upstream")
+    read -r url revision <<< "$pin"
     case $upstream in
-        deno) url=https://github.com/denoland/deno.git; revision=$_deno_commit ;;
-        laufey) url=https://github.com/littledivy/laufey.git; revision=$_laufey_commit ;;
+        deno) [[ $revision == "$_deno_commit" ]] ;;
+        laufey) [[ $revision == "$_laufey_commit" ]] ;;
     esac
     git init "$build_root/src/$upstream"
     git -C "$build_root/src/$upstream" remote add origin "$url"
@@ -56,6 +58,10 @@ for upstream in "${upstreams[@]}"; do
     git -C "$build_root/src/$upstream" checkout --detach FETCH_HEAD
     [[ $(git -C "$build_root/src/$upstream" rev-parse HEAD) == "$revision" ]]
 done
+if [[ $variant != dnc ]]; then
+    python3 scripts/check-upstream-patches.py \
+        --deno "$build_root/src/deno" --laufey "$build_root/src/laufey"
+fi
 
 cp "$recipe" "$build_root/PKGBUILD"
 cat > "$build_root/makepkg.conf" <<'CONFIG'

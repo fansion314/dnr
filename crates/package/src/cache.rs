@@ -82,6 +82,23 @@ pub(crate) struct Cache {
     limiter: Limiter,
 }
 impl Cache {
+    /// Probe a resident entry without waiting for an in-flight decompression.
+    pub(crate) fn get(&self, index: usize) -> Result<Option<Bytes>> {
+        let slot = self
+            .slots
+            .get(index)
+            .ok_or_else(|| anyhow!("invalid ZIP index: {index}"))?;
+        let mut entry = lock(&slot.entry);
+        if let Value::Ready { bytes, referenced } = &mut entry.value {
+            *referenced = true;
+            let bytes = bytes.clone();
+            entry.hits += 1;
+            Ok(Some(bytes))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub(crate) fn new(sizes: Vec<u64>, budget: usize) -> Self {
         let parallelism = std::thread::available_parallelism()
             .map_or(1, usize::from)
@@ -323,6 +340,11 @@ mod tests {
             // Both decoders must enter before either one is allowed to finish.
             progress.recv_timeout(TIMEOUT).unwrap();
             progress.recv_timeout(TIMEOUT).unwrap();
+            // An async host must be able to probe a loading entry without
+            // blocking its event loop while either decoder is held here.
+            assert!(cache.get(0).unwrap().is_none());
+            assert!(cache.get(1).unwrap().is_none());
+            assert_eq!(&*cache.get(2).unwrap().unwrap(), b"hot!");
             assert_eq!(
                 &*cache.read(2, || panic!("resident entry decoded")).unwrap(),
                 b"hot!"

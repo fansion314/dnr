@@ -11,8 +11,7 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-
-[dev-dependencies]
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 tempfile.workspace = true

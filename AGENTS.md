@@ -87,6 +87,14 @@ DNR_BIN="$PWD/dist/dnr" cargo test -p dnr-package --test runtime --test runtime_
 
 原生测试默认被忽略；普通 `cargo test --workspace` 通过不能代表 runtime 已通过。原生测试还需要 C 编译器，会构建真实 Node-API 插件。文档修改检查路径和命令即可，不必重建 runtime。
 
+## 发布提交约定
+
+- 每个版本的发布流程只新增一次发布提交：将版本号、锁文件、打包配方、发布说明及发布前已完成的验证记录合并到该提交，再打标签并推送，由 GitHub Actions 构建和发布。此约定不要求压缩此前的功能或修复提交。
+- 发布完成后，不再为 Actions 成功状态、正式资产哈希、本机安装结果等追加 `docs: record ...` 验收提交。此类发布后证据保存到 Actions artifacts / job summary、GitHub Release 或本地未跟踪的安装记录中。
+- 发布提交只记录当时已经验证的事实，不预写尚未发生的 CI、发布或安装成功结果。
+- 不为补充验收记录而 amend 已发布提交、移动已推送标签或强推历史。若发布后发现实际代码或打包问题，按正常修复流程处理，不为满足“一次发布提交”而隐藏失败或改写已发布版本。
+- 除非用户明确要求，本次发布结束后不自动创建额外的收尾提交；仍遵守未经用户授权不提交或推送的约定。
+
 ## Linux 验证与复验
 
 截至 2026-09-18，macOS ARM64 的历史验收包括 release、包测试、原生测试和真实 WebView 自动验证。本机 CachyOS x86_64 / KDE Wayland / NVIDIA RTX 3080 已完成最新 WebView 与 system-CEF release、各 14 项 runtime/原生测试及真实 GUI 自动验证，覆盖原生插件临时解压与清理、并行读取、tree/extract、托盘保活、显式退出、多应用与存储隔离。两个后端通过两轮 KWin 原生关闭回归；新 desktop manifest 的真实 Arch 打包与 Songjian 安装验证通过。系统共享运行时已更新为 system-CEF，旧 Songjian 与 pi 安装已替换。详细版本、结果和未覆盖范围见 `VALIDATION.md`。

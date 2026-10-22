@@ -781,6 +781,12 @@ impl Package {
         self.read_index(entry.index).map(Some)
     }
 
+    /// Probe resident bytes without decoding or waiting for another reader.
+    /// Async hosts can keep cache hits on-thread and schedule cold reads elsewhere.
+    pub fn read_index_cached(&self, index: usize) -> Result<Option<Arc<[u8]>>> {
+        self.cache.get(index)
+    }
+
     pub fn read_index(&self, index: usize) -> Result<Arc<[u8]>> {
         self.cache.read(index, || {
             // Clones share immutable ZIP metadata and the open file, but each

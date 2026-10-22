@@ -214,3 +214,75 @@ fn cache_damage_readonly_and_parallel_startup_are_nonfatal() {
     fs::write(&invalid, "readonly").unwrap();
     assert_eq!(run(&binary, &package, &invalid, &[]).0, "123\n");
 }
+
+#[test]
+#[ignore = "requires native DNR_BIN"]
+fn normal_and_explicit_exit_are_bounded_with_a_full_blocked_catalog_queue() {
+    use std::{
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+
+    let t = tempfile::tempdir().unwrap();
+    let src = t.path().join("src");
+    fs::create_dir(&src).unwrap();
+    let mut main = String::new();
+    // Each cold module produces cache notifications. Holding the catalog lock
+    // below prevents the writer from draining its bounded 64-event queue.
+    for n in 0..90 {
+        fs::write(
+            src.join(format!("module{n}.ts")),
+            format!("export const n: number = {n};"),
+        )
+        .unwrap();
+        main.push_str(&format!("import './module{n}.ts';\n"));
+    }
+    main.push_str("Deno.writeTextFileSync(Deno.args[0], 'done');\nif (Deno.args[1] === 'explicit') Deno.exit(7);\n");
+    fs::write(src.join("main.ts"), main).unwrap();
+    let package = t.path().join("app.dnp");
+    build(&src, &package);
+
+    for (mode, expected) in [("normal", 0), ("explicit", 7)] {
+        let cache = t.path().join(format!("cache-{mode}"));
+        fs::create_dir(&cache).unwrap();
+        let lock = fs::File::create(cache.join(".catalog.lock")).unwrap();
+        lock.lock().unwrap();
+        let completed = t.path().join(format!("completed-{mode}"));
+        let mut child = Command::new(binary())
+            .arg(&package)
+            .arg(&completed)
+            .arg(mode)
+            .env("DNR_CACHE_DIR", &cache)
+            .env("DNR_CONFIG_DIR", t.path().join("config"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let startup_deadline = Instant::now() + Duration::from_secs(20);
+        while !completed.exists()
+            && child.try_wait().unwrap().is_none()
+            && Instant::now() < startup_deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if !completed.exists() {
+            let _ = child.kill();
+            let output = child.wait_with_output().unwrap();
+            panic!("application did not reach exit in {mode} mode: {output:?}");
+        }
+        // The runtime's internal index budget is 100 ms. The external watchdog
+        // allows scheduler and process teardown overhead without releasing the lock.
+        let exit_deadline = Instant::now() + Duration::from_secs(1);
+        while child.try_wait().unwrap().is_none() && Instant::now() < exit_deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let exited = child.try_wait().unwrap().is_some();
+        if !exited {
+            let _ = child.kill();
+        }
+        let output = child.wait_with_output().unwrap();
+        drop(lock);
+        assert!(exited, "catalog blocked {mode} exit: {output:?}");
+        assert_eq!(output.status.code(), Some(expected), "{output:?}");
+    }
+}

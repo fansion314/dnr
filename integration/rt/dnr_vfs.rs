@@ -94,6 +94,33 @@ impl FileBackedVfs {
 }
 
 impl FileBackedVfsFile {
+    pub(super) async fn dnr_bytes_async(&self) -> std::io::Result<()> {
+        let Some(package) = &self.vfs.dnr_package else {
+            return Ok(());
+        };
+        // Keep the RefCell borrow entirely before the await. Existing handles
+        // retain their bytes even when the shared decompression cache evicts them.
+        if self.dnr_bytes.borrow().is_some() {
+            return Ok(());
+        }
+        let index = self.file.offset.offset as usize;
+        let resident = package
+            .read_index_cached(index)
+            .map_err(std::io::Error::other)?;
+        let bytes = match resident {
+            Some(bytes) => bytes,
+            None => {
+                let package = package.clone();
+                tokio::task::spawn_blocking(move || package.read_index(index))
+                    .await
+                    .map_err(std::io::Error::other)?
+                    .map_err(std::io::Error::other)?
+            }
+        };
+        *self.dnr_bytes.borrow_mut() = Some(bytes);
+        Ok(())
+    }
+
     pub(super) fn dnr_bytes(&self) -> std::io::Result<Option<Arc<[u8]>>> {
         let Some(package) = &self.vfs.dnr_package else {
             return Ok(None);

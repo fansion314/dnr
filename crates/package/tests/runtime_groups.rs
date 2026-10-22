@@ -159,6 +159,201 @@ fn run(package: &Path, cache: &Path, arguments: &[&str]) -> Output {
         .unwrap()
 }
 
+#[test]
+#[ignore = "requires a rebuilt DNR_BIN"]
+fn path_search_respects_virtual_nodes_permissions_and_native_declarations() {
+    use std::{
+        io::{Read, Seek, SeekFrom, Write},
+        os::unix::fs::PermissionsExt,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    for directory in [
+        "skip-file",
+        "skip-dir/audit-tool",
+        "skip-link",
+        "blocked",
+        "native",
+        "native-link",
+    ] {
+        fs::create_dir_all(source.join(directory)).unwrap();
+    }
+    fs::write(source.join("skip-file/audit-tool"), "ordinary resource").unwrap();
+    fs::write(source.join("not-a-directory"), "ordinary resource").unwrap();
+    std::os::unix::fs::symlink("not-a-directory", source.join("not-a-directory-link")).unwrap();
+    fs::write(
+        source.join("blocked/audit-tool.mjs"),
+        "#!/bin/sh\nprintf UNDECLARED\n",
+    )
+    .unwrap();
+    fs::set_permissions(
+        source.join("blocked/audit-tool.mjs"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    fs::write(
+        source.join("native/audit-tool"),
+        "#!/bin/sh\nprintf NATIVE_OK\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        "../skip-file/audit-tool",
+        source.join("skip-link/audit-tool"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        "../native/audit-tool",
+        source.join("native-link/audit-tool"),
+    )
+    .unwrap();
+    fs::write(source.join("worker.mjs"), r#"
+onmessage = async ({data: path}) => {
+  try {
+    const output = await new Deno.Command('audit-tool', {env: {PATH: path}, stdout: 'piped'}).output();
+    postMessage({code: output.code, text: new TextDecoder().decode(output.stdout)});
+  } catch (error) { postMessage({error: String(error)}); }
+};
+"#).unwrap();
+    fs::write(source.join("main.mjs"), r#"
+import assert from 'node:assert/strict';
+import {spawnSync} from 'node:child_process';
+const here = name => new URL('./' + name + '/', import.meta.url).pathname;
+const external = Deno.args[0];
+const path = names => [...names.map(here), external].join(':');
+const output = async (value, command = 'audit-tool') => {
+  const result = await new Deno.Command(command, {env: {PATH: value}, stdout: 'piped'}).output();
+  assert.equal(result.code, 0);
+  return new TextDecoder().decode(result.stdout);
+};
+const rejects = async (action, pattern) => {
+  await assert.rejects(async () => await action(), pattern);
+};
+if (Deno.args[1] === 'damaged') {
+  await rejects(() => output(path(['native'])), /./);
+} else {
+  const skipped = path(['not-a-directory', 'not-a-directory-link', 'skip-file', 'skip-dir', 'skip-link']);
+  assert.equal(await output(skipped), 'DISK_OK');
+  const node = spawnSync('audit-tool', {env: {PATH: skipped}, encoding: 'utf8'});
+  assert.equal(node.status, 0); assert.equal(node.stdout, 'DISK_OK');
+  assert.equal(await output(path(['disk-only'])), 'DISK_ONLY_OK');
+  assert.equal(await output(external + ':' + here('blocked'), 'audit-tool.mjs'), 'DISK_OK');
+  await rejects(() => output(path(['blocked']), 'audit-tool.mjs'), /undeclared packaged native/);
+  await rejects(() => new Deno.Command(here('skip-file') + 'audit-tool').output(), /undeclared packaged native/);
+  await rejects(() => new Deno.Command(here('not-a-directory') + 'audit-tool').output(), /not a directory/);
+  await rejects(() => output(path(['foreign-bin'])), /unavailable/);
+  assert.equal(await output(path(['native-link'])), 'NATIVE_OK');
+  const worker = new Worker(new URL('./worker.mjs', import.meta.url).href, {type: 'module'});
+  const response = new Promise((resolve, reject) => { worker.onmessage = ({data}) => resolve(data); worker.onerror = reject; });
+  worker.postMessage(skipped);
+  try { assert.deepEqual(await response, {code: 0, text: 'DISK_OK'}); } finally { worker.terminate(); }
+}
+console.log('DNR_PATH_OK');
+"#).unwrap();
+    let host = dnr_package::config::Target::host();
+    let foreign: dnr_package::config::Target =
+        serde_json::from_value(if cfg!(target_os = "macos") {
+            serde_json::json!({"os":"linux","arch":"x64","libc":"glibc"})
+        } else {
+            serde_json::json!({"os":"darwin","arch":"arm64"})
+        })
+        .unwrap();
+    fs::write(temp.path().join("foreign-tool"), "#!/bin/sh\nexit 0\n").unwrap();
+    let mut config: PackageConfig = serde_json::from_value(serde_json::json!({
+        "schemaVersion": 1, "targets": {host.id():host, foreign.id():foreign},
+        "groups": [
+            {"id":"tool", "files":["native/**", "native-link/**"], "native":{"executables":["native/audit-tool"]}},
+            {"id":"foreign", "variants":{foreign.id():[{"from":"foreign-tool","to":"foreign-bin/audit-tool"}]}, "native":{"executables":["foreign-bin/audit-tool"]}}
+        ]
+    })).unwrap();
+    config.base_dir = temp.path().to_owned();
+    let package = temp.path().join("application.dnp");
+    pack_with_config(
+        &PackOptions {
+            directory: source,
+            entry: "main.mjs".into(),
+            output: package.clone(),
+            includes: vec![],
+            excludes: vec![],
+            app_id: Some("test.runtime-path".into()),
+            force: false,
+        },
+        &config,
+    )
+    .unwrap();
+    let external = temp.path().join("external");
+    for directory in [
+        "external",
+        "skip-file",
+        "skip-dir",
+        "skip-link",
+        "disk-only",
+        "foreign-bin",
+        "native",
+        "not-a-directory",
+        "not-a-directory-link",
+    ] {
+        fs::create_dir_all(temp.path().join(directory)).unwrap();
+        let text = if directory == "external" {
+            "DISK_OK"
+        } else if directory == "disk-only" {
+            "DISK_ONLY_OK"
+        } else {
+            "WRONG_SHADOW"
+        };
+        let file = temp.path().join(directory).join("audit-tool");
+        fs::write(&file, format!("#!/bin/sh\nprintf {text}\n")).unwrap();
+        fs::set_permissions(file, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    fs::copy(external.join("audit-tool"), external.join("audit-tool.mjs")).unwrap();
+    let arguments = [external.to_str().unwrap()];
+    assert!(
+        successful(run(&package, &temp.path().join("cache"), &arguments)).contains("DNR_PATH_OK")
+    );
+
+    // Corrupt the selected group's ZIP bytes; even an executable disk shadow
+    // and a later PATH candidate must not turn a failed native load into success.
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&package)
+        .unwrap();
+    let offset = dnr_package::zip_offset(&mut file).unwrap();
+    let source = dnr_package::Package::open(&package, 0)
+        .unwrap()
+        .inspect()
+        .unwrap()["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["path"] == "native/audit-tool")
+        .unwrap()["source"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let position = {
+        let mut zip = zip::ZipArchive::new(
+            dnr_package::Region::new(file.try_clone().unwrap(), offset).unwrap(),
+        )
+        .unwrap();
+        let data_start = zip.by_name(&source).unwrap().data_start().unwrap();
+        data_start + offset
+    };
+    file.seek(SeekFrom::Start(position)).unwrap();
+    let mut byte = [0];
+    file.read_exact(&mut byte).unwrap();
+    byte[0] ^= 0xff;
+    file.seek(SeekFrom::Start(position)).unwrap();
+    file.write_all(&byte).unwrap();
+    assert!(
+        successful(run(
+            &package,
+            &temp.path().join("damaged-cache"),
+            &[external.to_str().unwrap(), "damaged"]
+        ))
+        .contains("DNR_PATH_OK")
+    );
+}
+
 fn native_directory(package: &Path, cache: &Path) -> PathBuf {
     let package = dnr_package::Package::open(package, 0).unwrap();
     let path_hash = dnr_package::persistent::hash(package.source_path.to_str().unwrap().as_bytes());

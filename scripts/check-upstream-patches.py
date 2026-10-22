@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check patches against Git snapshots without touching mirrors or .upstream."""
 import argparse
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -35,11 +36,14 @@ def check(repo, revision, patch):
 def main():
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
-    for name, revision in [("deno", "fe7ed012d9"), ("laufey", "1fe8787")]:
+    pins = json.loads((root / "integration" / "upstreams.json").read_text())
+    for pin in pins:
+        name, revision = pin["name"], pin["revision"]
         parser.add_argument(f"--{name}", type=Path, default=root.parent / "mirror" / name)
         parser.add_argument(f"--{name}-revision", default=revision)
     args = parser.parse_args()
-    for name in ["deno", "laufey"]:
+    for pin in pins:
+        name = pin["name"]
         check(getattr(args, name), getattr(args, f"{name}_revision"), root / "integration" / f"{name}.patch")
 
 

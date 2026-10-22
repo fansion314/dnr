@@ -1714,3 +1714,74 @@ DNP 保持 v4；工作区和运行时版本更新为 0.5.0，下游 Laufey C ABI
 - macOS 的 `getNativeWindow()` WebGPU 句柄导出返回 unknown Laufey window handle type: 0；
   Homebrew 已安装 0.4.3 对照复现同样限制。原有 surface_taken 保护保留，但此路径不计实机通过。
 - 没有替换本机已安装的 dnr/dnc、Pi、松间或其他应用；发布后的资产与 CI 结果不追加验收提交。
+
+
+## v0.5.5 发布前上游差异修复复验（2026-10-22）
+
+固定 Deno `fe7ed012d92c642fd8e5607ac5a45d517538b5c5`、Laufey
+`1fe87874288e8359fa3de04d18cc14f56957b000`，DNP 保持 v4。
+本节记录发布前工作树的验证；测试时版本仍为 0.5.4，随后仅统一版本与发布元数据为
+0.5.5。下述结果不表示已发布或已替换本机安装。
+
+### 固定源码与自动测试
+
+- macOS 源码增量同步至 xjtuse 的 `xjtuse-arch-dev`；远端为原生 Linux x86_64，
+  Rust 1.98.1。同步排除本机 `.upstream/`，远端从独立固定提交检出重新 `xtask prepare`。
+  旧准备树保存在远端 `.upstream/{deno,laufey}.backup-*`。未改动用户 mirror。
+- `scripts/check-upstream-patches.py` 在固定快照上对 Deno 23 文件/164 hunk、
+  Laufey 18 文件/124 hunk 完成正向、应用和反向检查。`cargo test --locked -p xtask`
+  10 项通过，含脏 mirror、准备树漂移与失败时保留旧树。
+- 保留 sccache。远端 `xtask build --backend dual --debug --runtime-only`、
+  `--backend system-cef`、`--backend webview` 均通过；`cargo test --offline --locked
+  --workspace` 通过。两个新测试夹具最初把 ZIP `data_start()` 的可选值当作整数，
+  已修正后重跑通过；这不是 runtime 编译失败。
+- 双后端显式 runtime/VFS/groups/cache/backend/node-flags/zoom/state 共 27 项通过。
+  原生 Node-API/FFI 的 3 项以容器 root 运行通过；只读包目录一项按前置条件改用
+  `nobody` 运行通过。新回归覆盖同名磁盘目录复制、损坏 ZIP 不回退、异步读取时
+  事件循环继续推进、句柄位置、PATH 顺序/原生声明与索引满队列退出。
+- 本机 `cargo fmt --all -- --check`、补丁空白检查、Node 文档观察器回归、
+  shell/Python/YAML 语法检查及 18 项发布脚本测试通过。未在本机编译 runtime。
+- 远端 `cargo clippy --offline --locked --workspace --all-targets -- -D warnings` 通过。
+
+### Linux GUI 与产物
+
+- 双后端在 `GUI_SESSION_SLOT=verify` 的 KDE/KWin X11 会话分别指定 WebView 和
+  system-CEF，`examples/desktop/document-security.ts` 均输出
+  `DNR_DOCUMENT_SECURITY_OK`；两个单后端独立构建也分别通过同一真实页面夹具。
+  此夹具覆盖重定向和子框架阻断、旧页面响应、隐藏释放与重建、已完成绑定的
+  context 撤销及多窗口调用。两个单后端的后端选择回归各 2 项通过。
+- WebView 单后端另通过 `examples/desktop/renderer-termination.ts`：只在当前测试
+  dnr 的子孙进程中选择唯一 WebKitWebProcess，复核 PID 启动时间后发送 SIGKILL，
+  已完成绑定的 context 随原生进程终止变为 `currentDocument=false` 且
+  `signal.aborted=true`，进程正常退出并输出 `DNR_RENDERER_TERMINATION_OK`。
+  system-CEF 的同项实机复验**未完成**：页面绑定成功，但 CEF 派生出多个同为
+  `--type=zygote` 且线程布局相似的进程，没有可验证的唯一 renderer PID；探针在
+  发送信号前拒绝继续。这不影响上述 CEF 正常页面夹具的通过结果。
+- `dist/dnr --check-system-cef` 通过：API 14900，CEF headers
+  `152.0.6+g708dc14+chromium-152.0.7977.83`。三个变体的 `ldd` 均无缺失库。
+  debug 二进制保存在远端 `dist/validation-audit-20261022/{dual,system-cef,webview}/dnr`，
+  SHA-256 依次为 `b8c31aeb5e5c377dbadb5c1c33907914e8643847ec6037b2e0409a850b9399b0`、
+  `88f9c0a9425bc2d9a5aedd325b184bd43745e3bcae2b34167f510b67f3c71c7c`、
+  `46063f0286bae9495988ff49d2cee268200fec41a9d116542a394066dd0226b8`。
+- CEF 的首次两轮停在 `about:blank`。实际截图和窗口列表发现隔离桌面的 KDE Wallet
+  首次创建对话框；建立随机口令加密的临时钱包后，真实 HTTP 页面和绑定测试通过。
+  测试结束后，仅将两轮测试各自新建的三份钱包文件移到受限的
+  `.cache/validation/dnr-audit/{wallet-backup,wallet-backup-renderer}/`；原钱包目录为空。没有接受另一个
+  Chromium 条款窗口，也没有关闭密码存储保护。失败轮次不计为通过。
+
+### 固定输入测量及范围
+
+- 同一 8×8 MiB DNP、7 次样本：冷读 1/4 Worker 中位数分别为约 1157/311 ms；
+  驻留读分别约 13.0/5.5 ms。原始输入和记录在远端
+  `dist/validation-audit-20261022/parallel-read/`。
+- 同一 hello DNP、交错运行 7 次：全冷启动约 153.7 ms，已有 V8/转译缓存约
+  86.5 ms，关闭两种编译缓存约 95.9 ms。32 MiB 异步 ZIP 冷读中位数约
+  612 ms，期间计时器触发 274 次，最大观察间隔约 15.4 ms；驻留读约
+  14.0 ms、最大间隔约 14.1 ms。原始样本分别在远端 `startup/results.json` 与
+  `async-zip/results.json`。这些是该机固定输入的观察值，不作为跨平台收益承诺。
+- macOS 新源码的原生构建、WKWebView GUI 和 GitHub PR/手动验证工作流尚未执行；
+  不把 Linux 结果记作 macOS 验收。验证阶段没有发布、安装替换、提交或推送。
+- 远端 `/home/fansion` 在构建前已满；为保留原有项目输出并继续增量构建，将旧的
+  `target/debug/{incremental,deps}` 与 `target/runtime/debug/incremental` 分别移到
+  xjtuse 宿主 `/var/tmp/dnr-*-20261022-92802ab7a212`。验证结束时这三份备份仍保留；
+  发布后的项目缓存清理单独执行，保留共享 Cargo/sccache 缓存和远端 `dist/` 交付产物。

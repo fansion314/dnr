@@ -1,6 +1,9 @@
 use super::*;
 use rusqlite::{Connection, params};
-use std::sync::{OnceLock, mpsc};
+use std::{
+    sync::{OnceLock, mpsc},
+    time::{Duration, Instant},
+};
 enum Event {
     Update(PathBuf, PathBuf),
     Access(PathBuf, PathBuf, i64),
@@ -57,14 +60,41 @@ fn record_access(base: &Path, path: &Path, timestamp: i64) -> Result<()> {
     connect(base)?.execute("INSERT INTO accesses(path,last_used) VALUES (?1,?2) ON CONFLICT(path) DO UPDATE SET last_used=max(last_used,excluded.last_used)", params![path.to_string_lossy(), timestamp])?;
     Ok(())
 }
-/// Explicit management/test barrier; application startup and exit never wait for SQLite.
-pub fn flush() -> Result<()> {
-    if let Some(sender) = WRITER.get() {
-        let (tx, rx) = mpsc::channel();
-        sender.send(Event::Flush(tx))?;
-        rx.recv_timeout(std::time::Duration::from_secs(3))?;
+fn flush_until(sender: &mpsc::SyncSender<Event>, deadline: Instant) -> Result<()> {
+    let (tx, rx) = mpsc::channel();
+    let mut event = Event::Flush(tx);
+    loop {
+        match sender.try_send(event) {
+            Ok(()) => break,
+            Err(mpsc::TrySendError::Full(pending)) => event = pending,
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                anyhow::bail!("cache catalog writer disconnected");
+            }
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        ensure!(!remaining.is_zero(), "cache catalog flush timed out");
+        // A blocked catalog writer can leave the bounded queue full. Count
+        // this wait against the same deadline as the acknowledgement below.
+        std::thread::sleep(remaining.min(Duration::from_millis(1)));
     }
+    rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))?;
     Ok(())
+}
+
+fn flush_for(timeout: Duration) -> Result<()> {
+    WRITER.get().map_or(Ok(()), |sender| {
+        flush_until(sender, Instant::now() + timeout)
+    })
+}
+
+/// Explicit management/test barrier, bounded across both enqueue and completion.
+pub fn flush() -> Result<()> {
+    flush_for(Duration::from_secs(3))
+}
+
+/// Best-effort exit barrier. Disposable index metadata must not delay application exit.
+pub fn flush_on_exit() -> Result<()> {
+    flush_for(Duration::from_millis(100))
 }
 pub(super) fn connect(base: &Path) -> Result<Connection> {
     secure_directory(base)?;
@@ -243,4 +273,68 @@ pub fn command(
             ..Default::default()
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flush_does_not_block_on_a_full_or_disconnected_queue() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        assert!(
+            sender
+                .try_send(Event::Access(PathBuf::new(), PathBuf::new(), 0))
+                .is_ok()
+        );
+        let start = Instant::now();
+        assert!(flush_until(&sender, start + Duration::from_millis(30)).is_err());
+        assert!(start.elapsed() < Duration::from_secs(1));
+        drop(receiver);
+        assert!(flush_until(&sender, Instant::now() + Duration::from_secs(3)).is_err());
+    }
+
+    #[test]
+    fn flush_uses_one_deadline_for_queue_and_acknowledgement() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        assert!(
+            sender
+                .try_send(Event::Access(PathBuf::new(), PathBuf::new(), 0))
+                .is_ok()
+        );
+        let (release, held) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            assert!(matches!(
+                receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+                Event::Access(..)
+            ));
+            let Event::Flush(reply) = receiver.recv_timeout(Duration::from_secs(1)).unwrap() else {
+                panic!("expected flush barrier");
+            };
+            // Keep the acknowledgement alive until the timed wait has ended.
+            held.recv_timeout(Duration::from_secs(1)).unwrap();
+            drop(reply);
+        });
+        let start = Instant::now();
+        let result = flush_until(&sender, start + Duration::from_millis(250));
+        let elapsed = start.elapsed();
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(result.is_err());
+        assert!(elapsed < Duration::from_millis(350), "{elapsed:?}");
+    }
+
+    #[test]
+    fn flush_succeeds_when_the_writer_acknowledges() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            let Event::Flush(reply) = receiver.recv().unwrap() else {
+                panic!("expected flush barrier");
+            };
+            reply.send(()).unwrap();
+        });
+        flush_until(&sender, Instant::now() + Duration::from_secs(1)).unwrap();
+        worker.join().unwrap();
+    }
 }

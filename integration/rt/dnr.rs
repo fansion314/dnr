@@ -48,7 +48,8 @@ impl deno_runtime::deno_process::NativeCommandResolver for PackageCommands {
         cwd: &Path,
         path: Option<&std::ffi::OsStr>,
     ) -> std::io::Result<Option<PathBuf>> {
-        let candidates = if command.contains('/') {
+        let search_path = !command.contains('/');
+        let candidates = if !search_path {
             vec![cwd.join(command)]
         } else {
             path.map(|p| {
@@ -58,8 +59,45 @@ impl deno_runtime::deno_process::NativeCommandResolver for PackageCommands {
             })
             .unwrap_or_default()
         };
-        for candidate in candidates {
+        'candidates: for candidate in candidates {
             if let Some(name) = self.0.logical_path(&candidate) {
+                if search_path {
+                    // PATH lookup skips non-executable nodes in the merged
+                    // filesystem. Do not let a disk file shadow a ZIP directory,
+                    // or treat a symlink's conventional 0777 mode as executable.
+                    for (end, _) in name.match_indices('/') {
+                        let parent = self
+                            .0
+                            .resolve(&name[..end])
+                            .map_err(|e| std::io::Error::other(format!("{e:#}")))?;
+                        if self.0.is_unavailable(&parent) {
+                            return Err(std::io::Error::other(format!(
+                                "native file is unavailable for {}: {name}",
+                                self.0.selected_target()
+                            )));
+                        }
+                        if let Some(entry) = self.0.entries.get(&parent)
+                            && entry.kind != EntryKind::Directory
+                        {
+                            continue 'candidates;
+                        }
+                    }
+                    let resolved = self
+                        .0
+                        .resolve(&name)
+                        .map_err(|e| std::io::Error::other(format!("{e:#}")))?;
+                    if self.0.is_unavailable(&resolved) {
+                        return Err(std::io::Error::other(format!(
+                            "native file is unavailable for {}: {name}",
+                            self.0.selected_target()
+                        )));
+                    }
+                    if let Some(entry) = self.0.entries.get(&resolved)
+                        && (entry.kind != EntryKind::File || !self.0.is_executable(&resolved))
+                    {
+                        continue;
+                    }
+                }
                 if let Some(real) = self
                     .0
                     .native_path(&name, dnr_package::NativeUse::Executable)
@@ -68,7 +106,7 @@ impl deno_runtime::deno_process::NativeCommandResolver for PackageCommands {
                     return Ok(Some(real));
                 }
             }
-            if !command.contains('/') && candidate.is_file() {
+            if search_path && candidate.is_file() {
                 use std::os::unix::fs::PermissionsExt;
                 if candidate.metadata()?.permissions().mode() & 0o111 != 0 {
                     return Ok(Some(candidate));
@@ -88,7 +126,7 @@ pub fn cleanup_native_libraries() {
     if let Some(package) = PACKAGE.get() {
         package.finish_cache();
     }
-    let _ = dnr_package::persistent::catalog::flush();
+    let _ = dnr_package::persistent::catalog::flush_on_exit();
 }
 
 pub fn read_text(path: &Path) -> std::io::Result<String> {

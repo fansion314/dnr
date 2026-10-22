@@ -1,0 +1,12 @@
+[
+  {
+    "name": "deno",
+    "repository": "https://github.com/denoland/deno.git",
+    "revision": "fe7ed012d92c642fd8e5607ac5a45d517538b5c5"
+  },
+  {
+    "name": "laufey",
+    "repository": "https://github.com/littledivy/laufey.git",
+    "revision": "1fe87874288e8359fa3de04d18cc14f56957b000"
+  }
+]

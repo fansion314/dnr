@@ -149,7 +149,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
  use std::borrow::Cow;
  use std::cell::RefCell;
  use std::collections::HashSet;
-@@ -74,6 +78,7 @@
+@@ -74,6 +78,7 @@ impl DenoRtSys {
    }
  
    pub fn maybe_native_addon_loader(&self) -> Option<DenoRtNativeAddonLoaderRc> {
@@ -157,7 +157,19 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.self_extracting {
        // native addons are already on disk, no need for VFS extraction
        None
-@@ -144,6 +149,12 @@
+@@ -135,6 +140,11 @@ impl DenoRtSys {
+ 
+ #[async_trait::async_trait(?Send)]
+ impl FileSystem for DenoRtSys {
++  fn supports_native_directory_clone(&self) -> bool {
++    // Ordinary disk scripts/full installations have no virtual content.
++    self.vfs.dnr_overlay && self.vfs.dnr_package.is_none()
++  }
++
+   fn cwd(&self) -> FsResult<PathBuf> {
+     RealFs.cwd()
+   }
+@@ -144,6 +154,12 @@ impl FileSystem for DenoRtSys {
    }
  
    fn chdir(&self, path: &CheckedPath) -> FsResult<()> {
@@ -170,7 +182,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.is_vfs_path(path) {
        // The process working directory can't actually be changed to a path
        // inside the embedded virtual file system, but applications (e.g.
-@@ -173,7 +184,10 @@
+@@ -173,7 +189,10 @@ impl FileSystem for DenoRtSys {
      path: &CheckedPath,
      options: OpenOptions,
    ) -> FsResult<Rc<dyn DenoFile>> {
@@ -181,7 +193,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
        Ok(Rc::new(self.vfs.open_file(path)?))
      } else {
        RealFs.open_sync(path, options)
-@@ -184,7 +198,9 @@
+@@ -184,7 +203,9 @@ impl FileSystem for DenoRtSys {
      path: CheckedPathBuf,
      options: OpenOptions,
    ) -> FsResult<Rc<dyn DenoFile>> {
@@ -191,7 +203,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
        Ok(Rc::new(self.vfs.open_file(&path)?))
      } else {
        RealFs.open_async(path, options).await
-@@ -197,6 +213,8 @@
+@@ -197,6 +218,8 @@ impl FileSystem for DenoRtSys {
      recursive: bool,
      mode: Option<u32>,
    ) -> FsResult<()> {
@@ -200,7 +212,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(path)?;
      RealFs.mkdir_sync(path, recursive, mode)
    }
-@@ -206,28 +224,35 @@
+@@ -206,28 +229,35 @@ impl FileSystem for DenoRtSys {
      recursive: bool,
      mode: Option<u32>,
    ) -> FsResult<()> {
@@ -236,7 +248,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(&path)?;
      RealFs.chmod_async(path, mode).await
    }
-@@ -238,6 +263,8 @@
+@@ -238,6 +268,8 @@ impl FileSystem for DenoRtSys {
      uid: Option<u32>,
      gid: Option<u32>,
    ) -> FsResult<()> {
@@ -245,7 +257,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(path)?;
      RealFs.chown_sync(path, uid, gid)
    }
-@@ -247,11 +274,14 @@
+@@ -247,11 +279,14 @@ impl FileSystem for DenoRtSys {
      uid: Option<u32>,
      gid: Option<u32>,
    ) -> FsResult<()> {
@@ -260,7 +272,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.is_vfs_path(path) {
        self.vfs.exists(path)
      } else {
-@@ -259,6 +289,7 @@
+@@ -259,6 +294,7 @@ impl FileSystem for DenoRtSys {
      }
    }
    async fn exists_async(&self, path: CheckedPathBuf) -> FsResult<bool> {
@@ -268,7 +280,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.is_vfs_path(&path) {
        Ok(self.vfs.exists(&path))
      } else {
-@@ -267,6 +298,8 @@
+@@ -267,6 +303,8 @@ impl FileSystem for DenoRtSys {
    }
  
    fn lchmod_sync(&self, path: &CheckedPath, mode: u32) -> FsResult<()> {
@@ -277,7 +289,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(path)?;
      RealFs.lchmod_sync(path, mode)
    }
-@@ -276,6 +309,7 @@
+@@ -276,6 +314,7 @@ impl FileSystem for DenoRtSys {
      path: CheckedPathBuf,
      mode: u32,
    ) -> FsResult<()> {
@@ -285,7 +297,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(&path)?;
      RealFs.lchmod_async(path, mode).await
    }
-@@ -286,6 +320,8 @@
+@@ -286,6 +325,8 @@ impl FileSystem for DenoRtSys {
      uid: Option<u32>,
      gid: Option<u32>,
    ) -> FsResult<()> {
@@ -294,7 +306,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(path)?;
      RealFs.lchown_sync(path, uid, gid)
    }
-@@ -296,11 +332,14 @@
+@@ -296,11 +337,14 @@ impl FileSystem for DenoRtSys {
      uid: Option<u32>,
      gid: Option<u32>,
    ) -> FsResult<()> {
@@ -309,7 +321,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(path)?;
      RealFs.remove_sync(path, recursive)
    }
-@@ -309,15 +348,19 @@
+@@ -309,15 +353,19 @@ impl FileSystem for DenoRtSys {
      path: CheckedPathBuf,
      recursive: bool,
    ) -> FsResult<()> {
@@ -329,7 +341,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(&path)?;
      RealFs.rmdir_async(path).await
    }
-@@ -327,6 +370,10 @@
+@@ -327,6 +375,10 @@ impl FileSystem for DenoRtSys {
      oldpath: &CheckedPath,
      newpath: &CheckedPath,
    ) -> FsResult<()> {
@@ -340,7 +352,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(newpath)?;
      if self.is_vfs_path(oldpath) {
        self
-@@ -342,6 +389,8 @@
+@@ -342,6 +394,8 @@ impl FileSystem for DenoRtSys {
      oldpath: CheckedPathBuf,
      newpath: CheckedPathBuf,
    ) -> FsResult<()> {
@@ -349,7 +361,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(&newpath)?;
      if self.is_vfs_path(&oldpath) {
        let fs = self.clone();
-@@ -360,6 +409,10 @@
+@@ -360,7 +414,14 @@ impl FileSystem for DenoRtSys {
    }
  
    fn cp_sync(&self, from: &CheckedPath, to: &CheckedPath) -> FsResult<()> {
@@ -358,15 +370,22 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
 +    let dnr_to = CheckedPath::unsafe_new(self.vfs.dnr_path(to));
 +    let to = &dnr_to;
      self.error_if_in_vfs(to)?;
++    if self.is_vfs_path(from) {
++      return Err(FsError::NotSupported);
++    }
  
      RealFs.cp_sync(from, to)
-@@ -369,12 +422,16 @@
+   }
+@@ -369,12 +430,19 @@ impl FileSystem for DenoRtSys {
      from: CheckedPathBuf,
      to: CheckedPathBuf,
    ) -> FsResult<()> {
 +    let from = self.dnr_checked_path(from);
 +    let to = self.dnr_checked_path(to);
      self.error_if_in_vfs(&to)?;
++    if self.is_vfs_path(&from) {
++      return Err(FsError::NotSupported);
++    }
  
      RealFs.cp_async(from, to).await
    }
@@ -377,7 +396,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.is_vfs_path(path) {
        Ok(self.vfs.stat(path)?.as_fs_stat())
      } else {
-@@ -382,6 +439,7 @@
+@@ -382,6 +450,7 @@ impl FileSystem for DenoRtSys {
      }
    }
    async fn stat_async(&self, path: CheckedPathBuf) -> FsResult<FsStat> {
@@ -385,7 +404,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.is_vfs_path(&path) {
        Ok(self.vfs.stat(&path)?.as_fs_stat())
      } else {
-@@ -390,6 +448,8 @@
+@@ -390,6 +459,8 @@ impl FileSystem for DenoRtSys {
    }
  
    fn lstat_sync(&self, path: &CheckedPath) -> FsResult<FsStat> {
@@ -394,7 +413,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.is_vfs_path(path) {
        Ok(self.vfs.lstat(path)?.as_fs_stat())
      } else {
-@@ -397,6 +457,7 @@
+@@ -397,6 +468,7 @@ impl FileSystem for DenoRtSys {
      }
    }
    async fn lstat_async(&self, path: CheckedPathBuf) -> FsResult<FsStat> {
@@ -402,7 +421,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.is_vfs_path(&path) {
        Ok(self.vfs.lstat(&path)?.as_fs_stat())
      } else {
-@@ -409,6 +470,8 @@
+@@ -409,6 +481,8 @@ impl FileSystem for DenoRtSys {
      path: &CheckedPath,
      bigint: bool,
    ) -> FsResult<FsStatFs> {
@@ -411,7 +430,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.is_vfs_path(path) {
        // the entry must exist within the embedded read-only file system
        self.vfs.stat(path)?;
-@@ -422,6 +485,7 @@
+@@ -422,6 +496,7 @@ impl FileSystem for DenoRtSys {
      path: CheckedPathBuf,
      bigint: bool,
    ) -> FsResult<FsStatFs> {
@@ -419,7 +438,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.is_vfs_path(&path) {
        // the entry must exist within the embedded read-only file system
        self.vfs.stat(&path)?;
-@@ -432,6 +496,8 @@
+@@ -432,6 +507,8 @@ impl FileSystem for DenoRtSys {
    }
  
    fn realpath_sync(&self, path: &CheckedPath) -> FsResult<PathBuf> {
@@ -428,7 +447,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.is_vfs_path(path) {
        Ok(self.vfs.canonicalize(path)?)
      } else {
-@@ -439,6 +505,7 @@
+@@ -439,6 +516,7 @@ impl FileSystem for DenoRtSys {
      }
    }
    async fn realpath_async(&self, path: CheckedPathBuf) -> FsResult<PathBuf> {
@@ -436,7 +455,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.is_vfs_path(&path) {
        Ok(self.vfs.canonicalize(&path)?)
      } else {
-@@ -447,6 +514,8 @@
+@@ -447,6 +525,8 @@ impl FileSystem for DenoRtSys {
    }
  
    fn read_dir_sync(&self, path: &CheckedPath) -> FsResult<Vec<FsDirEntry>> {
@@ -445,7 +464,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.is_vfs_path(path) {
        Ok(self.vfs.read_dir(path)?)
      } else {
-@@ -457,6 +526,7 @@
+@@ -457,6 +537,7 @@ impl FileSystem for DenoRtSys {
      &self,
      path: CheckedPathBuf,
    ) -> FsResult<FsReadDirRc> {
@@ -453,7 +472,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.is_vfs_path(&path) {
        Ok(new_rc(VfsReadDir(Mutex::new(
          self.vfs.read_dir(&path)?.into_iter(),
-@@ -471,6 +541,10 @@
+@@ -471,6 +552,10 @@ impl FileSystem for DenoRtSys {
      oldpath: &CheckedPath,
      newpath: &CheckedPath,
    ) -> FsResult<()> {
@@ -464,7 +483,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(oldpath)?;
      self.error_if_in_vfs(newpath)?;
      RealFs.rename_sync(oldpath, newpath)
-@@ -480,6 +554,8 @@
+@@ -480,6 +565,8 @@ impl FileSystem for DenoRtSys {
      oldpath: CheckedPathBuf,
      newpath: CheckedPathBuf,
    ) -> FsResult<()> {
@@ -473,7 +492,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(&oldpath)?;
      self.error_if_in_vfs(&newpath)?;
      RealFs.rename_async(oldpath, newpath).await
-@@ -490,6 +566,10 @@
+@@ -490,6 +577,10 @@ impl FileSystem for DenoRtSys {
      oldpath: &CheckedPath,
      newpath: &CheckedPath,
    ) -> FsResult<()> {
@@ -484,7 +503,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(oldpath)?;
      self.error_if_in_vfs(newpath)?;
      RealFs.link_sync(oldpath, newpath)
-@@ -499,6 +579,8 @@
+@@ -499,6 +590,8 @@ impl FileSystem for DenoRtSys {
      oldpath: CheckedPathBuf,
      newpath: CheckedPathBuf,
    ) -> FsResult<()> {
@@ -493,7 +512,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(&oldpath)?;
      self.error_if_in_vfs(&newpath)?;
      RealFs.link_async(oldpath, newpath).await
-@@ -510,6 +592,10 @@
+@@ -510,6 +603,10 @@ impl FileSystem for DenoRtSys {
      newpath: &CheckedPath,
      file_type: Option<FsFileType>,
    ) -> FsResult<()> {
@@ -504,7 +523,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(oldpath)?;
      self.error_if_in_vfs(newpath)?;
      RealFs.symlink_sync(oldpath, newpath, file_type)
-@@ -520,12 +606,16 @@
+@@ -520,12 +617,16 @@ impl FileSystem for DenoRtSys {
      newpath: CheckedPathBuf,
      file_type: Option<FsFileType>,
    ) -> FsResult<()> {
@@ -521,7 +540,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.is_vfs_path(path) {
        Ok(self.vfs.read_link(path)?)
      } else {
-@@ -533,6 +623,7 @@
+@@ -533,6 +634,7 @@ impl FileSystem for DenoRtSys {
      }
    }
    async fn read_link_async(&self, path: CheckedPathBuf) -> FsResult<PathBuf> {
@@ -529,7 +548,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.is_vfs_path(&path) {
        Ok(self.vfs.read_link(&path)?)
      } else {
-@@ -541,6 +632,8 @@
+@@ -541,6 +643,8 @@ impl FileSystem for DenoRtSys {
    }
  
    fn truncate_sync(&self, path: &CheckedPath, len: u64) -> FsResult<()> {
@@ -538,7 +557,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(path)?;
      RealFs.truncate_sync(path, len)
    }
-@@ -549,6 +642,7 @@
+@@ -549,6 +653,7 @@ impl FileSystem for DenoRtSys {
      path: CheckedPathBuf,
      len: u64,
    ) -> FsResult<()> {
@@ -546,7 +565,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(&path)?;
      RealFs.truncate_async(path, len).await
    }
-@@ -561,6 +655,8 @@
+@@ -561,6 +666,8 @@ impl FileSystem for DenoRtSys {
      mtime_secs: i64,
      mtime_nanos: u32,
    ) -> FsResult<()> {
@@ -555,7 +574,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(path)?;
      RealFs.utime_sync(path, atime_secs, atime_nanos, mtime_secs, mtime_nanos)
    }
-@@ -572,6 +668,7 @@
+@@ -572,6 +679,7 @@ impl FileSystem for DenoRtSys {
      mtime_secs: i64,
      mtime_nanos: u32,
    ) -> FsResult<()> {
@@ -563,7 +582,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(&path)?;
      RealFs
        .utime_async(path, atime_secs, atime_nanos, mtime_secs, mtime_nanos)
-@@ -586,6 +683,8 @@
+@@ -586,6 +694,8 @@ impl FileSystem for DenoRtSys {
      mtime_secs: i64,
      mtime_nanos: u32,
    ) -> FsResult<()> {
@@ -572,7 +591,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(path)?;
      RealFs.lutime_sync(path, atime_secs, atime_nanos, mtime_secs, mtime_nanos)
    }
-@@ -597,6 +696,7 @@
+@@ -597,6 +707,7 @@ impl FileSystem for DenoRtSys {
      mtime_secs: i64,
      mtime_nanos: u32,
    ) -> FsResult<()> {
@@ -580,7 +599,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.error_if_in_vfs(&path)?;
      RealFs
        .lutime_async(path, atime_secs, atime_nanos, mtime_secs, mtime_nanos)
-@@ -617,6 +717,10 @@
+@@ -617,6 +728,10 @@ impl FsReadDir for VfsReadDir {
  impl sys_traits::BaseFsHardLink for DenoRtSys {
    #[inline]
    fn base_fs_hard_link(&self, src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -591,7 +610,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self
        .link_sync(
          // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
-@@ -632,6 +736,8 @@
+@@ -632,6 +747,8 @@ impl sys_traits::BaseFsHardLink for DenoRtSys {
  impl sys_traits::BaseFsRead for DenoRtSys {
    #[inline]
    fn base_fs_read(&self, path: &Path) -> std::io::Result<Cow<'static, [u8]>> {
@@ -600,7 +619,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self
        .read_file_sync(
          // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
-@@ -678,7 +784,7 @@
+@@ -678,7 +795,7 @@ impl sys_traits::FsMetadataValue for FileBackedVfsMetadata {
    }
  
    fn mode(&self) -> std::io::Result<u32> {
@@ -609,7 +628,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
    }
  
    fn nlink(&self) -> std::io::Result<u64> {
-@@ -773,11 +879,26 @@
+@@ -773,11 +890,26 @@ impl sys_traits::BaseFsReadDir for DenoRtSys {
    ) -> std::io::Result<
      Box<dyn Iterator<Item = std::io::Result<Self::ReadDirEntry>>>,
    > {
@@ -640,7 +659,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      } else {
        #[allow(
          clippy::disallowed_methods,
-@@ -791,6 +912,8 @@
+@@ -791,6 +923,8 @@ impl sys_traits::BaseFsReadDir for DenoRtSys {
  impl sys_traits::BaseFsCanonicalize for DenoRtSys {
    #[inline]
    fn base_fs_canonicalize(&self, path: &Path) -> std::io::Result<PathBuf> {
@@ -649,7 +668,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self
        .realpath_sync(
          // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
-@@ -807,6 +930,8 @@
+@@ -807,6 +941,8 @@ impl sys_traits::BaseFsMetadata for DenoRtSys {
  
    #[inline]
    fn base_fs_metadata(&self, path: &Path) -> std::io::Result<Self::Metadata> {
@@ -658,7 +677,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.is_vfs_path(path) {
        Ok(BoxedFsMetadataValue::new(self.vfs.stat(path)?))
      } else {
-@@ -823,6 +948,8 @@
+@@ -823,6 +959,8 @@ impl sys_traits::BaseFsMetadata for DenoRtSys {
      &self,
      path: &Path,
    ) -> std::io::Result<Self::Metadata> {
@@ -667,7 +686,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.is_vfs_path(path) {
        Ok(BoxedFsMetadataValue::new(self.vfs.lstat(path)?))
      } else {
-@@ -838,6 +965,10 @@
+@@ -838,6 +976,10 @@ impl sys_traits::BaseFsMetadata for DenoRtSys {
  impl sys_traits::BaseFsCopy for DenoRtSys {
    #[inline]
    fn base_fs_copy(&self, from: &Path, to: &Path) -> std::io::Result<u64> {
@@ -678,7 +697,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self
        .error_if_in_vfs(to)
        .map_err(|err| err.into_io_error())?;
-@@ -865,6 +996,10 @@
+@@ -865,6 +1007,10 @@ impl sys_traits::BaseFsCloneFile for DenoRtSys {
      _from: &Path,
      _to: &Path,
    ) -> std::io::Result<()> {
@@ -689,7 +708,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      // will cause a fallback in the code that uses this
      Err(not_supported("cloning files"))
    }
-@@ -877,6 +1012,8 @@
+@@ -877,6 +1023,8 @@ impl sys_traits::BaseFsCreateDir for DenoRtSys {
      path: &Path,
      options: &sys_traits::CreateDirOptions,
    ) -> std::io::Result<()> {
@@ -698,7 +717,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self
        .mkdir_sync(
          // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
-@@ -893,6 +1030,8 @@
+@@ -893,6 +1041,8 @@ impl sys_traits::BaseFsCreateDir for DenoRtSys {
  impl sys_traits::BaseFsRemoveFile for DenoRtSys {
    #[inline]
    fn base_fs_remove_file(&self, path: &Path) -> std::io::Result<()> {
@@ -707,7 +726,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self
        .remove_sync(
          // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
-@@ -908,6 +1047,10 @@
+@@ -908,6 +1058,10 @@ impl sys_traits::BaseFsRemoveFile for DenoRtSys {
  impl sys_traits::BaseFsRename for DenoRtSys {
    #[inline]
    fn base_fs_rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
@@ -718,7 +737,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self
        .rename_sync(
          // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
-@@ -955,6 +1098,7 @@
+@@ -955,6 +1109,7 @@ impl sys_traits::FsFileMetadata for FsFileAdapter {
          name: file.file.name.clone(),
          len: file.file.offset.len,
          mtime: file.file.mtime,
@@ -726,7 +745,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
        })),
      }
    }
-@@ -1094,6 +1238,8 @@
+@@ -1094,6 +1249,8 @@ impl sys_traits::BaseFsOpen for DenoRtSys {
      path: &Path,
      options: &sys_traits::OpenOptions,
    ) -> std::io::Result<Self::File> {
@@ -735,7 +754,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      if self.is_vfs_path(path) {
        Ok(FsFileAdapter::Vfs(self.vfs.open_file(path)?))
      } else {
-@@ -1110,6 +1256,10 @@
+@@ -1110,6 +1267,10 @@ impl sys_traits::BaseFsOpen for DenoRtSys {
  
  impl sys_traits::BaseFsSymlinkDir for DenoRtSys {
    fn base_fs_symlink_dir(&self, src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -746,7 +765,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self
        .symlink_sync(
          // PERMISSIONS: this is ok because JS code will never use sys_traits. Probably
-@@ -1318,11 +1468,22 @@
+@@ -1318,11 +1479,22 @@ impl VfsRoot {
  pub struct FileBackedVfsFile {
    file: VirtualFile,
    pos: RefCell<u64>,
@@ -769,7 +788,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      match pos {
        SeekFrom::Start(pos) => {
          *self.pos.borrow_mut() = pos;
-@@ -1363,14 +1524,10 @@
+@@ -1363,14 +1535,10 @@ impl FileBackedVfsFile {
    }
  
    pub fn read_to_buf(&self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -788,7 +807,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
    }
  
    fn metadata(&self) -> FileBackedVfsMetadata {
-@@ -1379,6 +1536,7 @@
+@@ -1379,10 +1547,18 @@ impl FileBackedVfsFile {
        file_type: sys_traits::FileType::File,
        len: self.file.offset.len,
        mtime: self.file.mtime,
@@ -796,17 +815,38 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      }
    }
  
-@@ -1396,6 +1554,9 @@
-     if read_pos > self.file.offset.len {
-       return Ok(Cow::Borrowed(&[]));
-     }
+   fn read_to_end(&self) -> FsResult<Cow<'static, [u8]>> {
 +    if let Some(bytes) = self.dnr_bytes()? {
-+      return Ok(Cow::Owned(bytes[(read_pos as usize).min(bytes.len())..].to_vec()));
++      let mut pos = self.pos.borrow_mut();
++      let start = usize::try_from(*pos).unwrap_or(usize::MAX).min(bytes.len());
++      let result = bytes[start..].to_vec();
++      *pos = (*pos).max(self.file.offset.len);
++      return Ok(Cow::Owned(result));
 +    }
-     if read_pos == 0 {
-       Ok(self.vfs.read_file_all(&self.file)?)
-     } else {
-@@ -1560,8 +1721,7 @@
+     let read_pos = {
+       let mut pos = self.pos.borrow_mut();
+       let read_pos = *pos;
+@@ -1422,7 +1598,9 @@ impl deno_io::fs::File for FileBackedVfsFile {
+     self: Rc<Self>,
+     mut buf: BufMutView,
+   ) -> FsResult<(usize, BufMutView)> {
+-    // this is fast, no need to spawn a task
++    // Only cold compressed ZIP reads need the blocking pool. Embedded memory
++    // VFS files retain their upstream synchronous fast path.
++    self.dnr_bytes_async().await?;
+     let nread = self.read_to_buf(&mut buf)?;
+     Ok((nread, buf))
+   }
+@@ -1448,7 +1626,7 @@ impl deno_io::fs::File for FileBackedVfsFile {
+     self.read_to_end()
+   }
+   async fn read_all_async(self: Rc<Self>) -> FsResult<Cow<'static, [u8]>> {
+-    // this is fast, no need to spawn a task
++    self.dnr_bytes_async().await?;
+     self.read_to_end()
+   }
+ 
+@@ -1560,8 +1738,7 @@ impl deno_io::fs::File for FileBackedVfsFile {
      position: u64,
    ) -> FsResult<usize> {
      self
@@ -816,9 +856,11 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
        .map_err(FsError::Io)
    }
    async fn read_at_async(
-@@ -1570,8 +1730,7 @@
+@@ -1569,9 +1746,9 @@ impl deno_io::fs::File for FileBackedVfsFile {
+     mut buf: BufMutView,
      position: u64,
    ) -> FsResult<(usize, BufMutView)> {
++    self.dnr_bytes_async().await?;
      let nread = self
 -      .vfs
 -      .read_file(&self.file, position, &mut buf)
@@ -826,7 +868,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
        .map_err(FsError::Io)?;
      Ok((nread, buf))
    }
-@@ -1602,11 +1761,13 @@
+@@ -1602,11 +1779,13 @@ pub struct FileBackedVfsMetadata {
    pub file_type: sys_traits::FileType,
    pub len: u64,
    pub mtime: Option<u128>,
@@ -840,7 +882,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
        file_type: match vfs_entry {
          VfsEntryRef::Dir(_) => sys_traits::FileType::Dir,
          VfsEntryRef::File(_) => sys_traits::FileType::File,
-@@ -1632,7 +1793,7 @@
+@@ -1632,7 +1811,7 @@ impl FileBackedVfsMetadata {
      // VFS files are always readable. Directories also get execute (traverse).
      // Symlinks get 0o777 per Unix convention (target permissions matter).
      // This ensures node:fs access() checks succeed for embedded files.
@@ -849,7 +891,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
        0o555 // r-xr-xr-x
      } else if self.file_type == sys_traits::FileType::Symlink {
        0o777 // rwxrwxrwx (conventional for symlinks)
-@@ -1674,6 +1835,8 @@
+@@ -1674,6 +1853,8 @@ impl FileBackedVfsMetadata {
  
  #[derive(Debug)]
  pub struct FileBackedVfs {
@@ -858,7 +900,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
    vfs_data: Cow<'static, [u8]>,
    fs_root: VfsRoot,
    case_sensitivity: FileSystemCaseSensitivity,
-@@ -1686,6 +1849,8 @@
+@@ -1686,6 +1867,8 @@ impl FileBackedVfs {
      case_sensitivity: FileSystemCaseSensitivity,
    ) -> Self {
      Self {
@@ -867,7 +909,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
        vfs_data: data,
        fs_root,
        case_sensitivity,
-@@ -1701,10 +1866,17 @@
+@@ -1701,10 +1884,17 @@ impl FileBackedVfs {
    }
  
    pub fn is_path_within(&self, path: &Path) -> bool {
@@ -885,7 +927,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      self.fs_root.find_entry(path, self.case_sensitivity).is_ok()
    }
  
-@@ -1717,11 +1889,15 @@
+@@ -1717,11 +1907,15 @@ impl FileBackedVfs {
        file: file.clone(),
        vfs: self.clone(),
        pos: Default::default(),
@@ -901,7 +943,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      Ok(
        dir
          .entries
-@@ -1756,6 +1932,8 @@
+@@ -1756,6 +1950,8 @@ impl FileBackedVfs {
    }
  
    pub fn read_link(&self, path: &Path) -> std::io::Result<PathBuf> {
@@ -910,7 +952,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      let (_, entry) = self
        .fs_root
        .find_entry_no_follow(path, self.case_sensitivity)?;
-@@ -1770,6 +1948,8 @@
+@@ -1770,6 +1966,8 @@ impl FileBackedVfs {
    }
  
    pub fn lstat(&self, path: &Path) -> std::io::Result<FileBackedVfsMetadata> {
@@ -919,7 +961,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      let (_, entry) = self
        .fs_root
        .find_entry_no_follow(path, self.case_sensitivity)?;
-@@ -1777,12 +1957,21 @@
+@@ -1777,12 +1975,21 @@ impl FileBackedVfs {
    }
  
    pub fn stat(&self, path: &Path) -> std::io::Result<FileBackedVfsMetadata> {
@@ -941,7 +983,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      Ok(path)
    }
  
-@@ -1797,6 +1986,10 @@
+@@ -1797,6 +2004,10 @@ impl FileBackedVfs {
      &self,
      offset_with_len: OffsetWithLength,
    ) -> std::io::Result<Cow<'static, [u8]>> {
@@ -952,7 +994,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      let read_range =
        self.get_read_range(offset_with_len, 0, offset_with_len.len)?;
      match &self.vfs_data {
-@@ -1811,6 +2004,14 @@
+@@ -1811,6 +2022,14 @@ impl FileBackedVfs {
      pos: u64,
      buf: &mut [u8],
    ) -> std::io::Result<usize> {
@@ -967,7 +1009,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      let read_range = self.get_read_range(file.offset, pos, buf.len() as u64)?;
      let read_len = read_range.len();
      buf[..read_len].copy_from_slice(&self.vfs_data[read_range]);
-@@ -1837,6 +2038,8 @@
+@@ -1837,6 +2056,8 @@ impl FileBackedVfs {
    }
  
    pub fn dir_entry(&self, path: &Path) -> std::io::Result<&VirtualDirectory> {
@@ -976,7 +1018,7 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      let (_, entry) = self.fs_root.find_entry(path, self.case_sensitivity)?;
      match entry {
        VfsEntryRef::Dir(dir) => Ok(dir),
-@@ -1846,6 +2049,8 @@
+@@ -1846,6 +2067,8 @@ impl FileBackedVfs {
    }
  
    pub fn file_entry(&self, path: &Path) -> std::io::Result<&VirtualFile> {
@@ -985,6 +1027,40 @@ diff --git a/cli/rt/file_system.rs b/cli/rt/file_system.rs
      let (_, entry) = self.fs_root.find_entry(path, self.case_sensitivity)?;
      match entry {
        VfsEntryRef::Dir(_) => Err(std::io::Error::other("path is a directory")),
+@@ -1881,6 +2104,33 @@ mod test {
+     String::from_utf8(vfs.read_file_all(file).unwrap().into_owned()).unwrap()
+   }
+ 
++  #[tokio::test]
++  async fn recursive_copy_never_exports_a_virtual_path_via_real_fs() {
++    let temp_dir = TempDir::new();
++    let mut builder = VfsBuilder::new();
++    let src = temp_dir.path().canonicalize().join("source/value.txt");
++    builder
++      .add_file_with_data_raw_for_testing(src.as_path(), b"ZIP".to_vec(), None)
++      .unwrap();
++    let (root, vfs) = into_virtual_fs(builder, &temp_dir);
++    std::fs::create_dir_all(&root).unwrap();
++    std::fs::write(root.join("value.txt"), "DISK").unwrap();
++    let sys = DenoRtSys::new(Arc::new(vfs));
++    let source = CheckedPathBuf::unsafe_new(root);
++    let target = CheckedPathBuf::unsafe_new(temp_dir.path().join("copied").to_path_buf());
++    assert!(!sys.supports_native_directory_clone());
++    assert!(RealFs.supports_native_directory_clone());
++    assert!(matches!(
++      sys.cp_sync(&source.as_checked_path(), &target.as_checked_path()),
++      Err(FsError::NotSupported)
++    ));
++    assert!(matches!(
++      sys.cp_async(source, target.clone()).await,
++      Err(FsError::NotSupported)
++    ));
++    assert!(!target.exists());
++  }
++
+   #[test]
+   fn builds_and_uses_virtual_fs() {
+     let temp_dir = TempDir::new();
 diff --git a/cli/rt/lib.rs b/cli/rt/lib.rs
 --- a/cli/rt/lib.rs
 +++ b/cli/rt/lib.rs
@@ -1571,7 +1647,7 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
    internals.defineEventHandler(BrowserWindowPrototype, "keydown");
    internals.defineEventHandler(BrowserWindowPrototype, "keyup");
    internals.defineEventHandler(BrowserWindowPrototype, "mousedown");
-@@ -210,6 +249,47 @@
+@@ -210,6 +249,54 @@
  
    // Per-window bind callback registry: windowId -> Map<name, fn>
    const windowBindCallbacks = new Map();
@@ -1579,6 +1655,11 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
 +  const documentContexts = new Map();
 +  const bindingInFlight = new Map();
 +  let documentWatch;
++  function stopDocumentWatchIfIdle() {
++    if (documentContexts.size !== 0 || documentWatch === undefined) return;
++    clearInterval(documentWatch);
++    documentWatch = undefined;
++  }
 +  function invalidateDocument(windowId) {
 +    const old = documentContexts.get(windowId);
 +    if (old) old.controller.abort();
@@ -1589,15 +1670,17 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
 +        op_desktop_reject_bind_call(id, "Document was released");
 +      }
 +    }
++    stopDocumentWatchIfIdle();
 +  }
 +  function watchDocuments() {
-+    if (documentWatch !== undefined) return;
++    if (documentWatch !== undefined || documentContexts.size === 0) return;
 +    documentWatch = setInterval(() => {
 +      for (const [windowId, entry] of documentContexts) {
 +        if (!entry.context.currentDocument) invalidateDocument(windowId);
 +      }
-+      if (bindingInFlight.size === 0) { clearInterval(documentWatch); documentWatch = undefined; }
++      stopDocumentWatchIfIdle();
 +    }, 100);
++    Deno.unrefTimer(documentWatch);
 +  }
 +  function bindingContext(windowId, metadata) {
 +    if (!metadata?.protected || !metadata.mainFrame || !op_desktop_is_document_current(metadata.windowId, metadata.documentId)) {
@@ -1619,7 +1702,7 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
  
    // Binding-call correlation: when --inspect is active, both the Deno
    // and renderer consoles emit matching console.debug messages so the
-@@ -235,6 +315,7 @@
+@@ -235,6 +322,7 @@
      if (!windowBindCallbacks.has(windowId)) {
        windowBindCallbacks.set(windowId, new Map());
      }
@@ -1627,7 +1710,7 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
      windowBindCallbacks.get(windowId).set(name, fn.bind(this));
      BrowserWindowPrototype[privateDesktopBind].call(this, name);
  
-@@ -242,7 +323,7 @@
+@@ -242,7 +330,7 @@
      // every binding call. The wrapper waits for the native binding to
      // appear (CEF registers it asynchronously via IPC) and then
      // replaces it with a logging shim.
@@ -1636,7 +1719,7 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
        const escapedName = JSON.stringify(name);
        // Cap retries at ~2s (200 × 10ms). CEF registers bindings via async
        // IPC; missing them after that long means navigation tore down the
-@@ -280,7 +361,14 @@
+@@ -280,7 +368,14 @@
      }
    };
  
@@ -1651,7 +1734,7 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
      const windowId = this.windowId;
      const callbacks = windowBindCallbacks.get(windowId);
      if (callbacks) callbacks.delete(name);
-@@ -455,7 +543,8 @@
+@@ -455,7 +550,8 @@
        destroy() {
          tray.removeEventListener("click", onTrayClick);
          if (onBlur) window.removeEventListener("blur", onBlur);
@@ -1661,7 +1744,7 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
        },
      };
    };
-@@ -781,6 +870,16 @@
+@@ -781,6 +877,16 @@
          const ev = await p;
          if (ev == null) break;
          switch (ev.kind) {
@@ -1678,7 +1761,7 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
            case "appMenuClick": {
              const target = windows.get(ev.windowId);
              if (!target) break;
-@@ -808,7 +907,7 @@
+@@ -808,7 +914,7 @@
              break;
            }
            case "bindCall": {
@@ -1687,7 +1770,7 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
              const fn_ = callbacks?.get(ev.name);
              if (!fn_) {
                op_desktop_reject_bind_call(ev.callId, "No callback bound for: " + ev.name);
-@@ -816,21 +915,32 @@
+@@ -816,21 +922,32 @@
              }
              // Run async so it doesn't block the event loop
              (async () => {
@@ -1730,7 +1813,7 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
                }
              })();
              break;
-@@ -914,6 +1024,7 @@
+@@ -914,6 +1031,7 @@
            case "windowResize": {
              const target = windows.get(ev.windowId);
              if (!target) break;
@@ -1738,7 +1821,7 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
              target.dispatchEvent(new CustomEvent("resize", {
                detail: { width: ev.width, height: ev.height },
              }));
-@@ -936,7 +1047,7 @@
+@@ -936,7 +1054,7 @@
            case "closeRequested": {
              const target = windows.get(ev.windowId);
              if (!target) break;
@@ -1747,7 +1830,7 @@ diff --git a/cli/rt/desktop.rs b/cli/rt/desktop.rs
              break;
            }
            case "runtimeError": {
-@@ -1018,7 +1129,7 @@
+@@ -1018,7 +1136,7 @@
      }
    })();
  })();
@@ -1904,7 +1987,7 @@ diff --git a/cli/rt_desktop/lib.rs b/cli/rt_desktop/lib.rs
 diff --git a/ext/fs/interface.rs b/ext/fs/interface.rs
 --- a/ext/fs/interface.rs
 +++ b/ext/fs/interface.rs
-@@ -102,10 +102,10 @@
+@@ -102,10 +102,10 @@ impl From<i32> for OpenOptions {
        options.create = true;
        flags &= !libc::O_CREAT;
      }
@@ -1918,7 +2001,7 @@ diff --git a/ext/fs/interface.rs b/ext/fs/interface.rs
        flags &= !libc::O_EXCL;
      }
      if (flags & libc::O_RDWR) == libc::O_RDWR {
-@@ -140,6 +140,19 @@
+@@ -140,6 +140,19 @@ impl From<i32> for OpenOptions {
  mod tests {
    use super::*;
  
@@ -1938,6 +2021,19 @@ diff --git a/ext/fs/interface.rs b/ext/fs/interface.rs
    #[test]
    fn read_only_create_flags_require_read_and_write_access() {
      let options = OpenOptions::from(libc::O_RDONLY | libc::O_CREAT);
+@@ -210,6 +223,12 @@ pub type FsReadDirRc = deno_maybe_sync::MaybeArc<dyn FsReadDir>;
+ 
+ #[async_trait::async_trait(?Send)]
+ pub trait FileSystem: std::fmt::Debug + MaybeSend + MaybeSync {
++  /// Whether OS directory cloning observes this filesystem's entire view.
++  /// Virtual/overlay implementations must use the per-entry copy path.
++  fn supports_native_directory_clone(&self) -> bool {
++    false
++  }
++
+   fn cwd(&self) -> FsResult<PathBuf>;
+   fn tmp_dir(&self) -> FsResult<PathBuf>;
+   fn chdir(&self, path: &CheckedPath) -> FsResult<()>;
 diff --git a/runtime/ops/desktop.rs b/runtime/ops/desktop.rs
 --- a/runtime/ops/desktop.rs
 +++ b/runtime/ops/desktop.rs
@@ -2226,7 +2322,18 @@ diff --git a/runtime/ops/desktop.rs b/runtime/ops/desktop.rs
 diff --git a/ext/fs/std_fs.rs b/ext/fs/std_fs.rs
 --- a/ext/fs/std_fs.rs
 +++ b/ext/fs/std_fs.rs
-@@ -1436,3 +1436,55 @@
+@@ -36,6 +36,10 @@ pub struct RealFs;
+ 
+ #[async_trait::async_trait(?Send)]
+ impl FileSystem for RealFs {
++  fn supports_native_directory_clone(&self) -> bool {
++    true
++  }
++
+   fn cwd(&self) -> FsResult<PathBuf> {
+     std::env::current_dir().map_err(Into::into)
+   }
+@@ -1436,3 +1440,55 @@ pub fn open_options_for_checked_path(
  
    opts
  }
@@ -2358,3 +2465,16 @@ diff --git a/runtime/js/99_main.js b/runtime/js/99_main.js
    "op_desktop_recv_event",
    "op_desktop_resolve_bind_call",
    "op_desktop_reject_bind_call",
+diff --git a/ext/node/ops/fs.rs b/ext/node/ops/fs.rs
+--- a/ext/node/ops/fs.rs
++++ b/ext/node/ops/fs.rs
+@@ -1745,7 +1745,8 @@ fn try_clone_dir_no_filter(
+   dest: &str,
+   opts: CpOptions,
+ ) -> Result<bool, FsError> {
+-  if opts.dereference
++  if !fs.supports_native_directory_clone()
++    || opts.dereference
+     || !opts.recursive
+     || !opts.force
+     || opts.error_on_exist

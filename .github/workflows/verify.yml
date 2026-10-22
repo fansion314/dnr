@@ -1,0 +1,106 @@
+name: Verify dnr without publishing
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/verify.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'examples/**'
+      - 'integration/**'
+      - 'xtask/**'
+      - 'scripts/**'
+      - 'packaging/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS ARM64 WebView
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare native toolchain
+        run: |
+          test "$(uname -sm)" = 'Darwin arm64'
+          brew list cmake >/dev/null 2>&1 || brew install cmake
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Restore Cargo and V8 downloads
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/.rusty_v8
+          key: verify-macos-${{ hashFiles('Cargo.lock', 'integration/deno.Cargo.lock') }}
+          restore-keys: verify-macos-
+      - name: Build and test
+        run: bash scripts/ci/build-macos.sh
+      - name: Exercise protected WKWebView documents
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          result = subprocess.run(
+              ["dist/dnr", "examples/desktop/document-security.ts"],
+              capture_output=True, text=True, timeout=120,
+          )
+          print(result.stdout)
+          print(result.stderr)
+          assert result.returncode == 0 and "DNR_DOCUMENT_SECURITY_OK" in result.stdout
+          PY
+
+  arch:
+    name: Arch ${{ matrix.package }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [dnr, dnr-cef, dnr-webview, dnc]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free space on the disposable hosted runner
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h /
+      - name: Restore Cargo downloads
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ runner.temp }}/dnr-cache/cargo
+          key: verify-arch-${{ matrix.package }}-${{ hashFiles('Cargo.lock', 'integration/deno.Cargo.lock') }}
+          restore-keys: verify-arch-${{ matrix.package }}-
+      - name: Build and test in Arch
+        env:
+          PACKAGE: ${{ matrix.package }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          mkdir -p "$RUNNER_TEMP/dnr-cache" dist/release
+          docker pull ghcr.io/archlinux/archlinux:base-devel
+          docker run --rm \
+            --volume "$PWD:/work" \
+            --volume "$RUNNER_TEMP/dnr-cache:/cache" \
+            --env "DNR_BUILD_UID=$(id -u)" \
+            --workdir /work \
+            ghcr.io/archlinux/archlinux:base-devel \
+            bash scripts/ci/build-arch.sh "$PACKAGE" "v$version" "$SOURCE_COMMIT"

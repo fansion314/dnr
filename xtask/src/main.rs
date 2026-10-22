@@ -1,4 +1,5 @@
 mod linux_artifact;
+mod provenance;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -42,33 +43,8 @@ fn run(cmd: &mut Command) -> Result<()> {
     Ok(())
 }
 
-fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if matches!(name.to_str(), Some(".git" | "target" | "node_modules")) {
-            continue;
-        }
-        let dest = dst.join(&name);
-        let kind = entry.file_type()?;
-        if kind.is_symlink() {
-            #[cfg(unix)]
-            {
-                let _ = fs::remove_file(&dest);
-                std::os::unix::fs::symlink(fs::read_link(entry.path())?, dest)?;
-            }
-        } else if kind.is_dir() {
-            copy_tree(&entry.path(), &dest)?;
-        } else {
-            fs::copy(entry.path(), dest)?;
-        }
-    }
-    Ok(())
-}
-
 fn apply_upstream_patch(dest: &Path, patch: &Path) -> Result<()> {
-    // copy_tree deliberately excludes .git. Without a local repository, Git
+    // Git archives exclude .git. Without a local repository, Git
     // discovers dnr's parent checkout and can silently skip every patch path
     // when invoked from this subdirectory, even for --reverse --check.
     run(Command::new("git").args(["init", "--quiet"]).arg(dest))?;
@@ -99,28 +75,7 @@ fn main() -> Result<()> {
         .to_owned();
     match Args::parse().command {
         Task::Prepare { deno, laufey } => {
-            for (source, name, revision) in
-                [(deno, "deno", "fe7ed012d9"), (laufey, "laufey", "1fe8787")]
-            {
-                let output = Command::new("git")
-                    .arg("-C")
-                    .arg(&source)
-                    .args(["rev-parse", "HEAD"])
-                    .output()?;
-                let actual = String::from_utf8(output.stdout)?;
-                if !output.status.success() || !actual.starts_with(revision) {
-                    bail!("{name}: expected {revision}, found {}", actual.trim());
-                }
-                let dest = root.join(".upstream").join(name);
-                if !dest.exists() {
-                    copy_tree(&source, &dest)?;
-                }
-            }
-            for name in ["deno", "laufey"] {
-                let dest = root.join(".upstream").join(name);
-                let patch = root.join("integration").join(format!("{name}.patch"));
-                apply_upstream_patch(&dest, &patch)?;
-            }
+            let _lease = provenance::prepare(&root, &[("deno", deno), ("laufey", laufey)])?;
             sync_integration(&root)?;
         }
         Task::Build {
@@ -140,6 +95,10 @@ fn main() -> Result<()> {
             {
                 bail!("system-cef and dual require native Linux x86_64");
             }
+            // Check before synchronizing any files or building dnc. Keep the
+            // shared lease until compilation finishes so prepare cannot swap
+            // either source tree underneath this build.
+            let _lease = provenance::verify_for_build(&root)?;
             let manifest = root.join(".upstream/deno/Cargo.toml");
             if !manifest.exists() {
                 bail!("run cargo run -p xtask -- prepare first");

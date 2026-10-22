@@ -42,9 +42,11 @@ DENO-FS-EXCL 另在 `ext/fs/interface.rs` 添加标志分离单元测试，在 `
 | --- | --- |
 | 静态 runtime/后端和平台构建 | `integration/rt/build.rs`、`integration/native/*`；两个 patch 的 Cargo、runtime loader、平台 main 接入 |
 | DNP/VFS、Node-API/FFI、原生子进程 | `crates/package/*`、`integration/rt/dnr_vfs.rs`；Deno `file_system.rs`、`node.rs`、`ext/process/lib.rs` 的宿主入口 |
+| 目录复制与异步 ZIP 读取 | Deno `ext/node/ops/fs.rs` 的 macOS 克隆快路只供纯磁盘 FileSystem 使用；DNP 按 VFS 条目复制。`file_system.rs` 的异步冷读经 `dnr_vfs.rs` 投递阻塞任务，暖缓存命中直接读取；后台解压仍受包缓存的并发和字节预算限制。 |
 | 应用身份、离线解析、TS/JS 加载、顶层 await | `integration/rt/dnr.rs`；Deno `binary.rs`、`run.rs`、`cli/lib/worker.rs`。加载器修复随相关原生 runtime 测试复验 |
 | V8/转译缓存与 Worker 继承 | `integration/rt/dnr_cache.rs`；Deno `runtime/{code_cache,worker,web_worker}.rs`。保留读取、晚写入和 worker 回调路径 |
 | 懒 GUI 初始化和窗口/托盘/任务保活 | `integration/rt/desktop_tail.rs`；Laufey `capi/src/lib.rs`、WebView/CEF 平台事件循环。关闭最后一窗不能直接终止后台服务 |
+| 受保护文档失效通知 | Deno `cli/rt/desktop.rs` 的观察器随已保存的文档上下文存活，每 100 ms 检查原生文档身份且不保活进程；即使绑定调用已完成，旧 `BindingContext.signal` 仍会在文档失效后中止。 |
 | 内容缩放（未发布扩展） | `integration/rt/dnr_zoom_config.rs` 与 `integration/native/desktop_zoom.h`；Deno desktop ops/类型/JS、Laufey Rust 控制器与下游 C ABI 36、三种后端原生 zoom/快捷键。全局乘应用倍率，应用进程内所有窗口同步；配置启动快照；详见 ZOOM.md |
 | macOS Dock 重开 | Laufey `webview/src/main_mac.mm` 与 Deno desktop 类型说明；既派发应用事件，也保留 AppKit 的默认恢复 |
 
