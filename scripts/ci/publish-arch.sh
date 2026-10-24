@@ -33,5 +33,18 @@ else
     gh release create "$tag" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
         --title "dnr $tag" --notes-file "$notes"
 fi
-gh release upload "$tag" release-assets/* --repo "$GITHUB_REPOSITORY" --clobber
+# Existing public bytes are immutable. New signatures are append-only.
+existing=$(mktemp -d)
+trap 'rm -rf "$existing"' EXIT
+gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' > "$existing/names"
+for asset in release-assets/*; do
+    [[ -f $asset ]] || continue
+    name=${asset##*/}
+    if grep -Fxq "$name" "$existing/names"; then
+        gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$name" --dir "$existing"
+        cmp "$asset" "$existing/$name" || { echo "Refusing to overwrite $name; publish a new packaging revision" >&2; exit 1; }
+    else
+        gh release upload "$tag" "$asset" --repo "$GITHUB_REPOSITORY"
+    fi
+done
 gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest

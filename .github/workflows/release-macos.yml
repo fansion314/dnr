@@ -167,4 +167,24 @@ jobs:
         run: bash scripts/ci/test-homebrew.sh release-assets/dnr.rb
       - name: Record unified tap publication path
         run: |
-          echo 'Public release installation passed. The unified fansion314/homebrew-dnr tap independently verifies and imports this release.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Public release installation passed. The unified fansion314/packages tap independently verifies and imports this release.' >> "$GITHUB_STEP_SUMMARY"
+
+  notify-distribution:
+    name: Notify unified package distribution
+    needs: release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
+        with:
+          app-id: ${{ vars.DISTRIBUTION_APP_ID }}
+          private-key: ${{ secrets.DISTRIBUTION_APP_PRIVATE_KEY }}
+          owner: fansion314
+          repositories: packages
+          permission-actions: write
+      - name: Dispatch the applicable downstream checks
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: gh workflow run downstream.yml -R fansion314/packages --ref main -f project=dnr -f platform=macos

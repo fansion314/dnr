@@ -14,14 +14,27 @@ output="$root/dist/release"
 
 if (( EUID == 0 )); then
     # This script runs only inside the disposable official Arch container.
+    if [[ ${DNR_TESTING_CEF:-0} == 1 ]]; then
+        # Testing validation is isolated from the packages published for stable.
+        pacman -Syu --noconfirm --needed python
+        python3 - <<'PY'
+from pathlib import Path
+path = Path('/etc/pacman.conf')
+text = path.read_text()
+text = text.replace('[core]', '[core-testing]\nInclude = /etc/pacman.d/mirrorlist\n\n[core]', 1)
+text = text.replace('[extra]', '[extra-testing]\nInclude = /etc/pacman.d/mirrorlist\n\n[extra]', 1)
+path.write_text(text)
+PY
+    fi
     source "$recipe"
-    pacman -Syu --noconfirm --needed base-devel sudo git ca-certificates \
+    pacman -Syu --noconfirm --needed base-devel sudo git ca-certificates sccache \
         "${depends[@]}" "${makedepends[@]}"
     useradd --create-home --uid "${DNR_BUILD_UID:?missing build uid}" builder
     mkdir -p "$build_root/src" "$output" /cache/cargo
     chown -R builder:builder "$build_root" "$output" /cache
     exec runuser -u builder -- env \
         CARGO_HOME=/cache/cargo CARGO_BUILD_JOBS=2 CARGO_PROFILE_RELEASE_DEBUG=0 \
+        RUSTC_WRAPPER=/usr/bin/sccache SCCACHE_DIR=/cache/sccache \
         bash "$0" "$variant" "$tag" "$commit"
 fi
 
@@ -64,6 +77,8 @@ if [[ $variant != dnc ]]; then
 fi
 
 cp "$recipe" "$build_root/PKGBUILD"
+(cd "$build_root" && makepkg --printsrcinfo) > "$output/$variant.SRCINFO"
+diff -u "$root/packaging/aur/$variant/.SRCINFO" "$output/$variant.SRCINFO"
 cat > "$build_root/makepkg.conf" <<'CONFIG'
 source /etc/makepkg.conf
 # Release packages must run on generic x86_64, not just the runner's CPU.

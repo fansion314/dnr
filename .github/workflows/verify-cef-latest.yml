@@ -1,0 +1,38 @@
+name: Verify latest CEF API without publishing
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: verify-cef-latest-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  cef156:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Restore testing CEF build downloads
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: ${{ runner.temp }}/dnr-cache
+          key: cef156-${{ hashFiles('Cargo.lock', 'integration/deno.Cargo.lock') }}
+          restore-keys: cef156-
+      - name: Build and test against Arch testing CEF with strict API 15600
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          mkdir -p "$RUNNER_TEMP/dnr-cache" dist/release
+          docker run --rm --volume "$PWD:/work" --volume "$RUNNER_TEMP/dnr-cache:/cache" \
+            --env "DNR_BUILD_UID=$(id -u)" --env DNR_TESTING_CEF=1 --env DNR_CEF_API_VERSION=15600 \
+            --workdir /work ghcr.io/archlinux/archlinux:base-devel \
+            bash scripts/ci/build-arch.sh dnr-cef "v$version" "$SOURCE_COMMIT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: cef156-validation-only
+          path: dist/release/*
+          if-no-files-found: error

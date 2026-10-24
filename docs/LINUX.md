@@ -53,7 +53,7 @@ dist/dnr examples/desktop/smoke.ts
 
 ## 系统 CEF
 
-首版使用 Arch/CachyOS 系统 CEF 布局。系统需提供 `/usr/lib/cef`、CEF headers、wrapper 源码和 `FindCEF.cmake`，以及 GTK3、X11、Xi 开发包。CEF API 固定为 14900，并检查运行时 API hash。本机 CEF 152.0.6 提供该 API，不能仅凭 CEF 主版本不同就跳过 hash 检查。
+首版使用 Arch/CachyOS 系统 CEF 布局。系统需提供 `/usr/lib/cef`、CEF headers、wrapper 源码和 `FindCEF.cmake`，以及 GTK3、X11、Xi 开发包。CEF API 默认使用 15400，对应 Arch 稳定仓库的 CEF 154；可通过 `DNR_CEF_API_VERSION=15600` 构建最新稳定 CEF 156 API。wrapper、后端与 ABI bridge 必须使用同一 API，且运行时继续严格检查 API hash。CEF 156 当前位于 Arch extra-testing，普通发行包不强制启用 testing。不同主版本不代表 hash 必然兼容，最新 API 的构建与运行验证由 CI 执行。
 
 ```sh
 cargo run -p xtask -- build --backend system-cef

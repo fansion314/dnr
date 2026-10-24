@@ -37,6 +37,14 @@ fn main() {
     let backend = std::env::var("DNR_BACKEND").expect("DNR_BACKEND set by xtask");
     println!("cargo:rustc-env=DNR_BACKEND={backend}");
     println!("cargo:rerun-if-env-changed=DNR_BACKEND");
+    println!("cargo:rerun-if-env-changed=DNR_CEF_API_VERSION");
+    let cef_api = std::env::var("DNR_CEF_API_VERSION").unwrap_or_else(|_| "15400".into());
+    assert!(
+        cef_api.len() == 5
+            && cef_api.bytes().all(|byte| byte.is_ascii_digit())
+            && !cef_api.starts_with('0'),
+        "DNR_CEF_API_VERSION must be an explicit five-digit versioned CEF API"
+    );
     println!("cargo:rerun-if-env-changed=DNR_ROOT");
     println!(
         "cargo:rerun-if-changed={}",
@@ -61,6 +69,7 @@ fn main() {
         .arg(&output)
         .arg("-DCMAKE_BUILD_TYPE=Release")
         .arg(format!("-DDNR_BACKEND={backend}"))
+        .arg(format!("-DCEF_API_VERSION={cef_api}"))
         .arg(format!(
             "-DLAUFEY_SOURCE_DIR={}",
             root.join(".upstream/laufey").display()

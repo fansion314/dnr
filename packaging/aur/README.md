@@ -81,7 +81,7 @@ notifications (`notify-send`). Install `base-devel` on the
 target machine if using `dnc --target archlinux`, which invokes system makepkg.
 Neither is needed for ordinary CLI scripts. The system-CEF recipe requires the
 Arch CEF headers, wrapper sources, `FindCEF.cmake` and resources under `/usr/lib/cef`.
-Both CEF-capable recipes check CEF API 14900 during `check()`; a version number alone cannot guarantee
+Both CEF-capable recipes check CEF API 15400 by default (`DNR_CEF_API_VERSION=15600` for CEF 156) during `check()`; a version number alone cannot guarantee
 ABI compatibility. After a system CEF update, run `dnr --check-system-cef` and
 rebuild if the compatibility check fails.
 

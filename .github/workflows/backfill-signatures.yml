@@ -1,0 +1,33 @@
+name: Sign existing pacman release
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing public release tag; append only missing signatures
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: append-release-signatures
+  cancel-in-progress: false
+jobs:
+  sign:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out reviewed distribution helpers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: fansion314/packages
+          ref: 2541818619fec1816c135b7579d908b1a409e0b6
+          path: .distribution
+          persist-credentials: false
+      - name: Verify and sign existing public package bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCH_SIGNING_PRIVATE_KEY: ${{ secrets.ARCH_SIGNING_PRIVATE_KEY }}
+          ARCH_SIGNING_PASSPHRASE: ${{ secrets.ARCH_SIGNING_PASSPHRASE }}
+          ARCH_SIGNING_KEY_ID: ${{ secrets.ARCH_SIGNING_KEY_ID }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: python3 .distribution/arch/sign.py backfill "$RELEASE_TAG"

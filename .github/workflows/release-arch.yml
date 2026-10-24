@@ -97,7 +97,41 @@ jobs:
           pattern: arch-*
           path: release-assets
           merge-multiple: true
+      - name: Check out reviewed distribution helpers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: fansion314/packages
+          ref: 2541818619fec1816c135b7579d908b1a409e0b6
+          path: .distribution
+          persist-credentials: false
+      - name: Sign the verified pacman archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCH_SIGNING_PRIVATE_KEY: ${{ secrets.ARCH_SIGNING_PRIVATE_KEY }}
+          ARCH_SIGNING_PASSPHRASE: ${{ secrets.ARCH_SIGNING_PASSPHRASE }}
+          ARCH_SIGNING_KEY_ID: ${{ secrets.ARCH_SIGNING_KEY_ID }}
+        run: python3 .distribution/arch/sign.py directory release-assets --tag "$GITHUB_REF_NAME"
       - name: Publish all runtimes, standalone dnc and checksums
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/ci/publish-arch.sh
+
+  notify-distribution:
+    name: Notify unified package distribution
+    needs: release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
+        with:
+          app-id: ${{ vars.DISTRIBUTION_APP_ID }}
+          private-key: ${{ secrets.DISTRIBUTION_APP_PRIVATE_KEY }}
+          owner: fansion314
+          repositories: packages
+          permission-actions: write
+      - name: Dispatch the applicable downstream checks
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: gh workflow run downstream.yml -R fansion314/packages --ref main -f project=dnr -f platform=arch
