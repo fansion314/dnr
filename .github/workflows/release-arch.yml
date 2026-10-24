@@ -123,6 +123,13 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Check out reviewed notification helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: fansion314/packages
+          ref: 2bfba862935f3c01d07bfae9f7b49f45f55c133e
+          path: .distribution
+          persist-credentials: false
       - id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
         with:
@@ -134,4 +141,4 @@ jobs:
       - name: Dispatch the applicable downstream checks
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
-        run: gh workflow run downstream.yml -R fansion314/packages --ref main -f project=dnr -f platform=arch
+        run: python3 .distribution/arch/dispatch.py dnr arch
