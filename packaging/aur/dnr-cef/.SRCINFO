@@ -22,7 +22,7 @@ pkgbase = dnr-cef
 	depends = zlib
 	depends = libx11
 	depends = libxi
-	depends = cef
+	depends = cef>=154
 	optdepends = libxss: X11 session idle time monitoring
 	optdepends = libayatana-appindicator: system tray support
 	optdepends = libnotify: desktop notifications via notify-send

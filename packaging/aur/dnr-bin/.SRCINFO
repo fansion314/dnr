@@ -11,7 +11,7 @@ pkgbase = dnr-bin
 	depends = gcc-libs
 	depends = zlib
 	optdepends = libxss: X11 session idle time monitoring
-	optdepends = cef: system CEF desktop backend (also requires gtk3)
+	optdepends = cef>=154: system CEF desktop backend (also requires gtk3)
 	optdepends = gtk3: native desktop UI for the CEF backend
 	optdepends = webkit2gtk-4.1: WebView desktop backend (auto fallback)
 	optdepends = libayatana-appindicator: system tray support

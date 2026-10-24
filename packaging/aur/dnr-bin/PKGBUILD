@@ -8,7 +8,7 @@ url='https://github.com/fansion314/dnr'
 license=('MIT' 'Apache-2.0' 'BSD-3-Clause')
 depends=('glibc' 'gcc-libs' 'zlib')
 optdepends=('libxss: X11 session idle time monitoring'
-            'cef: system CEF desktop backend (also requires gtk3)'
+            'cef>=154: system CEF desktop backend (also requires gtk3)'
             'gtk3: native desktop UI for the CEF backend'
             'webkit2gtk-4.1: WebView desktop backend (auto fallback)'
             'libayatana-appindicator: system tray support'
